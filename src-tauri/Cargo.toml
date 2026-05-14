@@ -1,0 +1,27 @@
+[package]
+name = "vox"
+version = "0.1.0"
+description = "Vox desktop app"
+authors = ["Vox"]
+edition = "2021"
+
+[lib]
+name = "vox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+cpal = "0.17.3"
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["highsierra"] }
+enigo = "0.2"
+hound = "3.5.1"
+reqwest = { version = "0.13.3", features = ["blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-global-shortcut = "2.3.1"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+whisper-rs = { version = "0.15.1", features = ["metal"] }

@@ -1,0 +1,164 @@
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body, #root {
+    width: 100%;
+    height: 100%;
+    background: transparent !important;
+    overflow: hidden;
+}
+
+.widget-root {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+}
+
+.widget-capsule {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 15px;
+    background: rgb(0 0 0 / 96%);
+    border: 0;
+    border-radius: 999px;
+    box-shadow: none;
+    color: white;
+    overflow: visible;
+    transition: transform 160ms ease, opacity 400ms ease;
+}
+
+.widget-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.widget-hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.widget-capsule.widget-active {
+    transform: translateY(-1px);
+}
+
+.widget-voice-container {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    justify-content: center;
+    padding: 0;
+}
+
+.widget-glow {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 60px;
+    height: 24px;
+    border-radius: 999px;
+    background: rgb(45 212 191 / 68%);
+    filter: blur(12px);
+    transform: translate(-50%, -50%);
+    transition: opacity 90ms linear;
+    pointer-events: none;
+}
+
+.widget-bars {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 42px;
+}
+
+.widget-bar {
+    width: 5px;
+    height: 8px;
+    min-height: 8px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #f8fffd, #38f8df 55%, #0d9488);
+    box-shadow:
+        0 0 9px rgb(45 212 191 / 42%),
+        inset 0 1px 1px rgb(255 255 255 / 55%);
+    transform-origin: center;
+    transition:
+        height 48ms linear,
+        opacity 90ms linear;
+}
+
+.widget-transcribing-wrap {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 112px;
+    min-height: 42px;
+}
+
+.widget-shimmer-text {
+    --shimmer-base: rgb(255 255 255 / 42%);
+    --shimmer-highlight: #ecfffb;
+    position: relative;
+    display: inline-block;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: -0.035em;
+    color: rgb(255 255 255 / 62%);
+    text-shadow: 0 0 18px rgb(45 212 191 / 18%);
+}
+
+.widget-shimmer-text::after {
+    content: attr(data-text);
+    position: absolute;
+    inset: 0;
+    color: transparent;
+    background-image: linear-gradient(
+        110deg,
+        transparent 0%,
+        transparent 34%,
+        var(--shimmer-highlight) 47%,
+        #38f8df 52%,
+        var(--shimmer-highlight) 57%,
+        transparent 70%,
+        transparent 100%
+    );
+    background-size: 260% 100%;
+    background-position: 130% 0;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: widget-text-shimmer 1.35s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes widget-text-shimmer {
+    to {
+        background-position: -130% 0;
+    }
+}
+
+.widget-timer {
+    position: relative;
+    z-index: 1;
+    min-width: 24px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    color: rgb(255 255 255 / 72%);
+    font-variant-numeric: tabular-nums;
+}

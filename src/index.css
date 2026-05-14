@@ -1,0 +1,298 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/source-sans-3";
+@import "@fontsource-variable/geist-mono";
+@custom-variant dark (&:is(.dark *));
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.153 0.006 107.1);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.153 0.006 107.1);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.153 0.006 107.1);
+    --primary: oklch(0.511 0.096 186.391);
+    --primary-foreground: oklch(0.984 0.014 180.72);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.966 0.005 106.5);
+    --muted-foreground: oklch(0.58 0.031 107.3);
+    --accent: oklch(0.966 0.005 106.5);
+    --accent-foreground: oklch(0.228 0.013 107.4);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.93 0.007 106.5);
+    --input: oklch(0.93 0.007 106.5);
+    --ring: oklch(0.737 0.021 106.9);
+    --chart-1: oklch(0.808 0.114 19.571);
+    --chart-2: oklch(0.637 0.237 25.331);
+    --chart-3: oklch(0.577 0.245 27.325);
+    --chart-4: oklch(0.505 0.213 27.518);
+    --chart-5: oklch(0.444 0.177 26.899);
+    --radius: 0.45rem;
+    --sidebar: oklch(0.988 0.003 106.5);
+    --sidebar-foreground: oklch(0.153 0.006 107.1);
+    --sidebar-primary: oklch(0.6 0.118 184.704);
+    --sidebar-primary-foreground: oklch(0.984 0.014 180.72);
+    --sidebar-accent: oklch(0.966 0.005 106.5);
+    --sidebar-accent-foreground: oklch(0.228 0.013 107.4);
+    --sidebar-border: oklch(0.93 0.007 106.5);
+    --sidebar-ring: oklch(0.737 0.021 106.9);
+}
+
+.dark {
+    --background: oklch(0.153 0.006 107.1);
+    --foreground: oklch(0.988 0.003 106.5);
+    --card: oklch(0.228 0.013 107.4);
+    --card-foreground: oklch(0.988 0.003 106.5);
+    --popover: oklch(0.228 0.013 107.4);
+    --popover-foreground: oklch(0.988 0.003 106.5);
+    --primary: oklch(0.437 0.078 188.216);
+    --primary-foreground: oklch(0.984 0.014 180.72);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.286 0.016 107.4);
+    --muted-foreground: oklch(0.737 0.021 106.9);
+    --accent: oklch(0.286 0.016 107.4);
+    --accent-foreground: oklch(0.988 0.003 106.5);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.58 0.031 107.3);
+    --chart-1: oklch(0.808 0.114 19.571);
+    --chart-2: oklch(0.637 0.237 25.331);
+    --chart-3: oklch(0.577 0.245 27.325);
+    --chart-4: oklch(0.505 0.213 27.518);
+    --chart-5: oklch(0.444 0.177 26.899);
+    --sidebar: oklch(0.228 0.013 107.4);
+    --sidebar-foreground: oklch(0.988 0.003 106.5);
+    --sidebar-primary: oklch(0.704 0.14 182.503);
+    --sidebar-primary-foreground: oklch(0.277 0.046 192.524);
+    --sidebar-accent: oklch(0.286 0.016 107.4);
+    --sidebar-accent-foreground: oklch(0.988 0.003 106.5);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.58 0.031 107.3);
+}
+
+@theme inline {
+    --font-sans: 'Source Sans 3 Variable', sans-serif;
+    --font-heading: 'Geist Mono Variable', monospace;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+
+.widget-document,
+.widget-document body,
+.widget-document #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    background: transparent;
+    overflow: hidden;
+}
+
+.widget-root {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 0;
+    background: transparent;
+}
+
+.widget-capsule {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 15px;
+    background: rgb(0 0 0 / 96%);
+    border: 0;
+    border-radius: 999px;
+    box-shadow: none;
+    color: white;
+    overflow: visible;
+    transition: transform 160ms ease, opacity 400ms ease;
+}
+
+.widget-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.widget-hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.widget-capsule::before {
+    content: none;
+}
+
+.widget-capsule.widget-active {
+    transform: translateY(-1px);
+}
+
+.widget-voice-container {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    justify-content: center;
+    padding: 0;
+}
+
+.widget-glow {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 60px;
+    height: 24px;
+    border-radius: 999px;
+    background: rgb(45 212 191 / 68%);
+    filter: blur(12px);
+    transform: translate(-50%, -50%);
+    transition: opacity 90ms linear;
+    pointer-events: none;
+}
+
+.widget-bars {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 42px;
+}
+
+.widget-bar {
+    width: 5px;
+    height: 8px;
+    min-height: 8px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #f8fffd, #38f8df 55%, #0d9488);
+    box-shadow:
+        0 0 9px rgb(45 212 191 / 42%),
+        inset 0 1px 1px rgb(255 255 255 / 55%);
+    transform-origin: center;
+    transition:
+        height 48ms linear,
+        opacity 90ms linear;
+}
+
+.widget-transcribing-wrap {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 112px;
+    min-height: 42px;
+}
+
+.widget-shimmer-text {
+    --shimmer-base: rgb(255 255 255 / 42%);
+    --shimmer-highlight: #ecfffb;
+    position: relative;
+    display: inline-block;
+    font-family: 'Geist Mono Variable', monospace;
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: -0.035em;
+    color: rgb(255 255 255 / 62%);
+    text-shadow: 0 0 18px rgb(45 212 191 / 18%);
+}
+
+.widget-shimmer-text::after {
+    content: attr(data-text);
+    position: absolute;
+    inset: 0;
+    color: transparent;
+    background-image: linear-gradient(
+        110deg,
+        transparent 0%,
+        transparent 34%,
+        var(--shimmer-highlight) 47%,
+        #38f8df 52%,
+        var(--shimmer-highlight) 57%,
+        transparent 70%,
+        transparent 100%
+    );
+    background-size: 260% 100%;
+    background-position: 130% 0;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: widget-text-shimmer 1.35s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes widget-text-shimmer {
+    to {
+        background-position: -130% 0;
+    }
+}
+
+.widget-timer {
+    position: relative;
+    z-index: 1;
+    min-width: 24px;
+    font-family: 'Geist Mono Variable', monospace;
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    color: rgb(255 255 255 / 72%);
+    font-variant-numeric: tabular-nums;
+}

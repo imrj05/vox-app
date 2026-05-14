@@ -67,8 +67,8 @@ export async function stopRecording() {
   return invoke<RecordingStatus>("stop_recording");
 }
 
-export async function transcribeRecording(audioPath: string) {
-  return invoke<TranscriptionResult>("transcribe_recording", { audioPath });
+export async function transcribeRecording(audioPath: string, modelName?: string) {
+  return invoke<TranscriptionResult>("transcribe_recording", { audioPath, modelName });
 }
 
 export async function listWhisperModels() {
@@ -77,6 +77,10 @@ export async function listWhisperModels() {
 
 export async function downloadWhisperModel(modelName: string) {
   return invoke<WhisperModelInfo>("download_whisper_model", { modelName });
+}
+
+export async function deleteWhisperModel(modelName: string) {
+  return invoke<void>("delete_whisper_model", { modelName });
 }
 
 export async function getCurrentShortcut() {

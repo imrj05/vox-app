@@ -5410,6 +5410,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-sql",
+ "tokio",
  "whisper-rs",
 ]
 

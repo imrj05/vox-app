@@ -449,19 +449,34 @@ fn whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
 }
 
 #[tauri::command]
-fn download_whisper_model(app: AppHandle, model_name: String) -> Result<WhisperModelInfo, String> {
+fn delete_whisper_model(app: AppHandle, model_name: String) -> Result<(), String> {
     let models_dir = whisper_models_dir(&app)?;
-    let name = model_name.clone();
-    whisper::download_model(&models_dir, &model_name, move |downloaded, total| {
-        let _ = app.emit(
-            "vox-download-progress",
-            DownloadProgress {
-                model_name: name.clone(),
-                downloaded,
-                total,
-            },
-        );
+    let path = models_dir.join(format!("{model_name}.bin"));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<WhisperModelInfo, String> {
+    let models_dir = whisper_models_dir(&app)?;
+    let app_progress = app.clone();
+    let progress_name = model_name.clone();
+    tokio::task::spawn_blocking(move || -> Result<WhisperModelInfo, String> {
+        whisper::download_model(&models_dir, &model_name, move |downloaded, total| {
+            let _ = app_progress.emit(
+                "vox-download-progress",
+                DownloadProgress {
+                    model_name: progress_name.clone(),
+                    downloaded,
+                    total,
+                },
+            );
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -652,6 +667,7 @@ pub fn run() {
             stop_recording,
             whisper_models,
             download_whisper_model,
+            delete_whisper_model,
             transcribe_recording,
             transcribe_sample,
             get_current_shortcut,

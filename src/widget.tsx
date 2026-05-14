@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import "./widget.css";
@@ -136,6 +136,73 @@ function VoiceDots({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Audio cues                                                        */
+/* ------------------------------------------------------------------ */
+
+let sharedAudioCtx: AudioContext | null = null;
+
+function getAudioContext(): AudioContext {
+  if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+    sharedAudioCtx = new AudioContext();
+  }
+  return sharedAudioCtx;
+}
+
+/** Soft high click — signals recording has started. */
+function playStartTone() {
+  try {
+    const ctx = getAudioContext();
+    const play = () => {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(1050, t);
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      osc.start(t);
+      osc.stop(t + 0.09);
+    };
+    if (ctx.state === "suspended") {
+      void ctx.resume().then(play);
+    } else {
+      play();
+    }
+  } catch {
+    // AudioContext unavailable — ignore
+  }
+}
+
+/** Soft low click — signals recording has stopped. */
+function playStopTone() {
+  try {
+    const ctx = getAudioContext();
+    const play = () => {
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(700, t);
+      gain.gain.setValueAtTime(0.05, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    };
+    if (ctx.state === "suspended") {
+      void ctx.resume().then(play);
+    } else {
+      play();
+    }
+  } catch {
+    // AudioContext unavailable — ignore
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Widget root                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -146,15 +213,22 @@ export function Widget() {
   });
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
+  const prevMode = useRef<WidgetMode>("idle");
 
   // Listen for widget state events
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<WidgetState>("vox-widget-state", (event) => {
+      const next = event.payload.mode;
+      const prev = prevMode.current;
+      const soundOn = localStorage.getItem("sound_enabled") !== "false";
+      if (soundOn && next === "recording" && prev !== "recording") playStartTone();
+      if (soundOn && prev === "recording" && next !== "recording") playStopTone();
+      prevMode.current = next;
       setState(event.payload);
     }).then((cleanup) => {
       unlisten = cleanup;
-    });
+    }).catch((err) => console.error("[vox-widget] failed to listen vox-widget-state:", err));
     return () => {
       unlisten?.();
     };
@@ -166,7 +240,7 @@ export function Widget() {
       setMeterLevels(mapAudioBarsToMeter(event.payload.bars));
     }).then((cleanup) => {
       unlisten = cleanup;
-    });
+    }).catch((err) => console.error("[vox-widget] failed to listen vox-audio-bars:", err));
     return () => {
       unlisten?.();
     };
@@ -180,7 +254,7 @@ export function Widget() {
       setAudioLevel(level);
     }).then((cleanup) => {
       unlisten = cleanup;
-    });
+    }).catch((err) => console.error("[vox-widget] failed to listen vox-audio-level:", err));
     return () => {
       unlisten?.();
     };

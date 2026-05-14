@@ -33,22 +33,19 @@ import {
 import { HotkeyPicker } from "@/components/hotkey-picker";
 import { useAppStore } from "@/store/app-store";
 import type { TriggerMode } from "@/store/app-store";
-
-const settingsSections = [
+export const settingsSections = [
   { id: "recording", label: "Recording", icon: Mic },
   { id: "transcription", label: "Transcription", icon: Cpu },
   { id: "permissions", label: "Permissions", icon: ShieldCheck },
   { id: "system", label: "System", icon: Settings },
 ] as const;
-
-type SettingsSection = (typeof settingsSections)[number]["id"];
-
+export type SettingsSection = (typeof settingsSections)[number]["id"];
 interface SettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-function RecordingSection() {
+export function RecordingSection() {
+  const { soundEnabled, setSoundEnabled } = useAppStore();
   return (
     <div className="space-y-6">
       <div>
@@ -72,12 +69,21 @@ function RecordingSection() {
           </Label>
           <Switch id="record-keep" defaultChecked />
         </div>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="sound-cues" className="flex-1 cursor-pointer text-sm">
+            Play sound on start / stop
+          </Label>
+          <Switch
+            id="sound-cues"
+            checked={soundEnabled}
+            onCheckedChange={(checked) => void setSoundEnabled(checked)}
+          />
+        </div>
       </div>
     </div>
   );
 }
-
-function TranscriptionSection() {
+export function TranscriptionSection() {
   return (
     <div className="space-y-6">
       <div>
@@ -105,9 +111,7 @@ function TranscriptionSection() {
     </div>
   );
 }
-
 type PermissionStatus = "checking" | "granted" | "denied";
-
 interface PermissionRowProps {
   icon: React.ReactNode;
   title: string;
@@ -117,7 +121,6 @@ interface PermissionRowProps {
   onAction: () => void;
   busy: boolean;
 }
-
 function PermissionRow({
   icon,
   title,
@@ -174,14 +177,12 @@ function PermissionRow({
     </div>
   );
 }
-
-function PermissionsSection() {
+export function PermissionsSection() {
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<PermissionStatus>("checking");
   const [micStatus, setMicStatus] = useState<PermissionStatus>("checking");
   const [accessibilityBusy, setAccessibilityBusy] = useState(false);
   const [micBusy, setMicBusy] = useState(false);
-
   // Check both permissions on mount
   useEffect(() => {
     void checkAccessibilityPermission().then((trusted) => {
@@ -192,7 +193,6 @@ function PermissionsSection() {
       .then(() => setMicStatus("granted"))
       .catch(() => setMicStatus("denied"));
   }, []);
-
   // Poll accessibility while denied (user may grant in System Settings)
   useEffect(() => {
     if (accessibilityStatus !== "denied") return;
@@ -205,7 +205,6 @@ function PermissionsSection() {
     }, 1500);
     return () => clearInterval(interval);
   }, [accessibilityStatus]);
-
   const handleGrantAccessibility = async () => {
     setAccessibilityBusy(true);
     try {
@@ -216,7 +215,6 @@ function PermissionsSection() {
       setAccessibilityBusy(false);
     }
   };
-
   const handleGrantMic = async () => {
     setMicBusy(true);
     try {
@@ -228,7 +226,6 @@ function PermissionsSection() {
       setMicBusy(false);
     }
   };
-
   return (
     <div className="space-y-6">
       <div>
@@ -239,7 +236,6 @@ function PermissionsSection() {
           macOS permissions required for Vox to function. All processing stays on-device.
         </p>
       </div>
-
       <div className="space-y-3">
         <PermissionRow
           icon={<ShieldCheck className="h-4 w-4 text-accent-foreground" />}
@@ -260,15 +256,13 @@ function PermissionsSection() {
           busy={micBusy}
         />
       </div>
-
       <p className="text-[11px] text-muted-foreground">
         If a permission was recently granted, it may take a moment to reflect here.
       </p>
     </div>
   );
 }
-
-function SystemSection() {
+export function SystemSection() {
   const { hotkey, setHotkey, triggerMode, setTriggerMode } = useAppStore();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
@@ -280,13 +274,11 @@ function SystemSection() {
   const [diagnostics, setDiagnostics] = useState<Awaited<
     ReturnType<typeof getHotkeyDiagnostics>
   > | null>(null);
-
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
   const refreshDiagnostics = async () => {
     try {
       const next = await getHotkeyDiagnostics();
@@ -295,7 +287,6 @@ function SystemSection() {
       setHotkeyError(err instanceof Error ? err.message : String(err));
     }
   };
-
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       void refreshDiagnostics();
@@ -308,7 +299,6 @@ function SystemSection() {
       window.clearInterval(interval);
     };
   }, []);
-
   const handleSaveHotkey = async (shortcut: string) => {
     try {
       await setGlobalShortcut(shortcut);
@@ -328,13 +318,11 @@ function SystemSection() {
       setPickerOpen(false);
     }
   };
-
   const handleTriggerModeChange = async (mode: TriggerMode) => {
     await setNativeTriggerMode(mode);
     await setTriggerMode(mode);
     await refreshDiagnostics();
   };
-
   const diagnosticsRows = diagnostics
     ? [
         {
@@ -368,13 +356,11 @@ function SystemSection() {
         },
       ]
     : [];
-
   const info = [
     { label: "Version", value: "0.1.0-alpha" },
     { label: "Desktop shell", value: "Tauri v2" },
     { label: "Audio format", value: "16-bit WAV" },
   ];
-
   return (
     <div className="space-y-6">
       <div>
@@ -385,7 +371,6 @@ function SystemSection() {
           Minimal voice-to-text app status.
         </p>
       </div>
-
       {/* Hotkey row */}
       <div className="flex items-center justify-between">
         <div>
@@ -405,7 +390,6 @@ function SystemSection() {
           Edit
         </Button>
       </div>
-
       {/* Trigger mode row */}
       <div className="space-y-2">
         <div>
@@ -440,7 +424,6 @@ function SystemSection() {
           ))}
         </div>
       </div>
-
       <div className="space-y-1">
         {info.map((item) => (
           <div key={item.label} className="flex items-center justify-between py-1.5">
@@ -453,7 +436,6 @@ function SystemSection() {
           </div>
         ))}
       </div>
-
       <div className="space-y-3 rounded-xl border border-border bg-background p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -468,7 +450,6 @@ function SystemSection() {
             Refresh
           </Button>
         </div>
-
         {diagnostics ? (
           <div className="space-y-2">
             {diagnosticsRows.map((row) => (
@@ -506,7 +487,6 @@ function SystemSection() {
           <p className="text-xs text-muted-foreground">Loading diagnostics…</p>
         )}
       </div>
-
       <HotkeyPicker
         open={pickerOpen}
         currentShortcut={hotkey}
@@ -519,11 +499,9 @@ function SystemSection() {
     </div>
   );
 }
-
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("recording");
-
   const renderContent = () => {
     switch (activeSection) {
       case "recording":
@@ -536,23 +514,21 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         return <SystemSection />;
     }
   };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="h-[460px] max-w-[640px] overflow-hidden p-0">
+      <DialogContent className="h-[460px] min-w-150 max-w-200 overflow-hidden p-0">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure voice-to-text settings
         </DialogDescription>
-        <div className="flex h-full">
-          <nav className="w-[190px] shrink-0 border-r border-border bg-sidebar px-2 py-4">
+        <div className="absolute inset-0 flex overflow-hidden rounded-xl">
+          <nav className="w-[190px] shrink-0 overflow-hidden border-r border-border bg-sidebar px-2 py-4">
             <p className="px-3 pb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Settings
             </p>
             <div className="space-y-0.5">
               {settingsSections.map((section) => {
                 const Icon = section.icon;
-
                 return (
                   <button
                     key={section.id}

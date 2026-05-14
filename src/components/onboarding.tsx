@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   checkAccessibilityPermission,
   downloadWhisperModel,
@@ -17,7 +18,7 @@ import {
   requestMicrophonePermission,
   formatShortcut,
 } from "@/lib/native";
-import { useAppStore } from "@/store/app-store";
+import { useAppStore, DEFAULT_SELECTED_MODEL } from "@/store/app-store";
 
 interface DownloadProgress {
   modelName: string;
@@ -25,30 +26,50 @@ interface DownloadProgress {
   total: number;
 }
 
+const ONBOARDING_MODELS = [
+  { name: "tiny.en",   displayName: "Whisper Tiny",            size: "~75 MB",   description: "Fastest, lowest quality. Good for quick tests.",              version: "v1.0" },
+  { name: "base.en",   displayName: "Whisper Base",            size: "~150 MB",  description: "Recommended default. Strong accuracy on Apple Silicon.",      version: "v1.0", recommended: true },
+  { name: "small.en",  displayName: "Whisper Small",           size: "~500 MB",  description: "Better accuracy, ~2x slower than base.",                      version: "v1.0" },
+  { name: "medium.en", displayName: "Whisper Medium",          size: "~1.5 GB",  description: "Strong quality, ~4x slower. Needs 8 GB+ RAM.",               version: "v1.0" },
+  { name: "large-v3",  displayName: "Whisper Large v3",        size: "~3.0 GB",  description: "Best accuracy, all languages. Needs 16 GB+ RAM.",            version: "v3.0" },
+  { name: "distil-large-v3",  displayName: "Distil-Whisper Large v3", size: "~1.5 GB", description: "~2x faster than large-v3, near-identical accuracy.", version: "v3.0" },
+  { name: "large-v3-turbo",   displayName: "Whisper Large v3 Turbo",  size: "~1.5 GB", description: "Near large-v3 accuracy at ~2x speed. Needs 8 GB+ RAM.", version: "v3.0" },
+];
+
 type Step = "accessibility" | "permission" | "model" | "hotkey";
 
 export function Onboarding() {
-  const { setOnboardingComplete, hotkey } = useAppStore();
+  const { setOnboardingComplete, hotkey, setSelectedModel } = useAppStore();
   const [step, setStep] = useState<Step>("accessibility");
   const [accessibilityReady, setAccessibilityReady] = useState(false);
   const [permissionReady, setPermissionReady] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [hotkeyReady, setHotkeyReady] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [chosenModel, setChosenModel] = useState(DEFAULT_SELECTED_MODEL);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Check if accessibility is already granted on mount
+  // Check both permissions on mount — auto-advance if already granted
   useEffect(() => {
-    checkAccessibilityPermission().then((trusted) => {
+    const check = async () => {
+      const trusted = await checkAccessibilityPermission();
       if (trusted) {
         setAccessibilityReady(true);
-        setStep("permission");
+        // Also probe mic — if already granted skip to model step
+        try {
+          await requestMicrophonePermission();
+          setPermissionReady(true);
+          setStep("model");
+        } catch {
+          setStep("permission");
+        }
       }
-    });
+    };
+    void check();
   }, []);
 
-  // Poll for accessibility grant after the user opens System Settings
+  // Poll for accessibility grant while on that step
   useEffect(() => {
     if (step !== "accessibility" || accessibilityReady) return;
     const interval = setInterval(async () => {
@@ -61,6 +82,22 @@ export function Onboarding() {
     }, 1500);
     return () => clearInterval(interval);
   }, [step, accessibilityReady]);
+
+  // Poll for mic grant while on permission step (user may grant via System Settings)
+  useEffect(() => {
+    if (step !== "permission" || permissionReady) return;
+    const interval = setInterval(async () => {
+      try {
+        await requestMicrophonePermission();
+        setPermissionReady(true);
+        setStep("model");
+        clearInterval(interval);
+      } catch {
+        // not yet granted
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [step, permissionReady]);
 
   // Listen for download progress events
   useEffect(() => {
@@ -129,8 +166,10 @@ export function Onboarding() {
       await requestMicrophonePermission();
       setPermissionReady(true);
       setStep("model");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError(
+        "Microphone access was denied. Open System Settings → Privacy & Security → Microphone and enable Vox."
+      );
     } finally {
       setBusy(false);
     }
@@ -142,10 +181,11 @@ export function Onboarding() {
     setDownloadProgress(null);
     try {
       const models = await listWhisperModels();
-      const baseModel = models.find((model) => model.name === "base.en");
-      if (!baseModel?.downloaded) {
-        await downloadWhisperModel("base.en");
+      const already = models.find((m) => m.name === chosenModel);
+      if (!already?.downloaded) {
+        await downloadWhisperModel(chosenModel);
       }
+      await setSelectedModel(chosenModel);
       setModelReady(true);
       setStep("hotkey");
     } catch (err) {
@@ -161,8 +201,8 @@ export function Onboarding() {
   };
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-background p-6">
-      <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl shadow-black/30">
+    <div className="flex h-full flex-col overflow-y-auto bg-background">
+      <div className="mx-auto w-full max-w-2xl px-8 py-10">
         <div className="mb-8">
           <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Vox setup
@@ -171,8 +211,7 @@ export function Onboarding() {
             Set up voice to text
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Four steps: accessibility, microphone, Whisper model, then hotkey
-            test.
+            Four steps: accessibility, microphone, Whisper model, then hotkey test.
           </p>
         </div>
 
@@ -229,25 +268,72 @@ export function Onboarding() {
             active={step === "model"}
             done={modelReady}
             icon={<Download className="h-5 w-5" />}
-            title="Download Whisper model"
-            description="Download Base English for a fast local first run."
+            title="Choose Whisper model"
+            description="Select the model to use for transcription. It will be downloaded and cached locally."
             progress={
               busy && step === "model" && downloadProgress
                 ? downloadProgress
                 : null
             }
           >
-            <Button
-              onClick={downloadModel}
-              disabled={busy || modelReady || !permissionReady}
-            >
-              {busy && step === "model"
-                ? downloadProgress
-                  ? `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%`
-                  : "Downloading…"
-                : "Download model"}
-            </Button>
+            {modelReady ? (
+              <span className="text-xs font-medium text-primary">Cached</span>
+            ) : (
+              <Button
+                onClick={downloadModel}
+                disabled={busy || !permissionReady}
+              >
+                {busy && step === "model"
+                  ? downloadProgress
+                    ? `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%`
+                    : "Downloading…"
+                  : "Download & cache"}
+              </Button>
+            )}
           </StepCard>
+
+          {/* Model picker — shown when model step is active and not yet downloaded */}
+          {step === "model" && !modelReady && (
+            <div className="grid gap-2 pl-14">
+              {ONBOARDING_MODELS.map((m) => (
+                <button
+                  key={m.name}
+                  disabled={busy}
+                  onClick={() => setChosenModel(m.name)}
+                  className={cn(
+                    "flex items-start justify-between gap-4 rounded-xl border px-4 py-3 text-left transition-colors",
+                    chosenModel === m.name
+                      ? "border-primary bg-sidebar-accent"
+                      : "border-border bg-card hover:border-ring"
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-foreground">
+                        {m.displayName}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground font-mono">{m.version}</span>
+                      <span className="text-[11px] text-muted-foreground font-mono">STT</span>
+                      {m.recommended && (
+                        <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+                          default
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-mono text-muted-foreground mt-0.5">{m.size}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{m.description}</p>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-1.5 mt-0.5">
+                    {chosenModel === m.name ? (
+                      <CheckCircle2 className="h-4 w-4 text-primary" />
+                    ) : (
+                      <div className="h-4 w-4 rounded-full border-2 border-border" />
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Step 4 — Hotkey test */}
           <StepCard
@@ -275,7 +361,7 @@ export function Onboarding() {
 
         <div className="mt-6 flex items-center justify-between border-t border-border pt-4">
           <p className="text-xs text-muted-foreground">
-            You can change models later from Models.
+            You can switch models later from the Models page.
           </p>
           <Button
             onClick={finish}

@@ -27,7 +27,7 @@ import { HotkeyPicker } from "@/components/hotkey-picker";
 import { useAppStore } from "@/store/app-store";
 
 export function HomePage() {
-  const { hotkey, setHotkey } = useAppStore();
+  const { hotkey, setHotkey, selectedModel } = useAppStore();
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [recordingStatus, setRecordingStatus] =
     useState<RecordingStatus | null>(null);
@@ -125,7 +125,7 @@ export function HomePage() {
 
         if (status.path) {
           setTranscribing(true);
-          const result = await transcribeRecording(status.path);
+          const result = await transcribeRecording(status.path, selectedModel);
           await applyTranscriptionResult(result);
         }
         return;
@@ -152,7 +152,7 @@ export function HomePage() {
     setError(null);
 
     try {
-      const result = await transcribeRecording(recordingStatus.path);
+      const result = await transcribeRecording(recordingStatus.path, selectedModel);
       await applyTranscriptionResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

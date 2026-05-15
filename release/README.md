@@ -40,10 +40,21 @@ For multi-platform use, pass `RELEASE_PLATFORMS_JSON` as a JSON object keyed by 
 
 ## Upload targets
 
-Upload both files to the GitHub release matching the tag used above:
+Upload these files to the GitHub release matching the tag used above:
 
 - the signed updater archive, for example `Vox.app.tar.gz`
+- the installer image, for example `Vox_0.0.1_aarch64.dmg`
 - `latest.json`
+
+The `.app.tar.gz` archive is required by Tauri's auto-updater. The `.dmg` is the user-facing installer asset people can download and install manually from GitHub Releases.
+
+## macOS — Gatekeeper warning
+
+If macOS blocks the app, run once in Terminal after installing:
+
+```bash
+xattr -cr /Applications/Vox.app
+```
 
 The updater endpoint is already configured to read:
 
@@ -76,7 +87,7 @@ The workflow will:
 - build the macOS app
 - run `pnpm release:prepare`
 - create or update the GitHub Release
-- upload the updater archive and `latest.json`
+- upload the updater archive, `.dmg` installer, and `latest.json`
 
 `release:prepare` also writes `release/release-metadata.json`, which the workflow uses to upload the exact generated assets.
 

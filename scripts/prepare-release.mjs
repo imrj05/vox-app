@@ -33,7 +33,13 @@ async function walkFiles(dirPath) {
   return files.flat()
 }
 
-async function resolveArchivePath(productName) {
+async function readBundleFiles() {
+  const bundleDir = resolve(process.cwd(), "src-tauri", "target", "release", "bundle")
+  await access(bundleDir)
+  return walkFiles(bundleDir)
+}
+
+async function resolveArchivePath(productName, files) {
   const overridePath = process.env.RELEASE_ARCHIVE_PATH
   if (overridePath) {
     const resolvedOverridePath = resolve(process.cwd(), overridePath)
@@ -41,10 +47,6 @@ async function resolveArchivePath(productName) {
     return resolvedOverridePath
   }
 
-  const bundleDir = resolve(process.cwd(), "src-tauri", "target", "release", "bundle")
-  await access(bundleDir)
-
-  const files = await walkFiles(bundleDir)
   const archives = files.filter((filePath) => filePath.endsWith(".tar.gz") && !filePath.endsWith(".sig"))
   const preferredName = `${productName}.app.tar.gz`
   const preferredMatches = archives.filter((filePath) => basename(filePath) === preferredName)
@@ -58,6 +60,22 @@ async function resolveArchivePath(productName) {
 
   appArchives.sort((left, right) => right.localeCompare(left))
   return appArchives[0]
+}
+
+function resolveInstallerAssets(productName, files) {
+  const dmgAssets = files.filter((filePath) => filePath.endsWith(".dmg"))
+  const preferredDmg = dmgAssets.find((filePath) => basename(filePath).startsWith(productName))
+  const installerPath = preferredDmg ?? dmgAssets[0] ?? null
+
+  return installerPath
+    ? [
+        {
+          path: installerPath,
+          name: basename(installerPath),
+          kind: "dmg",
+        },
+      ]
+    : []
 }
 
 function resolveSigningEnv() {
@@ -144,7 +162,9 @@ async function main() {
     throw new Error(`Could not read productName/version from ${configPath}.`)
   }
 
-  const archivePath = await resolveArchivePath(productName)
+  const bundleFiles = await readBundleFiles()
+  const archivePath = await resolveArchivePath(productName, bundleFiles)
+  const installerAssets = resolveInstallerAssets(productName, bundleFiles)
   const signing = resolveSigningEnv()
   const releaseTag = process.env.RELEASE_TAG?.trim() || `v${version}`
   const releaseRepo = process.env.RELEASE_REPO?.trim() || "imrj05/vox-app"
@@ -171,6 +191,7 @@ async function main() {
     assetName,
     manifestPath,
     manifestName: basename(manifestPath),
+    installerAssets,
     downloadUrl,
   }
 
@@ -182,6 +203,9 @@ async function main() {
   console.log(`Release metadata written to ${metadataPath}`)
   console.log(`Upload these release assets:`)
   console.log(`- ${assetName}`)
+  for (const asset of installerAssets) {
+    console.log(`- ${asset.name}`)
+  }
   console.log(`- ${basename(manifestPath)}`)
   console.log(`Expected updater URL: ${downloadUrl}`)
 }

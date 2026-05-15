@@ -135,7 +135,7 @@ jobs:
       - name: Read release metadata
         id: release_metadata
         run: |
-          node -e 'const fs = require("node:fs"); const metadata = JSON.parse(fs.readFileSync("release/release-metadata.json", "utf8")); const output = process.env.GITHUB_OUTPUT; fs.appendFileSync(output, `archive_path=${metadata.archivePath}\nmanifest_path=${metadata.manifestPath}\nasset_name=${metadata.assetName}\nmanifest_name=${metadata.manifestName}\ndownload_url=${metadata.downloadUrl}\nrelease_tag=${metadata.releaseTag}\n`);'
+          node -e 'const fs = require("node:fs"); const metadata = JSON.parse(fs.readFileSync("release/release-metadata.json", "utf8")); const output = process.env.GITHUB_OUTPUT; const installerPaths = (metadata.installerAssets ?? []).map((asset) => asset.path).join("\n"); fs.appendFileSync(output, `archive_path=${metadata.archivePath}\nmanifest_path=${metadata.manifestPath}\nasset_name=${metadata.assetName}\nmanifest_name=${metadata.manifestName}\ndownload_url=${metadata.downloadUrl}\nrelease_tag=${metadata.releaseTag}\ninstaller_paths<<EOF\n${installerPaths}\nEOF\n`);'
 
       - name: Create or update GitHub Release
         env:
@@ -151,8 +151,17 @@ jobs:
       - name: Upload release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          gh release upload "$RELEASE_TAG" \
-            "${{ steps.release_metadata.outputs.archive_path }}" \
-            "${{ steps.release_metadata.outputs.manifest_path }}" \
-            --clobber
+          assets=(
+            "${{ steps.release_metadata.outputs.archive_path }}"
+            "${{ steps.release_metadata.outputs.manifest_path }}"
+          )
+
+          while IFS= read -r installer_path; do
+            if [[ -n "$installer_path" ]]; then
+              assets+=("$installer_path")
+            fi
+          done <<< "${{ steps.release_metadata.outputs.installer_paths }}"
+
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

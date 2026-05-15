@@ -5,6 +5,16 @@ import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 
+const GATEKEEPER_NOTE = [
+  "### macOS — Gatekeeper warning",
+  "",
+  "If macOS blocks the app, run once in Terminal after installing:",
+  "",
+  "```bash",
+  "xattr -cr /Applications/Vox.app",
+  "```",
+].join("\n")
+
 async function git(args) {
   const { stdout } = await execFileAsync("git", args, {
     cwd: process.cwd(),
@@ -82,6 +92,8 @@ function renderEntry({ version, tag, date, previousTag, commits }) {
     intro,
     "",
     sections.length > 0 ? sections.join("\n") : "### Changed\n\n- Release version prepared.\n",
+    "",
+    GATEKEEPER_NOTE,
   ].join("\n").trim()
 }
 

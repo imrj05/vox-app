@@ -8,8 +8,9 @@ import "./widget.css";
 /* ------------------------------------------------------------------ */
 
 const BAR_COUNT = 7;
-const BAR_MIN_HEIGHT = 8;
-const BAR_HEIGHT_RANGE = 34;
+const BAR_MIN_HEIGHT = 7;
+const BAR_HEIGHT_RANGE = 27;
+const THEME_KEY = "theme";
 
 type WidgetMode = "idle" | "recording" | "transcribing" | "done" | "error";
 
@@ -214,6 +215,26 @@ export function Widget() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
   const prevMode = useRef<WidgetMode>("idle");
+
+  useEffect(() => {
+    const applyTheme = () => {
+      const storedTheme = localStorage.getItem(THEME_KEY);
+      const theme = storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system";
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme =
+        theme === "dark" || (theme === "system" && prefersDark) ? "dark" : "light";
+    };
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    applyTheme();
+    media.addEventListener("change", applyTheme);
+    window.addEventListener("storage", applyTheme);
+    const interval = window.setInterval(applyTheme, 1000);
+    return () => {
+      media.removeEventListener("change", applyTheme);
+      window.removeEventListener("storage", applyTheme);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   // Listen for widget state events
   useEffect(() => {

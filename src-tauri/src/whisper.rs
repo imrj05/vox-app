@@ -157,20 +157,27 @@ pub fn transcribe(
     models_dir: &Path,
     audio_path: &Path,
     model_name: Option<&str>,
+    dictionary: Option<&str>,
+    context: Option<&str>,
 ) -> Result<String, String> {
     let model_path = selected_model_path(models_dir, model_name)?;
 
-    transcribe_with_backend(&model_path, audio_path)
+    transcribe_with_backend(&model_path, audio_path, dictionary, context)
 }
 
-fn transcribe_with_backend(model_path: &Path, audio_path: &Path) -> Result<String, String> {
+fn transcribe_with_backend(
+    model_path: &Path,
+    audio_path: &Path,
+    dictionary: Option<&str>,
+    context: Option<&str>,
+) -> Result<String, String> {
     let model_path = model_path
         .to_str()
         .ok_or_else(|| "Model path contains invalid UTF-8".to_string())?;
     let mut ctx_params = WhisperContextParameters::default();
     ctx_params.use_gpu(true);
 
-    let context = WhisperContext::new_with_params(model_path, ctx_params)
+    let whisper_context = WhisperContext::new_with_params(model_path, ctx_params)
         .or_else(|_| {
             let mut cpu_params = WhisperContextParameters::default();
             cpu_params.use_gpu(false);
@@ -192,13 +199,17 @@ fn transcribe_with_backend(model_path: &Path, audio_path: &Path) -> Result<Strin
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
+    let prompt = dictionary_prompt(dictionary, context);
+    if let Some(prompt) = prompt.as_deref() {
+        params.set_initial_prompt(prompt);
+    }
     params.set_n_threads(
         std::thread::available_parallelism()
             .map(|threads| threads.get().saturating_sub(1).max(1) as i32)
             .unwrap_or(4),
     );
 
-    let mut state = context.create_state().map_err(|error| error.to_string())?;
+    let mut state = whisper_context.create_state().map_err(|error| error.to_string())?;
     state
         .full(params, &audio)
         .map_err(|error| error.to_string())?;
@@ -215,6 +226,58 @@ fn transcribe_with_backend(model_path: &Path, audio_path: &Path) -> Result<Strin
     }
 
     Ok(text)
+}
+
+fn dictionary_prompt(dictionary: Option<&str>, context: Option<&str>) -> Option<String> {
+    let entries: Vec<String> = dictionary
+        .into_iter()
+        .flat_map(|dictionary| dictionary.lines())
+        .flat_map(dictionary_entries_from_line)
+        .take(100)
+        .collect();
+
+    let context = context.and_then(|context| {
+        let context = context.trim();
+        (!context.is_empty()).then_some(context)
+    });
+
+    if entries.is_empty() && context.is_none() {
+        return None;
+    }
+
+    let mut prompt = String::new();
+    if let Some(context) = context {
+        prompt.push_str(context);
+        prompt.push(' ');
+    }
+    if !entries.is_empty() {
+        prompt.push_str("Prefer these vocabulary terms when relevant: ");
+        prompt.push_str(&entries.join(", "));
+        prompt.push('.');
+    }
+
+    Some(prompt)
+}
+
+fn dictionary_entries_from_line(line: &str) -> Vec<String> {
+    if line.contains('|') {
+        let parts: Vec<&str> = line.split('|').map(str::trim).collect();
+        let word = parts.first().copied().unwrap_or_default();
+        let hint = parts.get(1).copied().unwrap_or_default();
+        if word.is_empty() {
+            Vec::new()
+        } else if hint.is_empty() {
+            vec![word.to_string()]
+        } else {
+            vec![format!("{word} (pronounced {hint})")]
+        }
+    } else {
+        line.split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 fn find_model(model_name: &str) -> Result<&'static WhisperModelInfo, String> {

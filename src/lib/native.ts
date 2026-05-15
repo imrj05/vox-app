@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 
 export interface NativeStatus {
   platform: string;
@@ -16,12 +21,16 @@ export interface TranscriptPreview {
 export interface RecordingStatus {
   isRecording: boolean;
   path: string | null;
+  appName: string | null;
+  windowTitle: string | null;
   durationSeconds: number | null;
 }
 
 export interface TranscriptionResult {
   audioPath: string;
   text: string;
+  appName: string | null;
+  durationSeconds: number | null;
 }
 
 export interface WhisperModelInfo {
@@ -67,8 +76,20 @@ export async function stopRecording() {
   return invoke<RecordingStatus>("stop_recording");
 }
 
-export async function transcribeRecording(audioPath: string, modelName?: string) {
-  return invoke<TranscriptionResult>("transcribe_recording", { audioPath, modelName });
+export async function transcribeRecording(
+  audioPath: string,
+  modelName?: string,
+  dictionary?: string,
+  contextAppName?: string | null,
+  contextWindowTitle?: string | null
+) {
+  return invoke<TranscriptionResult>("transcribe_recording", {
+    audioPath,
+    modelName,
+    dictionary,
+    contextAppName,
+    contextWindowTitle,
+  });
 }
 
 export async function listWhisperModels() {
@@ -107,8 +128,39 @@ export async function setTriggerMode(mode: "toggle" | "pushToTalk") {
   return invoke<void>("set_trigger_mode", { mode });
 }
 
+export async function setNativeDictionary(dictionary: string) {
+  return invoke<void>("set_dictionary", { dictionary });
+}
+
+export async function setTranscriptFormattingMode(
+  mode: "auto" | "plain" | "developer"
+) {
+  return invoke<void>("set_transcript_formatting_mode", { mode });
+}
+
+export async function setEditableFocusContext(isEditableFocused: boolean) {
+  return invoke<void>("set_editable_focus_context", { isEditableFocused });
+}
+
 export async function getHotkeyDiagnostics() {
   return invoke<HotkeyDiagnostics>("hotkey_diagnostics");
+}
+
+export async function resolveAppIcon(appName: string) {
+  return invoke<string | null>("resolve_app_icon", { appName });
+}
+
+export async function getStartAtLogin() {
+  return isAutostartEnabled();
+}
+
+export async function setStartAtLogin(enabled: boolean) {
+  if (enabled) {
+    await enableAutostart();
+    return;
+  }
+
+  await disableAutostart();
 }
 
 const EVENT_TAP_ONLY_SHORTCUTS = new Set([

@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "Initial updater manifest scaffold.",
+  "pub_date": "2026-05-15T00:00:00.000Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "REPLACE_WITH_SIGNATURE",
+      "url": "https://github.com/imrj05/vox-app/releases/download/v0.1.0/Vox.app.tar.gz"
+    }
+  }
+}

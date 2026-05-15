@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         widget: path.resolve(__dirname, 'widget.html'),
+        landing: path.resolve(__dirname, 'landing/index.html'),
       },
     },
   },

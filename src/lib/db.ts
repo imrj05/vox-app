@@ -25,9 +25,13 @@ async function migrate(db: Database) {
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       text       TEXT    NOT NULL,
       audio_path TEXT,
+      app_name   TEXT,
+      duration_seconds INTEGER,
       created_at INTEGER NOT NULL
     )
   `);
+  await db.execute("ALTER TABLE transcripts ADD COLUMN app_name TEXT").catch(() => {});
+  await db.execute("ALTER TABLE transcripts ADD COLUMN duration_seconds INTEGER").catch(() => {});
 }
 
 // ── Settings helpers ───────────────────────────────────────────────────────────
@@ -55,24 +59,28 @@ export interface TranscriptRow {
   id: number;
   text: string;
   audio_path: string | null;
+  app_name: string | null;
+  duration_seconds: number | null;
   created_at: number;
 }
 
 export async function saveTranscript(
   text: string,
-  audioPath?: string
+  audioPath?: string,
+  appName?: string | null,
+  durationSeconds?: number | null
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
-    "INSERT INTO transcripts (text, audio_path, created_at) VALUES ($1, $2, $3)",
-    [text, audioPath ?? null, Date.now()]
+    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, created_at) VALUES ($1, $2, $3, $4, $5)",
+    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, Date.now()]
   );
 }
 
 export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
   const db = await getDb();
   return db.select<TranscriptRow[]>(
-    "SELECT id, text, audio_path, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
+    "SELECT id, text, audio_path, app_name, duration_seconds, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
     [limit]
   );
 }

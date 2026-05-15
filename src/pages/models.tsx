@@ -1,13 +1,21 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CheckCircle2, Download, Trash2 } from "lucide-react";
+import { CheckCircle2, Download, Mic, Square, Trash2, Wand2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import {
   downloadWhisperModel,
   deleteWhisperModel,
+  getNativeStatus,
   listWhisperModels,
+  startRecording,
+  stopRecording,
+  transcribeRecording,
+  type NativeStatus,
+  type RecordingStatus,
+  type TranscriptionResult,
   type WhisperModelInfo,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
@@ -35,13 +43,19 @@ function formatBytes(bytes: number) {
 }
 
 export function ModelsPage() {
-  const { selectedModel, setSelectedModel } = useAppStore();
+  const { selectedModel, setSelectedModel, dictionary } = useAppStore();
   const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus | null>(null);
+  const [transcriptionResult, setTranscriptionResult] = useState<TranscriptionResult | null>(null);
+  const [checkingEngine, setCheckingEngine] = useState(false);
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -107,6 +121,67 @@ export function ModelsPage() {
     }
   };
 
+  const checkEngine = async () => {
+    setCheckingEngine(true);
+    setError(null);
+    try {
+      setNativeStatus(await getNativeStatus());
+    } catch {
+      setNativeStatus(null);
+      setError("Run the desktop app with `pnpm desktop:dev` to use quick dictation.");
+    } finally {
+      setCheckingEngine(false);
+    }
+  };
+
+  const toggleQuickDictation = async () => {
+    setRecordingBusy(true);
+    setError(null);
+    try {
+      if (!nativeStatus) {
+        setNativeStatus(await getNativeStatus());
+      }
+
+      if (recordingStatus?.isRecording) {
+        const status = await stopRecording();
+        setRecordingStatus(status);
+        if (status.path) {
+          setTranscribing(true);
+          const result = await transcribeRecording(
+            status.path,
+            selectedModel,
+            dictionary,
+            status.appName,
+            status.windowTitle
+          );
+          result.appName = status.appName;
+          setTranscriptionResult(result);
+        }
+        return;
+      }
+
+      const status = await startRecording();
+      setRecordingStatus(status);
+      if (status.isRecording) {
+        setTranscriptionResult(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTranscribing(false);
+      setRecordingBusy(false);
+    }
+  };
+
+  const activeModel = models.find((model) => model.name === selectedModel);
+  const quickStatus = recordingStatus?.isRecording
+    ? "Listening now"
+    : transcribing
+      ? "Transcribing audio"
+      : nativeStatus
+        ? "Engine ready"
+        : "Check engine to start";
+
   return (
     <ScrollArea className="h-full">
       <div className="p-6 space-y-6 max-w-3xl">
@@ -125,9 +200,80 @@ export function ModelsPage() {
           </div>
         )}
 
+        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-xs">
+          <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                <Wand2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Quick dictation
+                  </h3>
+                  <Badge variant="secondary" className="h-5">
+                    {activeModel?.displayName ?? selectedModel}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Test the active model instantly before changing downloads or defaults.
+                </p>
+                <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  {quickStatus}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void checkEngine()}
+                disabled={checkingEngine || recordingBusy || transcribing}
+              >
+                {checkingEngine ? "Checking…" : nativeStatus ? "Ready" : "Check"}
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void toggleQuickDictation()}
+                disabled={recordingBusy || transcribing}
+              >
+                {recordingStatus?.isRecording ? (
+                  <>
+                    <Square className="h-3.5 w-3.5" />
+                    Stop
+                  </>
+                ) : transcribing ? (
+                  "Transcribing…"
+                ) : (
+                  <>
+                    <Mic className="h-3.5 w-3.5" />
+                    Record
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+          {transcriptionResult && (
+            <div className="border-t border-border bg-muted/35 px-5 py-4">
+              <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Latest transcript
+              </p>
+              <p className="line-clamp-3 text-sm leading-6 text-foreground">
+                {transcriptionResult.text}
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="grid gap-3">
           {loading && (
-            <p className="text-xs text-muted-foreground">Loading local model status…</p>
+            <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <Spinner className="size-4" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Loading models</p>
+                <p className="text-xs text-muted-foreground">Checking local Whisper status and downloads.</p>
+              </div>
+            </div>
           )}
 
           {models.map((model) => {
@@ -249,7 +395,7 @@ export function ModelsPage() {
                     >
                       {isDownloading ? (
                         <>
-                          <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                          <Spinner className="size-3.5" />
                           {pct !== null ? `${pct}%` : "Starting…"}
                         </>
                       ) : (

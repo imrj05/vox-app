@@ -8,6 +8,10 @@
     ],
     "permissions": [
         "core:default",
+        "autostart:allow-disable",
+        "autostart:allow-enable",
+        "autostart:allow-is-enabled",
+        "updater:default",
         "sql:allow-execute",
         "sql:allow-select",
         "sql:allow-load"

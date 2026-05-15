@@ -2,10 +2,10 @@
 
 Vox is a macOS-first desktop app concept for fast, private voice transcription. It is designed around a persistent sidebar workspace, local Whisper speech-to-text, Apple Silicon acceleration, and a clean dark interface inspired by Linear-style productivity tools.
 
-This repository currently contains the first frontend milestone plus a minimal Tauri desktop shell. The Tauri command bridge is wired and callable from the React UI; native audio capture and Whisper transcription are planned next.
+This repository contains a working Tauri desktop app with a React frontend, in-process Rust audio capture, and local Whisper transcription.
 
 > [!NOTE]
-> The current implementation is a frontend scaffold with a minimal Tauri command bridge. Swift sidecar audio capture and Core ML transcription are planned but not wired yet.
+> Vox currently records audio and runs Whisper directly inside the Tauri Rust process. Older sidecar-based notes in this repository are historical and are not the current implementation.
 
 ## Features
 
@@ -13,48 +13,46 @@ This repository currently contains the first frontend milestone plus a minimal T
 - macOS traffic-light window controls in the shell
 - Command/search trigger with `Cmd + K` affordance
 - Home page with mock transcription history grouped by day
-- Models page with local Whisper model download placeholders
+- Models page with local Whisper model downloads and quick dictation
 - Focused dictation page for recording and transcription
 - Centered settings modal with its own internal sidebar
 - shadcn-style UI components built from Radix primitives
-- Dark, Linear-inspired theme with subtle borders and blue accent states
+- Light, dark, and system theme support
+- Context-aware vocabulary injection based on the active app and window title
+- Custom dictionary terms synced into Whisper prompts
 
 ## Planned Product Direction
 
 Vox is intended to become a native macOS transcription app with this workflow:
 
 1. Press a global hotkey anywhere on macOS.
-2. Vox records microphone audio using a native Apple audio pipeline.
+2. Vox records microphone audio using the local Rust audio pipeline.
 3. Audio is transcribed locally using Whisper accelerated by Apple Silicon.
 4. The transcript is inserted at the current cursor position.
 5. Optional AI cleanup can polish dictation for notes, emails, prompts, or chat.
 
-## Planned Native Architecture
+## Current Architecture
 
 ```text
 React UI (Vite/shadcn)
         │
         ▼
 Tauri v2 Rust backend
+  - microphone recording via cpal
+  - local Whisper inference via whisper-rs
   - global hotkeys
   - tray/menu bar
   - text insertion
   - model management
-  - sidecar process control
-        │
-        ▼
-Swift sidecar
-  - AVAudioEngine audio capture
-  - whisper.cpp + Core ML transcription
-  - JSON events over stdin/stdout
+  - context-aware prompt and dictionary injection
 ```
 
-The intended macOS transcription path is:
+The current macOS transcription path is:
 
-- `AVAudioEngine` for microphone capture
-- `AVAudioConverter` for 16kHz mono Float32 audio conversion
-- `whisper.cpp` with Core ML model bundles for Apple Silicon acceleration
-- Tauri/Rust for system integration and text injection
+- `cpal` for microphone capture
+- WAV recording written locally by Rust
+- `whisper-rs` with Metal acceleration for local transcription
+- Tauri/Rust for app integration, model management, and text insertion hooks
 
 ## Tech Stack
 
@@ -66,8 +64,8 @@ The intended macOS transcription path is:
 | Icons | Lucide React |
 | Routing | React Router |
 | Utilities | clsx, tailwind-merge, class-variance-authority |
-| Planned desktop shell | Tauri v2 |
-| Planned native engine | Swift sidecar, AVAudioEngine, whisper.cpp, Core ML |
+| Desktop shell | Tauri v2 |
+| Native engine | Rust, cpal, whisper-rs, Metal |
 
 ## Getting Started
 
@@ -116,7 +114,7 @@ cargo check
 
 ## Local Whisper Setup
 
-Vox uses embedded `whisper-rs` with models downloaded inside the app. Start the desktop app, complete onboarding, download the Base English model, then record and transcribe from Home. No external `whisper-cli` is required.
+Vox uses embedded `whisper-rs` with models downloaded inside the app. Start the desktop app, complete onboarding, download a model, then record and transcribe from Home or Models. No external `whisper-cli` or sidecar process is required.
 
 Preview a production build:
 
@@ -130,7 +128,7 @@ pnpm preview
 vox-app/
 ├── components.json          # shadcn-style component configuration
 ├── sidecar/
-│   └── README.md            # planned native engine notes
+│   └── README.md            # historical architecture notes
 ├── src/
 │   ├── components/
 │   │   ├── ui/              # reusable shadcn-style primitives
@@ -171,23 +169,22 @@ Implemented:
 - Rust command bridge exposed to React
 - Native microphone recording to local WAV files
 - Model-managed local Whisper transcription bridge
-- Basic Whisper model status and downloads
+- Whisper model status, downloads, and quick dictation
 - Focused dictation shell
 - Settings modal shell
 - shadcn-style UI primitives
 - Tailwind v4 theme tokens
+- Theme switching
+- Context-aware prompt and dictionary injection
 
 Not implemented yet:
 
-- Swift sidecar binary
-- Production model management and Core ML tuning
 - Global hotkey capture
 - Text insertion at cursor
-- Real model downloads
 - Persistent transcript storage
 
 ## Next Steps
 
 1. Add progress/cancellation for model downloads and transcription.
-2. Add Rust-side process management, global hotkeys, and text insertion.
+2. Add Rust-side global hotkeys and text insertion.
 3. Replace mock pages with real transcript history, model state, and settings persistence.

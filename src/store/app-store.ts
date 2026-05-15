@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting } from "@/lib/db";
 
@@ -19,6 +21,15 @@ export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "upToDate"
+  | "error";
 
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
@@ -47,6 +58,16 @@ interface AppState {
   setTheme: (value: AppTheme) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
   resetAppState: () => void;
+
+  // Update
+  updateInfo: Update | null;
+  updateStatus: UpdateStatus;
+  updateProgress: { downloaded: number; total: number | null };
+  updateMessage: string | null;
+  showUpdateDialog: boolean;
+  checkForUpdates: () => Promise<void>;
+  installUpdate: () => Promise<void>;
+  setShowUpdateDialog: (show: boolean) => void;
 }
 
 const defaultAppState = {
@@ -58,6 +79,12 @@ const defaultAppState = {
   dictionary: "",
   theme: DEFAULT_THEME,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
+  // Update
+  updateInfo: null,
+  updateStatus: "idle" as UpdateStatus,
+  updateProgress: { downloaded: 0, total: null },
+  updateMessage: null,
+  showUpdateDialog: false,
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -162,6 +189,61 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
     set({ ...defaultAppState, onboardingComplete: false });
   },
+
+  checkForUpdates: async () => {
+    set({ updateStatus: "checking", updateMessage: null });
+    try {
+      const update = await check();
+      if (update) {
+        set({
+          updateInfo: update,
+          updateStatus: "available",
+          updateMessage: `Version ${update.version} is available.`,
+          showUpdateDialog: true,
+        });
+      } else {
+        set({ updateInfo: null, updateStatus: "upToDate", updateMessage: "You already have the latest version." });
+      }
+    } catch (error) {
+      set({
+        updateInfo: null,
+        updateStatus: "error",
+        updateMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  installUpdate: async () => {
+    const { updateInfo } = useAppStore.getState();
+    if (!updateInfo) return;
+    set({ updateStatus: "downloading", updateProgress: { downloaded: 0, total: null }, updateMessage: `Downloading version ${updateInfo.version}...` });
+    try {
+      await updateInfo.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            set({ updateProgress: { downloaded: 0, total: event.data.contentLength ?? null } });
+            break;
+          case "Progress":
+            useAppStore.setState((s) => ({
+              updateProgress: {
+                downloaded: s.updateProgress.downloaded + event.data.chunkLength,
+                total: s.updateProgress.total,
+              },
+            }));
+            break;
+          case "Finished":
+            set({ updateStatus: "installing", updateMessage: "Installing update..." });
+            break;
+        }
+      });
+      set({ updateMessage: "Update installed. Relaunching Vox..." });
+      await relaunch();
+    } catch (error) {
+      set({ updateStatus: "error", updateMessage: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  setShowUpdateDialog: (show) => set({ showUpdateDialog: show }),
 }));
 
 function parseThemeSetting(value: string | null): AppTheme {

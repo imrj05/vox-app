@@ -1,13 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
 import { HomePage } from "@/pages/home";
 import { ModelsPage } from "@/pages/models";
 import { SettingsPage } from "@/pages/settings";
 import { AboutPage } from "@/pages/about";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   setGlobalShortcut,
   setEditableFocusContext,
@@ -16,6 +25,7 @@ import {
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
+import { getUpdateNotes, renderReleaseNotes } from "@/pages/about";
 function App() {
   const {
     onboardingComplete,
@@ -25,12 +35,27 @@ function App() {
     theme,
     transcriptFormattingMode,
     hydrate,
+    updateInfo,
+    updateStatus,
+    updateProgress,
+    showUpdateDialog,
+    checkForUpdates,
+    installUpdate,
+    setShowUpdateDialog,
   } = useAppStore();
   const [activeNav, setActiveNav] = useState("home");
+  const hasCheckedForUpdates = useRef(false);
   // Hydrate store from SQLite on mount
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+  // Check for updates once after hydration completes
+  useEffect(() => {
+    if (onboardingComplete === null) return;
+    if (hasCheckedForUpdates.current) return;
+    hasCheckedForUpdates.current = true;
+    void checkForUpdates();
+  }, [onboardingComplete, checkForUpdates]);
   // Re-register saved hotkey with Rust once hydrated
   useEffect(() => {
     if (!hotkey) return;
@@ -85,6 +110,11 @@ function App() {
     return () => media.removeEventListener("change", applyTheme);
   }, [theme]);
   // Still loading from DB
+  const progressPct =
+    updateProgress.total && updateProgress.total > 0
+      ? Math.round((updateProgress.downloaded / updateProgress.total) * 100)
+      : null;
+
   if (onboardingComplete === null) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background px-6">
@@ -114,6 +144,48 @@ function App() {
   };
   return (
     <TooltipProvider delayDuration={300}>
+      <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+        <DialogContent className="max-w-xl gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-6 py-5">
+            <DialogTitle>Update {updateInfo?.version} is ready</DialogTitle>
+            <DialogDescription>
+              Review what changed before installing this version.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[400px] overflow-y-auto px-6 py-5">
+            <div className="rounded-lg bg-muted p-4">
+              {renderReleaseNotes(getUpdateNotes(updateInfo))}
+            </div>
+          </div>
+          {updateStatus === "downloading" && (
+            <div className="space-y-1.5 border-t border-border px-6 py-4">
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${progressPct ?? 8}%` }}
+                />
+              </div>
+              <p className="text-right text-[11px] text-muted-foreground">
+                {progressPct !== null ? `${progressPct}%` : "Preparing..."}
+              </p>
+            </div>
+          )}
+          <DialogFooter className="border-t border-border px-6 py-4">
+            <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>
+              Later
+            </Button>
+            <Button
+              onClick={() => void installUpdate()}
+              disabled={!updateInfo || updateStatus === "downloading" || updateStatus === "installing"}
+            >
+              {(updateStatus === "downloading" || updateStatus === "installing") && (
+                <Spinner className="size-4" />
+              )}
+              {updateStatus === "installing" ? "Installing..." : "Download and install"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {!onboardingComplete ? (
         <Onboarding />
       ) : (

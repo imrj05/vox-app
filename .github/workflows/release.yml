@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "release/v*"
+      - "version/*"
     tags:
       - "v*"
   workflow_dispatch:
@@ -69,8 +70,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+          if [[ "$GITHUB_REF" == refs/heads/release/* || "$GITHUB_REF" == refs/heads/version/* ]]; then
             branch_release="${GITHUB_REF#refs/heads/release/}"
+            branch_release="${branch_release#refs/heads/version/}"
+            if [[ ! "$branch_release" == v* ]]; then
+              branch_release="v${branch_release}"
+            fi
+
             if [[ "$branch_release" != "$release_tag" ]]; then
               echo "Release branch ($branch_release) must match src-tauri version tag ($release_tag)." >&2
               exit 1
@@ -82,7 +88,7 @@ jobs:
           echo "Resolved release tag: $release_tag"
 
       - name: Create release tag if missing
-        if: startsWith(github.ref, 'refs/heads/release/')
+        if: startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/version/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

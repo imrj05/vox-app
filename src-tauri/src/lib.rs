@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(target_os = "macos")]
 use core_foundation::{
     base::{CFType, TCFType},
@@ -21,13 +20,14 @@ use core_graphics::window::{
     copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
     kCGWindowListOptionOnScreenOnly,
 };
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use hound::{SampleFormat, WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -535,7 +535,10 @@ fn delete_whisper_model(app: AppHandle, model_name: String) -> Result<(), String
 }
 
 #[tauri::command]
-async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<WhisperModelInfo, String> {
+async fn download_whisper_model(
+    app: AppHandle,
+    model_name: String,
+) -> Result<WhisperModelInfo, String> {
     let models_dir = whisper_models_dir(&app)?;
     let app_progress = app.clone();
     let progress_name = model_name.clone();
@@ -596,10 +599,8 @@ fn transcribe_recording_inner(
         context_app_name.as_deref(),
         context_window_title.as_deref(),
     );
-    let context_prompt = build_context_prompt(
-        context_app_name.as_deref(),
-        context_window_title.as_deref(),
-    );
+    let context_prompt =
+        build_context_prompt(context_app_name.as_deref(), context_window_title.as_deref());
     let text = whisper::transcribe(
         &models_dir,
         &audio_path,
@@ -1033,7 +1034,9 @@ fn paste_text(text: &str) -> Result<(), String> {
 
 fn build_context_prompt(app_name: Option<&str>, window_title: Option<&str>) -> Option<String> {
     let app_name = app_name.map(str::trim).filter(|value| !value.is_empty());
-    let window_title = window_title.map(str::trim).filter(|value| !value.is_empty());
+    let window_title = window_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     match (app_name, window_title) {
         (Some(app), Some(title)) => Some(format!(
@@ -1051,7 +1054,10 @@ fn build_context_dictionary(
     window_title: Option<&str>,
 ) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
-    if let Some(user_dictionary) = user_dictionary.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(user_dictionary) = user_dictionary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         lines.push(user_dictionary.to_string());
     }
 
@@ -1088,285 +1094,308 @@ fn developer_context_entries(app_name: Option<&str>, window_title: Option<&str>)
             "merge",
         ],
     ) {
-        entries.extend([
-            // Git commands
-            "git add | | Git",
-            "git add . | | Git",
-            "git add --all | | Git",
-            "git commit | | Git",
-            "git commit -m | | Git",
-            "git commit --amend | | Git",
-            "git push | | Git",
-            "git push origin | | Git",
-            "git push --force | | Git",
-            "git pull | | Git",
-            "git pull --rebase | | Git",
-            "git fetch | | Git",
-            "git fetch --all | | Git",
-            "git checkout | | Git",
-            "git checkout -b | | Git",
-            "git switch | | Git",
-            "git switch -c | | Git",
-            "git branch | | Git",
-            "git branch -d | | Git",
-            "git branch -D | | Git",
-            "git merge | | Git",
-            "git merge --no-ff | | Git",
-            "git rebase | ree-base | Git",
-            "git rebase -i | | Git",
-            "git rebase --continue | | Git",
-            "git rebase --abort | | Git",
-            "git stash | | Git",
-            "git stash pop | | Git",
-            "git stash apply | | Git",
-            "git stash list | | Git",
-            "git status | | Git",
-            "git log | | Git",
-            "git log --oneline | | Git",
-            "git diff | | Git",
-            "git diff --staged | | Git",
-            "git reset | | Git",
-            "git reset --hard | | Git",
-            "git reset --soft | | Git",
-            "git cherry-pick | | Git",
-            "git tag | | Git",
-            "git clone | | Git",
-            "git init | | Git",
-            "git remote | | Git",
-            "git remote add origin | | Git",
-            "git remote -v | | Git",
-            "git submodule | | Git",
-            "git bisect | | Git",
-            "git blame | | Git",
-            "git shortlog | | Git",
-            // Git concepts
-            "pull request | | Git",
-            "merge conflict | | Git",
-            "rebase | ree-base | Git",
-            "diff | | Git",
-            "HEAD | | Git",
-            "origin | | Git",
-            "upstream | | Git",
-            "main | | Git",
-            "master | | Git",
-            "feature branch | | Git",
-            "hotfix | | Git",
-            "squash | | Git",
-            "cherry-pick | | Git",
-            "detached HEAD | | Git",
-            // Tooling
-            "pnpm | pee-en-pee-em | Technical",
-            "npm | en-pee-em | Technical",
-            "TypeScript | type-script | Technical",
-            "Tauri | tow-ree | Product",
-            "Rust | rust | Technical",
-            "Cargo | car-go | Technical",
-            "GitHub | git-hub | Product",
-        ]
-        .into_iter()
-        .map(str::to_string));
+        entries.extend(
+            [
+                // Git commands
+                "git add | | Git",
+                "git add . | | Git",
+                "git add --all | | Git",
+                "git commit | | Git",
+                "git commit -m | | Git",
+                "git commit --amend | | Git",
+                "git push | | Git",
+                "git push origin | | Git",
+                "git push --force | | Git",
+                "git pull | | Git",
+                "git pull --rebase | | Git",
+                "git fetch | | Git",
+                "git fetch --all | | Git",
+                "git checkout | | Git",
+                "git checkout -b | | Git",
+                "git switch | | Git",
+                "git switch -c | | Git",
+                "git branch | | Git",
+                "git branch -d | | Git",
+                "git branch -D | | Git",
+                "git merge | | Git",
+                "git merge --no-ff | | Git",
+                "git rebase | ree-base | Git",
+                "git rebase -i | | Git",
+                "git rebase --continue | | Git",
+                "git rebase --abort | | Git",
+                "git stash | | Git",
+                "git stash pop | | Git",
+                "git stash apply | | Git",
+                "git stash list | | Git",
+                "git status | | Git",
+                "git log | | Git",
+                "git log --oneline | | Git",
+                "git diff | | Git",
+                "git diff --staged | | Git",
+                "git reset | | Git",
+                "git reset --hard | | Git",
+                "git reset --soft | | Git",
+                "git cherry-pick | | Git",
+                "git tag | | Git",
+                "git clone | | Git",
+                "git init | | Git",
+                "git remote | | Git",
+                "git remote add origin | | Git",
+                "git remote -v | | Git",
+                "git submodule | | Git",
+                "git bisect | | Git",
+                "git blame | | Git",
+                "git shortlog | | Git",
+                // Git concepts
+                "pull request | | Git",
+                "merge conflict | | Git",
+                "rebase | ree-base | Git",
+                "diff | | Git",
+                "HEAD | | Git",
+                "origin | | Git",
+                "upstream | | Git",
+                "main | | Git",
+                "master | | Git",
+                "feature branch | | Git",
+                "hotfix | | Git",
+                "squash | | Git",
+                "cherry-pick | | Git",
+                "detached HEAD | | Git",
+                // Tooling
+                "pnpm | pee-en-pee-em | Technical",
+                "npm | en-pee-em | Technical",
+                "TypeScript | type-script | Technical",
+                "Tauri | tow-ree | Product",
+                "Rust | rust | Technical",
+                "Cargo | car-go | Technical",
+                "GitHub | git-hub | Product",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // npm / pnpm / yarn commands
-    if contains_any(&context, &["terminal", "iterm", "warp", "node", "npm", "pnpm", "yarn"]) {
-        entries.extend([
-            "npm install | | Technical",
-            "npm install --save-dev | | Technical",
-            "npm run | | Technical",
-            "npm run build | | Technical",
-            "npm run dev | | Technical",
-            "npm run test | | Technical",
-            "npm run lint | | Technical",
-            "npm run typecheck | | Technical",
-            "npm ci | | Technical",
-            "npm publish | | Technical",
-            "npm update | | Technical",
-            "npm outdated | | Technical",
-            "npm audit | | Technical",
-            "npm audit fix | | Technical",
-            "pnpm install | | Technical",
-            "pnpm add | | Technical",
-            "pnpm run | | Technical",
-            "pnpm build | | Technical",
-            "pnpm dev | | Technical",
-            "yarn install | | Technical",
-            "yarn add | | Technical",
-            "yarn run | | Technical",
-            "yarn build | | Technical",
-            "npx | en-pee-ex | Technical",
-        ]
-        .into_iter()
-        .map(str::to_string));
+    if contains_any(
+        &context,
+        &["terminal", "iterm", "warp", "node", "npm", "pnpm", "yarn"],
+    ) {
+        entries.extend(
+            [
+                "npm install | | Technical",
+                "npm install --save-dev | | Technical",
+                "npm run | | Technical",
+                "npm run build | | Technical",
+                "npm run dev | | Technical",
+                "npm run test | | Technical",
+                "npm run lint | | Technical",
+                "npm run typecheck | | Technical",
+                "npm ci | | Technical",
+                "npm publish | | Technical",
+                "npm update | | Technical",
+                "npm outdated | | Technical",
+                "npm audit | | Technical",
+                "npm audit fix | | Technical",
+                "pnpm install | | Technical",
+                "pnpm add | | Technical",
+                "pnpm run | | Technical",
+                "pnpm build | | Technical",
+                "pnpm dev | | Technical",
+                "yarn install | | Technical",
+                "yarn add | | Technical",
+                "yarn run | | Technical",
+                "yarn build | | Technical",
+                "npx | en-pee-ex | Technical",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // Terminal / shell context
     if contains_any(&context, &["terminal", "iterm", "warp", "zsh", "bash"]) {
-        entries.extend([
-            "zsh | zee-shell | Technical",
-            "Homebrew | home-brew | Technical",
-            "Node.js | node jay ess | Technical",
-            "localhost | local-host | Technical",
-            "chmod | | Shell",
-            "chown | | Shell",
-            "sudo | | Shell",
-            "mkdir | | Shell",
-            "rm -rf | | Shell",
-            "ls -la | | Shell",
-            "cat | | Shell",
-            "grep | | Shell",
-            "grep -r | | Shell",
-            "find . | | Shell",
-            "curl | | Shell",
-            "curl -X | | Shell",
-            "wget | | Shell",
-            "ssh | | Shell",
-            "scp | | Shell",
-            "rsync | | Shell",
-            "export | | Shell",
-            "source | | Shell",
-            "echo | | Shell",
-            "tail -f | | Shell",
-            "head | | Shell",
-            "wc -l | | Shell",
-            "ps aux | | Shell",
-            "kill | | Shell",
-            "killall | | Shell",
-            "lsof | | Shell",
-            "which | | Shell",
-            "env | | Shell",
-            "printenv | | Shell",
-            "alias | | Shell",
-            "history | | Shell",
-            "pipe | | Shell",
-            "stdin | | Shell",
-            "stdout | | Shell",
-            "stderr | | Shell",
-            "redirect | | Shell",
-        ]
-        .into_iter()
-        .map(str::to_string));
+        entries.extend(
+            [
+                "zsh | zee-shell | Technical",
+                "Homebrew | home-brew | Technical",
+                "Node.js | node jay ess | Technical",
+                "localhost | local-host | Technical",
+                "chmod | | Shell",
+                "chown | | Shell",
+                "sudo | | Shell",
+                "mkdir | | Shell",
+                "rm -rf | | Shell",
+                "ls -la | | Shell",
+                "cat | | Shell",
+                "grep | | Shell",
+                "grep -r | | Shell",
+                "find . | | Shell",
+                "curl | | Shell",
+                "curl -X | | Shell",
+                "wget | | Shell",
+                "ssh | | Shell",
+                "scp | | Shell",
+                "rsync | | Shell",
+                "export | | Shell",
+                "source | | Shell",
+                "echo | | Shell",
+                "tail -f | | Shell",
+                "head | | Shell",
+                "wc -l | | Shell",
+                "ps aux | | Shell",
+                "kill | | Shell",
+                "killall | | Shell",
+                "lsof | | Shell",
+                "which | | Shell",
+                "env | | Shell",
+                "printenv | | Shell",
+                "alias | | Shell",
+                "history | | Shell",
+                "pipe | | Shell",
+                "stdin | | Shell",
+                "stdout | | Shell",
+                "stderr | | Shell",
+                "redirect | | Shell",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // Docker context
     if contains_any(&context, &["docker", "container", "dockerfile", "compose"]) {
-        entries.extend([
-            "Docker | docker | Technical",
-            "docker build | | Docker",
-            "docker build -t | | Docker",
-            "docker run | | Docker",
-            "docker run -d | | Docker",
-            "docker run -it | | Docker",
-            "docker run --rm | | Docker",
-            "docker ps | | Docker",
-            "docker ps -a | | Docker",
-            "docker stop | | Docker",
-            "docker rm | | Docker",
-            "docker rmi | | Docker",
-            "docker pull | | Docker",
-            "docker push | | Docker",
-            "docker exec | | Docker",
-            "docker exec -it | | Docker",
-            "docker logs | | Docker",
-            "docker logs -f | | Docker",
-            "docker inspect | | Docker",
-            "docker images | | Docker",
-            "docker volume | | Docker",
-            "docker network | | Docker",
-            "docker compose up | | Docker",
-            "docker compose up -d | | Docker",
-            "docker compose down | | Docker",
-            "docker compose build | | Docker",
-            "docker compose logs | | Docker",
-            "docker compose ps | | Docker",
-            "Dockerfile | | Docker",
-            "docker-compose.yml | | Docker",
-            "container | | Docker",
-            "image | | Docker",
-            "registry | | Docker",
-            "Docker Hub | | Docker",
-        ]
-        .into_iter()
-        .map(str::to_string));
+        entries.extend(
+            [
+                "Docker | docker | Technical",
+                "docker build | | Docker",
+                "docker build -t | | Docker",
+                "docker run | | Docker",
+                "docker run -d | | Docker",
+                "docker run -it | | Docker",
+                "docker run --rm | | Docker",
+                "docker ps | | Docker",
+                "docker ps -a | | Docker",
+                "docker stop | | Docker",
+                "docker rm | | Docker",
+                "docker rmi | | Docker",
+                "docker pull | | Docker",
+                "docker push | | Docker",
+                "docker exec | | Docker",
+                "docker exec -it | | Docker",
+                "docker logs | | Docker",
+                "docker logs -f | | Docker",
+                "docker inspect | | Docker",
+                "docker images | | Docker",
+                "docker volume | | Docker",
+                "docker network | | Docker",
+                "docker compose up | | Docker",
+                "docker compose up -d | | Docker",
+                "docker compose down | | Docker",
+                "docker compose build | | Docker",
+                "docker compose logs | | Docker",
+                "docker compose ps | | Docker",
+                "Dockerfile | | Docker",
+                "docker-compose.yml | | Docker",
+                "container | | Docker",
+                "image | | Docker",
+                "registry | | Docker",
+                "Docker Hub | | Docker",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // Kubernetes context
-    if contains_any(&context, &["kubernetes", "kubectl", "k8s", "helm", "pod", "namespace"]) {
-        entries.extend([
-            "Kubernetes | koo-ber-net-eez | Technical",
-            "kubectl | koob-control | Technical",
-            "kubectl get | | Kubernetes",
-            "kubectl get pods | | Kubernetes",
-            "kubectl get nodes | | Kubernetes",
-            "kubectl get services | | Kubernetes",
-            "kubectl get deployments | | Kubernetes",
-            "kubectl describe | | Kubernetes",
-            "kubectl apply | | Kubernetes",
-            "kubectl apply -f | | Kubernetes",
-            "kubectl delete | | Kubernetes",
-            "kubectl logs | | Kubernetes",
-            "kubectl logs -f | | Kubernetes",
-            "kubectl exec | | Kubernetes",
-            "kubectl exec -it | | Kubernetes",
-            "kubectl port-forward | | Kubernetes",
-            "kubectl rollout | | Kubernetes",
-            "kubectl rollout restart | | Kubernetes",
-            "kubectl scale | | Kubernetes",
-            "kubectl set image | | Kubernetes",
-            "kubectl config | | Kubernetes",
-            "kubectl config use-context | | Kubernetes",
-            "kubectl namespace | | Kubernetes",
-            "helm install | | Kubernetes",
-            "helm upgrade | | Kubernetes",
-            "helm uninstall | | Kubernetes",
-            "helm list | | Kubernetes",
-            "pod | | Kubernetes",
-            "deployment | | Kubernetes",
-            "service | | Kubernetes",
-            "ingress | | Kubernetes",
-            "namespace | | Kubernetes",
-            "ConfigMap | | Kubernetes",
-            "Secret | | Kubernetes",
-            "PersistentVolume | | Kubernetes",
-            "StatefulSet | | Kubernetes",
-            "DaemonSet | | Kubernetes",
-        ]
-        .into_iter()
-        .map(str::to_string));
+    if contains_any(
+        &context,
+        &["kubernetes", "kubectl", "k8s", "helm", "pod", "namespace"],
+    ) {
+        entries.extend(
+            [
+                "Kubernetes | koo-ber-net-eez | Technical",
+                "kubectl | koob-control | Technical",
+                "kubectl get | | Kubernetes",
+                "kubectl get pods | | Kubernetes",
+                "kubectl get nodes | | Kubernetes",
+                "kubectl get services | | Kubernetes",
+                "kubectl get deployments | | Kubernetes",
+                "kubectl describe | | Kubernetes",
+                "kubectl apply | | Kubernetes",
+                "kubectl apply -f | | Kubernetes",
+                "kubectl delete | | Kubernetes",
+                "kubectl logs | | Kubernetes",
+                "kubectl logs -f | | Kubernetes",
+                "kubectl exec | | Kubernetes",
+                "kubectl exec -it | | Kubernetes",
+                "kubectl port-forward | | Kubernetes",
+                "kubectl rollout | | Kubernetes",
+                "kubectl rollout restart | | Kubernetes",
+                "kubectl scale | | Kubernetes",
+                "kubectl set image | | Kubernetes",
+                "kubectl config | | Kubernetes",
+                "kubectl config use-context | | Kubernetes",
+                "kubectl namespace | | Kubernetes",
+                "helm install | | Kubernetes",
+                "helm upgrade | | Kubernetes",
+                "helm uninstall | | Kubernetes",
+                "helm list | | Kubernetes",
+                "pod | | Kubernetes",
+                "deployment | | Kubernetes",
+                "service | | Kubernetes",
+                "ingress | | Kubernetes",
+                "namespace | | Kubernetes",
+                "ConfigMap | | Kubernetes",
+                "Secret | | Kubernetes",
+                "PersistentVolume | | Kubernetes",
+                "StatefulSet | | Kubernetes",
+                "DaemonSet | | Kubernetes",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // Jira / Linear / project management
     if contains_any(&context, &["jira", "linear", "ticket", "issue", "sprint"]) {
-        entries.extend([
-            "Jira | jee-ruh | Product",
-            "Linear | linear | Product",
-            "ticket | | Product",
-            "sprint | | Product",
-            "backlog | | Product",
-            "acceptance criteria | | Product",
-            "PRD | pee-arr-dee | Product",
-            "epic | | Product",
-            "story points | | Product",
-            "velocity | | Product",
-            "retrospective | | Product",
-            "standup | | Product",
-            "roadmap | | Product",
-        ]
-        .into_iter()
-        .map(str::to_string));
+        entries.extend(
+            [
+                "Jira | jee-ruh | Product",
+                "Linear | linear | Product",
+                "ticket | | Product",
+                "sprint | | Product",
+                "backlog | | Product",
+                "acceptance criteria | | Product",
+                "PRD | pee-arr-dee | Product",
+                "epic | | Product",
+                "story points | | Product",
+                "velocity | | Product",
+                "retrospective | | Product",
+                "standup | | Product",
+                "roadmap | | Product",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     // Chat / messaging context
-    if contains_any(&context, &["chatgpt", "claude", "chat", "slack", "messages"]) {
-        entries.extend([
-            "ChatGPT | chat-gee-pee-tee | Product",
-            "Claude | clawd | Product",
-            "Slack | slack | Product",
-            "Rajeshwar | rah-jaysh-war | People",
-            "PRD | pee-arr-dee | Product",
-            "API | ay-pee-eye | Technical",
-        ]
-        .into_iter()
-        .map(str::to_string));
+    if contains_any(
+        &context,
+        &["chatgpt", "claude", "chat", "slack", "messages"],
+    ) {
+        entries.extend(
+            [
+                "ChatGPT | chat-gee-pee-tee | Product",
+                "Claude | clawd | Product",
+                "Slack | slack | Product",
+                "Rajeshwar | rah-jaysh-war | People",
+                "PRD | pee-arr-dee | Product",
+                "API | ay-pee-eye | Technical",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
 
     dedupe_lines(entries)
@@ -1491,7 +1520,8 @@ fn format_developer_transcript(text: &str) -> String {
         }
 
         if let Some((phrase_len, style)) = developer_identifier_style(remaining) {
-            let (identifier, consumed_words) = collect_styled_identifier(&remaining[phrase_len..], style);
+            let (identifier, consumed_words) =
+                collect_styled_identifier(&remaining[phrase_len..], style);
             if !identifier.is_empty() {
                 append_plain_token(&mut formatted, &identifier);
                 index += phrase_len + consumed_words;
@@ -1599,9 +1629,7 @@ fn developer_template_phrase(words: &[&str]) -> Option<(usize, &'static str)> {
         (Some("array"), Some("literal"), _) => Some((2, "[]")),
         (Some("try"), Some("catch"), _) => Some((2, "try {\n    \n} catch (error) {\n    \n}")),
         (Some("if"), Some("else"), _) => Some((2, "if () {\n    \n} else {\n    \n}")),
-        (Some("function"), Some("declaration"), _) => {
-            Some((2, "function name() {\n    \n}"))
-        }
+        (Some("function"), Some("declaration"), _) => Some((2, "function name() {\n    \n}")),
         _ => None,
     }
 }
@@ -1660,7 +1688,10 @@ fn is_identifier_boundary(words: &[&str]) -> bool {
         || developer_outdent_phrase(words).is_some()
         || developer_symbol_phrase(words).is_some()
         || matches!(
-            words.first().map(|word| word.to_ascii_lowercase()).as_deref(),
+            words
+                .first()
+                .map(|word| word.to_ascii_lowercase())
+                .as_deref(),
             Some("literal") | Some("word")
         )
 }
@@ -1677,14 +1708,22 @@ fn developer_newline_phrase(words: &[&str]) -> Option<usize> {
 }
 
 fn developer_indent_phrase(words: &[&str]) -> Option<usize> {
-    match words.first().map(|word| word.to_ascii_lowercase()).as_deref() {
+    match words
+        .first()
+        .map(|word| word.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("indent") | Some("tab") => Some(1),
         _ => None,
     }
 }
 
 fn developer_outdent_phrase(words: &[&str]) -> Option<usize> {
-    match words.first().map(|word| word.to_ascii_lowercase()).as_deref() {
+    match words
+        .first()
+        .map(|word| word.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("outdent") | Some("dedent") => Some(1),
         _ => None,
     }
@@ -1693,7 +1732,11 @@ fn developer_outdent_phrase(words: &[&str]) -> Option<usize> {
 fn developer_symbol_phrase(words: &[&str]) -> Option<(usize, &'static str)> {
     let lower = |index: usize| words.get(index).map(|word| word.to_ascii_lowercase());
 
-    match (lower(0).as_deref(), lower(1).as_deref(), lower(2).as_deref()) {
+    match (
+        lower(0).as_deref(),
+        lower(1).as_deref(),
+        lower(2).as_deref(),
+    ) {
         (Some("open"), Some("curly"), Some("brace")) => Some((3, "{")),
         (Some("close"), Some("curly"), Some("brace")) => Some((3, "}")),
         (Some("open"), Some("square"), Some("bracket")) => Some((3, "[")),
@@ -1705,12 +1748,8 @@ fn developer_symbol_phrase(words: &[&str]) -> Option<(usize, &'static str)> {
             (Some("close"), Some("brace")) => Some((2, "}")),
             (Some("open"), Some("bracket")) => Some((2, "[")),
             (Some("close"), Some("bracket")) => Some((2, "]")),
-            (Some("open"), Some("paren")) | (Some("open"), Some("parenthesis")) => {
-                Some((2, "("))
-            }
-            (Some("close"), Some("paren")) | (Some("close"), Some("parenthesis")) => {
-                Some((2, ")"))
-            }
+            (Some("open"), Some("paren")) | (Some("open"), Some("parenthesis")) => Some((2, "(")),
+            (Some("close"), Some("paren")) | (Some("close"), Some("parenthesis")) => Some((2, ")")),
             (Some("left"), Some("paren")) => Some((2, "(")),
             (Some("right"), Some("paren")) => Some((2, ")")),
             (Some("double"), Some("quote")) => Some((2, "\"")),
@@ -1921,14 +1960,14 @@ fn resolve_app_icon_data_url(app_name: &str) -> Option<String> {
             return None;
         }
 
-        let bitmap: *mut objc::runtime::Object = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff_data];
+        let bitmap: *mut objc::runtime::Object =
+            msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff_data];
         if bitmap.is_null() {
             return None;
         }
 
         let png_type: usize = 4;
-        let png_data: *mut objc::runtime::Object =
-            msg_send![bitmap, representationUsingType: png_type properties: std::ptr::null::<c_void>()];
+        let png_data: *mut objc::runtime::Object = msg_send![bitmap, representationUsingType: png_type properties: std::ptr::null::<c_void>()];
         nsdata_to_data_url(png_data, "image/png")
     }
 }
@@ -1958,7 +1997,8 @@ unsafe fn application_url_for_name(
     }
 
     let ns_name = nsstring_from_str(app_name);
-    let url: *mut objc::runtime::Object = msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_name];
+    let url: *mut objc::runtime::Object =
+        msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_name];
     if !url.is_null() {
         return Some(url);
     }
@@ -2001,7 +2041,10 @@ unsafe fn nsstring_to_string(value: *mut objc::runtime::Object) -> Option<String
         return None;
     }
 
-    std::ffi::CStr::from_ptr(utf8).to_str().ok().map(str::to_string)
+    std::ffi::CStr::from_ptr(utf8)
+        .to_str()
+        .ok()
+        .map(str::to_string)
 }
 
 #[cfg(target_os = "macos")]
@@ -2017,10 +2060,7 @@ unsafe fn nsdata_to_data_url(data: *mut objc::runtime::Object, mime: &str) -> Op
     }
 
     let slice = std::slice::from_raw_parts(bytes, length);
-    Some(format!(
-        "data:{mime};base64,{}",
-        base64_encode(slice)
-    ))
+    Some(format!("data:{mime};base64,{}", base64_encode(slice)))
 }
 
 #[cfg(target_os = "macos")]
@@ -2078,7 +2118,10 @@ fn frontmost_app_name() -> Option<String> {
             return None;
         }
 
-        std::ffi::CStr::from_ptr(utf8).to_str().ok().map(str::to_string)
+        std::ffi::CStr::from_ptr(utf8)
+            .to_str()
+            .ok()
+            .map(str::to_string)
     }
 }
 
@@ -2286,7 +2329,8 @@ fn hide_widget_after_delay(app: AppHandle, delay_ms: u64) {
                 .map(|s| s.is_some())
                 .unwrap_or(false);
             if !is_recording {
-                let _ = window.set_position(Position::Physical(PhysicalPosition::new(-9999, -9999)));
+                let _ =
+                    window.set_position(Position::Physical(PhysicalPosition::new(-9999, -9999)));
                 let _ = window.hide();
             }
         }

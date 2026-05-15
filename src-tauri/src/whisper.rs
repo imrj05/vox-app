@@ -209,7 +209,9 @@ fn transcribe_with_backend(
             .unwrap_or(4),
     );
 
-    let mut state = whisper_context.create_state().map_err(|error| error.to_string())?;
+    let mut state = whisper_context
+        .create_state()
+        .map_err(|error| error.to_string())?;
     state
         .full(params, &audio)
         .map_err(|error| error.to_string())?;

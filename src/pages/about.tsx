@@ -66,7 +66,6 @@ export function AboutPage() {
     updateStatus,
     updateProgress,
     updateMessage,
-    showUpdateDialog,
     checkForUpdates,
     installUpdate,
     setShowUpdateDialog,

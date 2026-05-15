@@ -56,6 +56,7 @@ The repository can publish releases through GitHub Actions using `.github/workfl
 Triggers:
 
 - pushing a tag like `v0.1.1`
+- pushing a release branch like `release/v0.1.1`
 - manual `workflow_dispatch`
 
 Required repository secrets:
@@ -64,6 +65,8 @@ Required repository secrets:
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
 Manual workflow runs must provide a `release_tag`, for example `v0.1.1`.
+
+When a `release/v*` branch is pushed, the workflow reads `src-tauri/tauri.conf.json`, creates the matching `v*` tag if it does not already exist, and publishes that release.
 
 The workflow will:
 

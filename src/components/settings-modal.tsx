@@ -774,7 +774,7 @@ export function ShortcutsSection() {
       ]
     : [];
   const info = [
-    { label: "Version", value: "0.1.0-alpha" },
+    { label: "Version", value: "0.0.1" },
     { label: "Desktop shell", value: "Tauri v2" },
     { label: "Audio format", value: "16-bit WAV" },
   ];

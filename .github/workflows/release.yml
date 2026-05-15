@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - "release/v*"
     tags:
       - "v*"
   workflow_dispatch:
@@ -22,7 +24,6 @@ jobs:
   release:
     runs-on: macos-latest
     env:
-      RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
       RELEASE_REPO: ${{ github.repository }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -45,6 +46,53 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_tag="${{ github.event.inputs.release_tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_tag="${GITHUB_REF#refs/tags/}"
+          else
+            release_tag="v${version}"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Release tag must look like v0.0.1. Got: $release_tag" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+            branch_release="${GITHUB_REF#refs/heads/release/}"
+            if [[ "$branch_release" != "$release_tag" ]]; then
+              echo "Release branch ($branch_release) must match src-tauri version tag ($release_tag)." >&2
+              exit 1
+            fi
+          fi
+
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "Resolved release tag: $release_tag"
+
+      - name: Create release tag if missing
+        if: startsWith(github.ref, 'refs/heads/release/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists locally."
+          elif git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            echo "Fetched existing remote tag $RELEASE_TAG."
+          else
+            git tag "$RELEASE_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+            echo "Created and pushed tag $RELEASE_TAG."
+          fi
 
       - name: Validate release secrets
         shell: bash

@@ -78,7 +78,7 @@ The workflow will:
 
 `release:prepare` also writes `release/release-metadata.json`, which the workflow uses to upload the exact generated assets.
 
-The release workflow sets `GGML_NATIVE=OFF` and `GGML_CPU_ARM_ARCH=armv8.2-a` for `whisper-rs` builds. This avoids GitHub's Apple Silicon runners enabling an unsupported `i8mm` CPU compile path while still allowing Metal acceleration.
+The release workflow sets `GGML_NATIVE=OFF`, `GGML_CPU_ARM_ARCH=armv8.2-a`, and undefines `__ARM_FEATURE_MATMUL_INT8` for `whisper-rs` builds. This avoids GitHub's Apple Silicon runners entering an unsupported `i8mm` CPU compile path while still allowing Metal acceleration.
 
 To generate changelog notes locally, run `pnpm changelog:build`. It reads the version from `src-tauri/tauri.conf.json`, groups commits by Conventional Commit type, updates `CHANGELOG.md`, and writes release notes to `release/release-notes.md`.
 

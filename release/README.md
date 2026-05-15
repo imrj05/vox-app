@@ -6,6 +6,8 @@
 - signing the real archive
 - generating `release/latest.json` for `darwin-aarch64`
 
+The Tauri bundler must create updater artifacts. This is enabled with `bundle.createUpdaterArtifacts` in `src-tauri/tauri.conf.json`, which makes `pnpm desktop:build` produce the `.app.tar.gz` archive consumed by `release:prepare`.
+
 ## Local flow with a private key file
 
 1. Build the desktop app: `pnpm desktop:build`

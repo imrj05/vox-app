@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting } from "@/lib/db";
 
 export const HOTKEY_KEY = "hotkey";
@@ -17,6 +18,7 @@ export type TranscriptFormattingMode = "auto" | "plain" | "developer";
 export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
+const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
 
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
@@ -44,9 +46,10 @@ interface AppState {
   setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
+  resetAppState: () => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+const defaultAppState = {
   onboardingComplete: null,
   hotkey: DEFAULT_HOTKEY,
   triggerMode: DEFAULT_TRIGGER_MODE,
@@ -55,45 +58,60 @@ export const useAppStore = create<AppState>((set) => ({
   dictionary: "",
   theme: DEFAULT_THEME,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
+};
+
+export const useAppStore = create<AppState>((set) => ({
+  ...defaultAppState,
 
   hydrate: async () => {
-    const [
-      onboarding,
-      hotkey,
-      triggerMode,
-      soundEnabled,
-      selectedModel,
-      dictionary,
-      theme,
-      transcriptFormattingMode,
-    ] = await Promise.all([
-      getSetting(ONBOARDING_KEY),
-      getSetting(HOTKEY_KEY),
-      getSetting(TRIGGER_MODE_KEY),
-      getSetting(SOUND_ENABLED_KEY),
-      getSetting(SELECTED_MODEL_KEY),
-      getSetting(DICTIONARY_KEY),
-      getSetting(THEME_KEY),
-      getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
-    ]);
-    const resolvedSoundEnabled = parseBooleanSetting(soundEnabled, true);
-    const resolvedTheme = parseThemeSetting(theme);
-    const resolvedTranscriptFormattingMode = parseTranscriptFormattingModeSetting(
-      transcriptFormattingMode
-    );
-    // Sync to localStorage so the widget window can read it without IPC
-    localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
-    localStorage.setItem(THEME_KEY, resolvedTheme);
-    set({
-      onboardingComplete: onboarding === "true",
-      hotkey: hotkey ?? DEFAULT_HOTKEY,
-      triggerMode: (triggerMode as TriggerMode) ?? DEFAULT_TRIGGER_MODE,
-      soundEnabled: resolvedSoundEnabled,
-      selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
-      dictionary: dictionary ?? "",
-      theme: resolvedTheme,
-      transcriptFormattingMode: resolvedTranscriptFormattingMode,
-    });
+    try {
+      const [
+        onboarding,
+        hotkey,
+        triggerMode,
+        soundEnabled,
+        selectedModel,
+        dictionary,
+        theme,
+        transcriptFormattingMode,
+      ] = await withTimeout(
+        Promise.all([
+          getSetting(ONBOARDING_KEY),
+          getSetting(HOTKEY_KEY),
+          getSetting(TRIGGER_MODE_KEY),
+          getSetting(SOUND_ENABLED_KEY),
+          getSetting(SELECTED_MODEL_KEY),
+          getSetting(DICTIONARY_KEY),
+          getSetting(THEME_KEY),
+          getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
+        ]),
+        SETTINGS_HYDRATE_TIMEOUT_MS,
+        "Timed out loading app settings"
+      );
+      const resolvedSoundEnabled = parseBooleanSetting(soundEnabled, true);
+      const resolvedTheme = parseThemeSetting(theme);
+      const resolvedTranscriptFormattingMode = parseTranscriptFormattingModeSetting(
+        transcriptFormattingMode
+      );
+      // Sync to localStorage so the widget window can read it without IPC
+      localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
+      localStorage.setItem(THEME_KEY, resolvedTheme);
+      set({
+        onboardingComplete: onboarding === "true",
+        hotkey: hotkey ?? DEFAULT_HOTKEY,
+        triggerMode: parseTriggerModeSetting(triggerMode),
+        soundEnabled: resolvedSoundEnabled,
+        selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
+        dictionary: dictionary ?? "",
+        theme: resolvedTheme,
+        transcriptFormattingMode: resolvedTranscriptFormattingMode,
+      });
+    } catch (error) {
+      console.error("Failed to hydrate app settings", error);
+      localStorage.setItem(SOUND_ENABLED_KEY, String(true));
+      localStorage.setItem(THEME_KEY, DEFAULT_THEME);
+      set({ onboardingComplete: false });
+    }
   },
 
   setOnboardingComplete: async (value) => {
@@ -138,12 +156,24 @@ export const useAppStore = create<AppState>((set) => ({
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);
     set({ transcriptFormattingMode: value });
   },
+
+  resetAppState: () => {
+    localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
+    localStorage.setItem(THEME_KEY, defaultAppState.theme);
+    set({ ...defaultAppState, onboardingComplete: false });
+  },
 }));
 
 function parseThemeSetting(value: string | null): AppTheme {
   return value === "light" || value === "dark" || value === "system"
     ? value
     : DEFAULT_THEME;
+}
+
+function parseTriggerModeSetting(value: string | null): TriggerMode {
+  return value === "toggle" || value === "pushToTalk"
+    ? value
+    : DEFAULT_TRIGGER_MODE;
 }
 
 function parseTranscriptFormattingModeSetting(

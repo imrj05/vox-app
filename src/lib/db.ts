@@ -1,13 +1,25 @@
 import Database from "@tauri-apps/plugin-sql";
 
 let _db: Database | null = null;
+let _dbPromise: Promise<Database> | null = null;
 
 /** Returns a singleton DB connection, initialising the schema on first call. */
 export async function getDb(): Promise<Database> {
   if (_db) return _db;
-  _db = await Database.load("sqlite:vox.db");
-  await migrate(_db);
-  return _db;
+  if (!_dbPromise) {
+    _dbPromise = Database.load("sqlite:vox.db")
+      .then(async (db) => {
+        await migrate(db);
+        _db = db;
+        return db;
+      })
+      .catch((error) => {
+        _dbPromise = null;
+        throw error;
+      });
+  }
+
+  return _dbPromise;
 }
 
 async function migrate(db: Database) {
@@ -88,4 +100,15 @@ export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
 export async function deleteTranscript(id: number): Promise<void> {
   const db = await getDb();
   await db.execute("DELETE FROM transcripts WHERE id = $1", [id]);
+}
+
+export async function clearTranscripts(): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM transcripts");
+}
+
+export async function clearAppData(): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM transcripts");
+  await db.execute("DELETE FROM settings");
 }

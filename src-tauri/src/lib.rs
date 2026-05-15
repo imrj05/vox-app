@@ -2268,7 +2268,7 @@ fn hide_widget_after_delay(app: AppHandle, delay_ms: u64) {
         }
 
         if let Some(window) = app.get_webview_window("widget") {
-            // Emit idle so CSS fades out, then move off-screen
+            // Emit idle so CSS fades out, then hide the native window.
             let _ = window.emit(
                 "vox-widget-state",
                 WidgetEvent {
@@ -2287,6 +2287,7 @@ fn hide_widget_after_delay(app: AppHandle, delay_ms: u64) {
                 .unwrap_or(false);
             if !is_recording {
                 let _ = window.set_position(Position::Physical(PhysicalPosition::new(-9999, -9999)));
+                let _ = window.hide();
             }
         }
     });

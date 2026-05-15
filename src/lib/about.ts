@@ -1,4 +1,5 @@
-export const ABOUT_VERSION = "0.0.1"
+export const ABOUT_PACKAGE_NAME = __APP_PACKAGE_NAME__
+export const ABOUT_VERSION = __APP_VERSION__
 export const ABOUT_REPOSITORY = "https://github.com/imrj05/vox-app"
 export const ABOUT_WEBSITE = "https://rajeshwarkashyap.in"
 export const ABOUT_EMAIL = "info@rajeshwarkashyap.in"

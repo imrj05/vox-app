@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import {
   BookOpenText,
   CheckCircle2,
+  Database,
   ExternalLink,
   Keyboard,
   LogIn,
@@ -33,6 +34,17 @@ import {
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AppToast } from "@/components/app-toast";
@@ -54,6 +66,7 @@ import {
   settingsSections,
   type SettingsSection,
 } from "@/components/settings-sections";
+import { clearAppData, clearTranscripts } from "@/lib/db";
 import { useAppStore } from "@/store/app-store";
 import type {
   AppTheme,
@@ -471,6 +484,132 @@ export function DictionarySection() {
         )}
       </SettingsCard>
     </div>
+  );
+}
+
+export function DataSection() {
+  const resetAppState = useAppStore((state) => state.resetAppState);
+  const [busyAction, setBusyAction] = useState<"history" | "app" | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleClearHistory = async () => {
+    setBusyAction("history");
+    setMessage(null);
+    setError(null);
+    try {
+      await clearTranscripts();
+      setMessage("Transcript history cleared.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleClearAppData = async () => {
+    setBusyAction("app");
+    setMessage(null);
+    setError(null);
+    try {
+      await clearAppData();
+      resetAppState();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusyAction(null);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Data"
+        description="Clear local Vox data from this Mac. Downloaded transcription models are kept."
+      />
+      <SettingsCard className="space-y-4">
+        <SettingRow
+          icon={<Trash2 className="h-4 w-4" />}
+          title="Clear history"
+          description="Delete all saved transcript history, activity stats, app usage, and recent transcripts."
+          action={
+            <ConfirmDataAction
+              title="Clear transcript history?"
+              description="This deletes all saved transcripts and dashboard history. Your app settings and downloaded models stay in place."
+              actionLabel="Clear history"
+              busy={busyAction === "history"}
+              onConfirm={handleClearHistory}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Database className="h-4 w-4" />}
+          title="Reset app data"
+          description="Delete transcript history and all saved settings, then return Vox to onboarding."
+          action={
+            <ConfirmDataAction
+              title="Reset all app data?"
+              description="This deletes saved transcripts and preferences including hotkey, dictionary, theme, trigger mode, selected model, and onboarding status. Downloaded models stay installed."
+              actionLabel="Reset app"
+              busy={busyAction === "app"}
+              onConfirm={handleClearAppData}
+            />
+          }
+        />
+        {message && (
+          <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
+            {message}
+          </p>
+        )}
+        {error && (
+          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
+      </SettingsCard>
+    </div>
+  );
+}
+
+function ConfirmDataAction({
+  title,
+  description,
+  actionLabel,
+  busy,
+  onConfirm,
+}: {
+  title: string;
+  description: string;
+  actionLabel: string;
+  busy: boolean;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="destructive" size="sm" disabled={busy}>
+          {busy ? <Spinner className="h-4 w-4" /> : null}
+          {actionLabel}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => {
+              void onConfirm();
+            }}
+          >
+            {actionLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -971,6 +1110,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         return <GeneralSection />;
       case "dictionary":
         return <DictionarySection />;
+      case "data":
+        return <DataSection />;
       case "permissions":
         return <PermissionsSection />;
       case "shortcuts":

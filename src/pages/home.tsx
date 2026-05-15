@@ -23,9 +23,13 @@ import {
 } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import { GlowRecordButton } from "@/components/glow-record-button";
 import { HotkeyPicker } from "@/components/hotkey-picker";
+import { withTimeout } from "@/lib/async";
 import { useAppStore } from "@/store/app-store";
+
+const HISTORY_LOAD_TIMEOUT_MS = 5000;
 
 export function HomePage() {
   const { hotkey, setHotkey, selectedModel, dictionary } = useAppStore();
@@ -35,6 +39,8 @@ export function HomePage() {
   const [transcriptionResult, setTranscriptionResult] =
     useState<TranscriptionResult | null>(null);
   const [history, setHistory] = useState<TranscriptRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [recordingBusy, setRecordingBusy] = useState(false);
@@ -72,7 +78,30 @@ export function HomePage() {
 
   // Load transcript history on mount
   useEffect(() => {
-    void getTranscripts().then(setHistory).catch(() => {});
+    let active = true;
+
+    void withTimeout(
+      getTranscripts(),
+      HISTORY_LOAD_TIMEOUT_MS,
+      "Timed out loading transcript history"
+    )
+      .then((rows) => {
+        if (!active) return;
+        setHistory(rows);
+        setHistoryError(null);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setHistory([]);
+        setHistoryError(err instanceof Error ? err.message : "Could not load transcript history");
+      })
+      .finally(() => {
+        if (active) setHistoryLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Listen for hotkey-triggered transcriptions (from Rust background flow)
@@ -365,7 +394,9 @@ export function HomePage() {
         <section className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-2xl border border-border bg-card p-5">
             <h3 className="mb-4 text-lg font-semibold text-foreground">Top apps</h3>
-            {topApps.length > 0 ? (
+            {historyLoading ? (
+              <LoadingInline label="Loading app usage..." />
+            ) : topApps.length > 0 ? (
               <TopApps apps={topApps} appIcons={appIcons} />
             ) : (
               <p className="text-sm text-muted-foreground">App usage will appear after new transcriptions.</p>
@@ -418,7 +449,11 @@ export function HomePage() {
 
         <section className="rounded-2xl border border-border bg-card p-5">
           <h3 className="mb-4 text-lg font-semibold text-foreground">Recent transcripts</h3>
-          {history.length > 0 ? (
+          {historyLoading ? (
+            <LoadingInline label="Loading transcript history..." />
+          ) : historyError ? (
+            <p className="text-sm text-destructive">{historyError}</p>
+          ) : history.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2">
               {history.slice(0, 6).map((t) => (
                 <div
@@ -626,6 +661,15 @@ function InsightStat({ label, value }: { label: string; value: string }) {
     <div className="rounded-2xl border border-border bg-card p-4">
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className="mt-2 font-mono text-3xl font-semibold text-primary">{value}</p>
+    </div>
+  );
+}
+
+function LoadingInline({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Spinner className="size-4" />
+      <span>{label}</span>
     </div>
   );
 }

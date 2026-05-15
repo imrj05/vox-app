@@ -11,6 +11,7 @@ use std::{
     ffi::c_void,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use core_foundation::{
@@ -257,119 +258,130 @@ fn run_tap_thread(
     let current_rl = CFRunLoop::get_current();
     *state.run_loop.lock().unwrap() = Some(current_rl.clone());
 
-    let state_ref = Arc::clone(&state);
-    let press_ref = Arc::clone(&on_press);
-    let release_ref = Arc::clone(&on_release);
-
-    let tap = CGEventTap::new(
-        CGEventTapLocation::HID,
-        CGEventTapPlacement::HeadInsertEventTap,
-        CGEventTapOptions::Default,
-        vec![
-            CGEventType::KeyDown,
-            CGEventType::KeyUp,
-            CGEventType::FlagsChanged,
-        ],
-        move |_proxy, event_type, event| {
-            let key =
-                event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as CGKeyCode;
-
-            let hotkey = state_ref.hotkey.lock().unwrap().clone();
-            let mode = *state_ref.mode.lock().unwrap();
-            let flags = event.get_flags();
-            let standalone_modifier =
-                hotkey.modifiers.is_empty() && standalone_modifier_flag(hotkey.key_code).is_some();
-            let standalone_modifier_down = standalone_modifier_flag(hotkey.key_code)
-                .map(|flag| flags.contains(flag))
-                .unwrap_or(false);
-
-            // Mask to the modifier bits we support in shortcut strings.
-            let required = hotkey.modifiers;
-            let actual = flags
-                & (CGEventFlags::CGEventFlagCommand
-                    | CGEventFlags::CGEventFlagControl
-                    | CGEventFlags::CGEventFlagAlternate
-                    | CGEventFlags::CGEventFlagShift
-                    | CGEventFlags::CGEventFlagSecondaryFn);
-
-            match event_type {
-                CGEventType::KeyDown if key == hotkey.key_code && actual == required => {
-                    let mut pressed = state_ref.pressed.lock().unwrap();
-                    if !*pressed {
-                        *pressed = true;
-                        press_ref();
-                    }
-                    return None; // suppress
-                }
-                CGEventType::FlagsChanged
-                    if standalone_modifier
-                        && key == hotkey.key_code
-                        && standalone_modifier_down =>
-                {
-                    let mut pressed = state_ref.pressed.lock().unwrap();
-                    if !*pressed {
-                        *pressed = true;
-                        press_ref();
-                    }
-                    return None; // suppress
-                }
-                CGEventType::KeyUp if key == hotkey.key_code => {
-                    let mut pressed = state_ref.pressed.lock().unwrap();
-                    if *pressed {
-                        *pressed = false;
-                        if mode == TriggerMode::PushToTalk {
-                            release_ref();
-                        }
-                        return None; // suppress
-                    }
-                }
-                CGEventType::FlagsChanged
-                    if standalone_modifier
-                        && key == hotkey.key_code
-                        && !standalone_modifier_down =>
-                {
-                    let mut pressed = state_ref.pressed.lock().unwrap();
-                    if *pressed {
-                        *pressed = false;
-                        if mode == TriggerMode::PushToTalk {
-                            release_ref();
-                        }
-                        return None; // suppress
-                    }
-                }
-                _ => {}
-            }
-
-            Some(event.clone())
-        },
-    );
-
-    match tap {
-        Ok(tap) => {
-            *state.last_error.lock().unwrap() = None;
-            *state.is_active.lock().unwrap() = true;
-            tap.enable();
-            match tap.mach_port.create_runloop_source(0) {
-                Ok(source) => {
-                    current_rl.add_source(&source, unsafe { kCFRunLoopCommonModes });
-                    CFRunLoop::run_current();
-                    *state.is_active.lock().unwrap() = false;
-                }
-                Err(()) => {
-                    *state.is_active.lock().unwrap() = false;
-                    *state.last_error.lock().unwrap() =
-                        Some("Failed to create the CGEventTap run loop source".to_string());
-                    eprintln!("[vox] Failed to create CGEventTap run loop source");
-                }
-            }
-        }
-        Err(()) => {
+    loop {
+        if !is_accessibility_trusted() {
             *state.is_active.lock().unwrap() = false;
-            *state.last_error.lock().unwrap() = Some(
-                "CGEventTap could not start. Accessibility permission may be missing.".to_string(),
-            );
-            eprintln!("[vox] CGEventTap::new failed — Accessibility permission not granted?");
+            *state.last_error.lock().unwrap() =
+                Some("Accessibility permission is required for Event tap shortcuts.".to_string());
+            thread::sleep(Duration::from_secs(2));
+            continue;
         }
+
+        let state_ref = Arc::clone(&state);
+        let press_ref = Arc::clone(&on_press);
+        let release_ref = Arc::clone(&on_release);
+
+        let tap = CGEventTap::new(
+            CGEventTapLocation::HID,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::Default,
+            vec![
+                CGEventType::KeyDown,
+                CGEventType::KeyUp,
+                CGEventType::FlagsChanged,
+            ],
+            move |_proxy, event_type, event| {
+                let key =
+                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as CGKeyCode;
+
+                let hotkey = state_ref.hotkey.lock().unwrap().clone();
+                let mode = *state_ref.mode.lock().unwrap();
+                let flags = event.get_flags();
+                let standalone_modifier = hotkey.modifiers.is_empty()
+                    && standalone_modifier_flag(hotkey.key_code).is_some();
+                let standalone_modifier_down = standalone_modifier_flag(hotkey.key_code)
+                    .map(|flag| flags.contains(flag))
+                    .unwrap_or(false);
+
+                // Mask to the modifier bits we support in shortcut strings.
+                let required = hotkey.modifiers;
+                let actual = flags
+                    & (CGEventFlags::CGEventFlagCommand
+                        | CGEventFlags::CGEventFlagControl
+                        | CGEventFlags::CGEventFlagAlternate
+                        | CGEventFlags::CGEventFlagShift
+                        | CGEventFlags::CGEventFlagSecondaryFn);
+
+                match event_type {
+                    CGEventType::KeyDown if key == hotkey.key_code && actual == required => {
+                        let mut pressed = state_ref.pressed.lock().unwrap();
+                        if !*pressed {
+                            *pressed = true;
+                            press_ref();
+                        }
+                        return None; // suppress
+                    }
+                    CGEventType::FlagsChanged
+                        if standalone_modifier
+                            && key == hotkey.key_code
+                            && standalone_modifier_down =>
+                    {
+                        let mut pressed = state_ref.pressed.lock().unwrap();
+                        if !*pressed {
+                            *pressed = true;
+                            press_ref();
+                        }
+                        return None; // suppress
+                    }
+                    CGEventType::KeyUp if key == hotkey.key_code => {
+                        let mut pressed = state_ref.pressed.lock().unwrap();
+                        if *pressed {
+                            *pressed = false;
+                            if mode == TriggerMode::PushToTalk {
+                                release_ref();
+                            }
+                            return None; // suppress
+                        }
+                    }
+                    CGEventType::FlagsChanged
+                        if standalone_modifier
+                            && key == hotkey.key_code
+                            && !standalone_modifier_down =>
+                    {
+                        let mut pressed = state_ref.pressed.lock().unwrap();
+                        if *pressed {
+                            *pressed = false;
+                            if mode == TriggerMode::PushToTalk {
+                                release_ref();
+                            }
+                            return None; // suppress
+                        }
+                    }
+                    _ => {}
+                }
+
+                Some(event.clone())
+            },
+        );
+
+        match tap {
+            Ok(tap) => {
+                *state.last_error.lock().unwrap() = None;
+                *state.is_active.lock().unwrap() = true;
+                tap.enable();
+                match tap.mach_port.create_runloop_source(0) {
+                    Ok(source) => {
+                        current_rl.add_source(&source, unsafe { kCFRunLoopCommonModes });
+                        CFRunLoop::run_current();
+                    }
+                    Err(()) => {
+                        *state.last_error.lock().unwrap() =
+                            Some("Failed to create the CGEventTap run loop source".to_string());
+                        eprintln!("[vox] Failed to create CGEventTap run loop source");
+                    }
+                }
+            }
+            Err(()) => {
+                *state.last_error.lock().unwrap() = Some(
+                    "CGEventTap could not start. Accessibility permission may be missing."
+                        .to_string(),
+                );
+                eprintln!("[vox] CGEventTap::new failed — Accessibility permission not granted?");
+            }
+        }
+
+        *state.is_active.lock().unwrap() = false;
+        thread::sleep(Duration::from_secs(2));
     }
 }
 

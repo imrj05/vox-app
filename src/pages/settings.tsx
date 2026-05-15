@@ -7,6 +7,7 @@ import {
 } from "@/components/settings-sections";
 import {
   DictionarySection,
+  DataSection,
   GeneralSection,
   PermissionsSection,
   ShortcutsSection,
@@ -23,6 +24,8 @@ export function SettingsPage() {
         return <GeneralSection />;
       case "dictionary":
         return <DictionarySection />;
+      case "data":
+        return <DataSection />;
       case "permissions":
         return <PermissionsSection />;
       case "shortcuts":

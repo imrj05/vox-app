@@ -1,190 +1,224 @@
 # Vox
 
-Vox is a macOS-first desktop app concept for fast, private voice transcription. It is designed around a persistent sidebar workspace, local Whisper speech-to-text, Apple Silicon acceleration, and a clean dark interface inspired by Linear-style productivity tools.
+Vox is a private, local-first voice dictation app for macOS. Press a global hotkey anywhere, speak, and the transcription is inserted directly at the cursor. All audio processing runs entirely on-device using OpenAI Whisper — nothing is sent to external servers.
 
-This repository contains a working Tauri desktop app with a React frontend, in-process Rust audio capture, and local Whisper transcription.
+> Minimum macOS: 10.15 Catalina — Apple Silicon recommended for best performance.
 
-> [!NOTE]
-> Vox currently records audio and runs Whisper directly inside the Tauri Rust process. Older sidecar-based notes in this repository are historical and are not the current implementation.
+---
+
+## How it works
+
+1. Press the global hotkey (`⌘ Shift Space` by default) anywhere on macOS.
+2. Speak. A floating overlay shows a live waveform while recording.
+3. Whisper runs locally using Metal GPU acceleration.
+4. The transcript is injected at the cursor position — no clipboard involved.
+
+---
 
 ## Features
 
-- Persistent desktop-style layout with a fixed left sidebar
-- macOS traffic-light window controls in the shell
-- Command/search trigger with `Cmd + K` affordance
-- Home page with mock transcription history grouped by day
-- Models page with local Whisper model downloads and quick dictation
-- Focused dictation page for recording and transcription
-- Centered settings modal with its own internal sidebar
-- shadcn-style UI components built from Radix primitives
-- Light, dark, and system theme support
-- Context-aware vocabulary injection based on the active app and window title
-- Custom dictionary terms synced into Whisper prompts
+### Local Whisper transcription
 
-## Planned Product Direction
+- Runs fully on-device with no network requests for transcription.
+- GPU-accelerated inference via Metal; falls back to CPU automatically.
+- Beam-search decoding (beam size 5) for accuracy over speed.
+- Blank/filler detection — discards empty or nonsense results silently.
+- Context-aware initial prompt built from the active app, window title, and custom dictionary terms.
 
-Vox is intended to become a native macOS transcription app with this workflow:
+### Whisper model management
 
-1. Press a global hotkey anywhere on macOS.
-2. Vox records microphone audio using the local Rust audio pipeline.
-3. Audio is transcribed locally using Whisper accelerated by Apple Silicon.
-4. The transcript is inserted at the current cursor position.
-5. Optional AI cleanup can polish dictation for notes, emails, prompts, or chat.
+Seven model tiers available directly from HuggingFace:
 
-## Current Architecture
+| Model | Size | Notes |
+|---|---|---|
+| Tiny | ~75 MB | Fastest, lowest accuracy |
+| Base | ~150 MB | Default — recommended |
+| Small | ~500 MB | Good balance |
+| Medium | ~1.5 GB | High accuracy |
+| Distil-Large v3 | ~1.5 GB | Fast large-equivalent |
+| Large v3 Turbo | ~1.5 GB | Fast large-equivalent |
+| Large v3 | ~3 GB | Highest accuracy |
 
-```text
-React UI (Vite/shadcn)
-        │
-        ▼
-Tauri v2 Rust backend
-  - microphone recording via cpal
-  - local Whisper inference via whisper-rs
-  - global hotkeys
-  - tray/menu bar
-  - text insertion
-  - model management
-  - context-aware prompt and dictionary injection
-```
+- Live download progress with MB/total and percentage.
+- Active model persisted to SQLite; falls back to `base.en` on deletion.
+- Quick dictation test widget on the Models page to audition each model.
 
-The current macOS transcription path is:
+### Global hotkey
 
-- `cpal` for microphone capture
-- WAV recording written locally by Rust
-- `whisper-rs` with Metal acceleration for local transcription
-- Tauri/Rust for app integration, model management, and text insertion hooks
+- Default: `⌘ Shift Space`. Fully customisable via a key-capture picker.
+- Dual backend: `tauri-plugin-global-shortcut` for standard combos + a custom **CGEventTap** thread for keys the OS API cannot intercept (bare Option, Globe/Fn, etc.).
+- **Toggle mode** — press to start, press again to stop and transcribe.
+- **Push-to-talk mode** — hold to record, release to transcribe.
+- Live hotkey diagnostics panel showing Accessibility permission, EventTap status, model presence, trigger mode, and recording state.
+- Risky binding warning for modifier-free keys.
 
-## Tech Stack
+### Floating widget
+
+- Transparent always-on-top overlay (220 × 64 px) that appears during recording and transcription.
+- 7-bar live waveform driven by real-time audio level events from Rust.
+- Transitions to a shimmer "Transcribing…" state while Whisper runs.
+- Elapsed recording timer.
+- Soft synthesised start/stop audio tones (Web Audio API oscillators — toggleable).
+- Theme-aware (reads dark/light from `localStorage`).
+
+### Context-aware transcript formatting
+
+Three formatting modes selectable in settings:
+
+- **Auto** — detects developer context from the active app/window title (VS Code, Cursor, Xcode, Terminal, Warp, Arc, Chrome, localhost, file extensions, etc.) and applies code formatting automatically.
+- **Plain text** — always outputs plain prose.
+- **Developer** — always applies code formatting.
+
+Developer mode converts spoken phrases to code: camelCase, PascalCase, snake_case, kebab-case, CONSTANT_CASE, code symbols (brace, bracket, arrow, semicolon…), newline/indent/outdent commands, and template snippets. Context-specific Whisper prompt hints are also injected for Git, npm/pnpm, shell, Docker, Kubernetes, Jira/Linear, and chat apps.
+
+### Custom dictionary
+
+- Add words, names, and acronyms to improve Whisper recognition for your vocabulary.
+- Optional pronunciation hints formatted for Whisper (e.g. `Tauri | tow-ree`).
+- Categories: General, People, Product, Technical, Company.
+- Comma-separated bulk add; case-insensitive deduplication.
+- Persisted to SQLite.
+
+### Insights dashboard
+
+- **Summary stats**: total words dictated, transcription count, estimated time saved, total recording time.
+- **Streaks**: current and all-time longest consecutive-day streak.
+- **Activity heatmap**: GitHub-style 6-month daily contribution grid.
+- **Hourly usage chart**: 24-bar chart of sessions and time per hour with morning/afternoon/evening breakdowns and peak hour label.
+- **Weekly trend chart**: 8-week session count and recorded time bars.
+- **Top apps panel**: ranked by words dictated with app icon, word count, session count, and share percentage.
+- **Recent transcripts panel**: last 6 transcripts with text preview, source app, timestamp, and per-item delete.
+
+### Transcript history
+
+- All transcripts stored in local SQLite (`vox.db`) with text, source app, duration, and timestamp.
+- Per-transcript deletion from the dashboard.
+- Bulk "Clear history" action (with confirmation).
+- "Reset app data" resets all transcripts and settings — downloaded models are preserved.
+
+### Permissions
+
+- Live status polling for Accessibility and Microphone permissions.
+- Auto-opens System Settings with a prompt when permission is needed.
+- Status updates automatically when the user grants permission (no app restart required).
+
+### Onboarding
+
+- 4-step guided first-launch wizard: Accessibility → Microphone → Model download → Hotkey test.
+- Steps auto-advance on permission grant.
+- Full model picker with download progress inline.
+- Hotkey test step detects the keypress via both `keydown` and a Tauri event.
+
+### App updates
+
+- `tauri-plugin-updater` checks GitHub Releases for a signed `latest.json` manifest.
+- Auto-check on every app launch.
+- Manual "Check for updates" button on the About page.
+- Update dialog shows release notes (Markdown headings and bullet lists rendered).
+- Live download progress bar during update streaming.
+- Auto-relaunches into the new version after install.
+- Update artifacts verified against an embedded minisign public key.
+
+### Settings
+
+| Setting | Options |
+|---|---|
+| Theme | System / Light / Dark |
+| Sound cues | On / Off |
+| Start at login | On / Off (macOS LaunchAgent) |
+| Transcript formatting | Auto / Plain text / Developer |
+| Global hotkey | Any combo via key picker |
+| Trigger mode | Toggle / Push-to-talk |
+
+All settings persisted to SQLite and hydrated on startup.
+
+---
+
+## Tech stack
 
 | Area | Technology |
-| --- | --- |
+|---|---|
 | Frontend | React 19, TypeScript, Vite |
-| Styling | Tailwind CSS v4 |
+| Styling | Tailwind CSS v4, OKLCH design tokens |
 | UI components | shadcn-style components, Radix UI primitives |
 | Icons | Lucide React |
-| Routing | React Router |
-| Utilities | clsx, tailwind-merge, class-variance-authority |
+| State | Zustand |
 | Desktop shell | Tauri v2 |
-| Native engine | Rust, cpal, whisper-rs, Metal |
+| Audio capture | cpal (Rust) |
+| Transcription | whisper-rs / whisper.cpp (Metal GPU) |
+| Database | SQLite via tauri-plugin-sql |
+| Text injection | enigo (Rust) |
+| Global shortcuts | tauri-plugin-global-shortcut + CGEventTap (Rust) |
 
-## Getting Started
+---
 
-Install dependencies:
+## Getting started
 
 ```bash
 pnpm install
 ```
 
-Start the development server:
-
-```bash
-pnpm dev
-```
-
-Start the Tauri desktop app:
+Start the Tauri desktop app in development mode:
 
 ```bash
 pnpm desktop:dev
 ```
 
-Build for production:
+Other commands:
 
 ```bash
-pnpm build
+pnpm dev          # Vite dev server only (no Tauri shell)
+pnpm build        # production build
+pnpm typecheck    # TypeScript check
+pnpm lint         # ESLint
+cd src-tauri && cargo check   # Rust check
 ```
 
-Run TypeScript checks:
+---
 
-```bash
-pnpm typecheck
+## Project structure
+
 ```
-
-Run linting:
-
-```bash
-pnpm lint
-```
-
-Check the Rust desktop shell:
-
-```bash
-cd src-tauri
-cargo check
-```
-
-## Local Whisper Setup
-
-Vox uses embedded `whisper-rs` with models downloaded inside the app. Start the desktop app, complete onboarding, download a model, then record and transcribe from Home or Models. No external `whisper-cli` or sidecar process is required.
-
-Preview a production build:
-
-```bash
-pnpm preview
-```
-
-## Project Structure
-
-```text
 vox-app/
-├── components.json          # shadcn-style component configuration
-├── sidecar/
-│   └── README.md            # historical architecture notes
 ├── src/
 │   ├── components/
-│   │   ├── ui/              # reusable shadcn-style primitives
+│   │   ├── ui/               # shadcn-style primitives
+│   │   ├── onboarding.tsx
 │   │   ├── settings-modal.tsx
 │   │   └── sidebar.tsx
-│   ├── hooks/               # shared React hooks
-│   ├── lib/
-│   │   └── utils.ts         # cn() class merge helper
+│   ├── hooks/
+│   ├── lib/                  # db.ts, native.ts, about.ts, async.ts
 │   ├── pages/
-│   │   ├── home.tsx
-│   │   ├── models.tsx
-│   │   └── models.tsx
-│   ├── App.tsx              # app shell and routes
-│   ├── index.css            # Tailwind setup and design tokens
-│   └── main.tsx             # React entry point
-├── package.json
-└── vite.config.ts
+│   │   ├── home.tsx          # dashboard / insights
+│   │   ├── models.tsx        # model management
+│   │   ├── settings.tsx      # full-page settings
+│   │   └── about.tsx         # about + updater
+│   ├── store/
+│   │   └── app-store.ts      # Zustand store (settings + update state)
+│   ├── App.tsx               # app shell, routing, update dialog
+│   ├── index.css             # Tailwind setup, OKLCH design tokens
+│   └── main.tsx
+├── src-tauri/
+│   ├── src/
+│   │   ├── lib.rs            # Tauri commands + plugin registration
+│   │   ├── whisper.rs        # Whisper inference + model management
+│   │   ├── event_tap.rs      # CGEventTap global shortcut backend
+│   │   └── widget/           # floating overlay window
+│   └── tauri.conf.json
+├── release/
+│   └── latest.json           # updater manifest
+└── scripts/
+    └── generate-updater-manifest.mjs
 ```
 
-## UI Layout
+---
 
-The app uses a desktop productivity layout rather than a traditional web dashboard:
+## Privacy
 
-- Fixed left sidebar for primary navigation
-- Dictation and model management routes only
-- Settings action pinned near the bottom
-- Main content pane focused on recording and transcription
-- Settings rendered as a centered modal with a secondary settings sidebar
+Vox is designed to be private by default:
 
-The visual direction is intentionally dark, minimal, and dense enough for a desktop utility while keeping the interface spacious and readable.
-
-## Current Status
-
-Implemented:
-
-- Frontend app scaffold
-- Minimal Tauri v2 desktop shell
-- Rust command bridge exposed to React
-- Native microphone recording to local WAV files
-- Model-managed local Whisper transcription bridge
-- Whisper model status, downloads, and quick dictation
-- Focused dictation shell
-- Settings modal shell
-- shadcn-style UI primitives
-- Tailwind v4 theme tokens
-- Theme switching
-- Context-aware prompt and dictionary injection
-
-Not implemented yet:
-
-- Global hotkey capture
-- Text insertion at cursor
-- Persistent transcript storage
-
-## Next Steps
-
-1. Add progress/cancellation for model downloads and transcription.
-2. Add Rust-side global hotkeys and text insertion.
-3. Replace mock pages with real transcript history, model state, and settings persistence.
+- No analytics, telemetry, or tracking.
+- No account or sign-in required.
+- All audio is processed locally and never transmitted.
+- Downloaded model files stay on your machine.
+- SQLite database is stored in the macOS app data directory.

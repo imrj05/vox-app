@@ -27,6 +27,8 @@ jobs:
       RELEASE_REPO: ${{ github.repository }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      GGML_NATIVE: "OFF"
+      GGML_CPU_ARM_ARCH: "armv8.2-a"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

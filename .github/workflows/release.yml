@@ -110,6 +110,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build changelog
+        run: pnpm changelog:build
+
+      - name: Add changelog to updater manifest notes
+        shell: bash
+        run: |
+          {
+            echo "RELEASE_NOTES<<EOF"
+            cat release/release-notes.md
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build desktop app
         run: pnpm desktop:build
 
@@ -127,9 +139,9 @@ jobs:
         shell: bash
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG"
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release/release-notes.md
           else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Automated release for $RELEASE_TAG" --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release/release-notes.md --target "$GITHUB_SHA"
           fi
 
       - name: Upload release assets

@@ -70,12 +70,15 @@ When a `release/v*` branch is pushed, the workflow reads `src-tauri/tauri.conf.j
 
 The workflow will:
 
+- build `CHANGELOG.md` and `release/release-notes.md`
 - build the macOS app
 - run `pnpm release:prepare`
 - create or update the GitHub Release
 - upload the updater archive and `latest.json`
 
 `release:prepare` also writes `release/release-metadata.json`, which the workflow uses to upload the exact generated assets.
+
+To generate changelog notes locally, run `pnpm changelog:build`. It reads the version from `src-tauri/tauri.conf.json`, groups commits by Conventional Commit type, updates `CHANGELOG.md`, and writes release notes to `release/release-notes.md`.
 
 ## Normal CI workflow
 

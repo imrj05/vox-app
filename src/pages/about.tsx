@@ -5,6 +5,14 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   ABOUT_EMAIL,
   ABOUT_REPOSITORY,
   ABOUT_VERSION,
@@ -17,6 +25,50 @@ function formatBytes(bytes: number) {
   return `${Math.round(bytes / 1024 / 1024)} MB`
 }
 
+function getUpdateNotes(update: Update | null) {
+  if (!update) return ""
+
+  const updateWithNotes = update as Update & { body?: string; notes?: string }
+  return updateWithNotes.body || updateWithNotes.notes || "No changelog was included for this update."
+}
+
+function renderReleaseNotes(notes: string) {
+  return notes.split("\n").map((line, index) => {
+    const trimmed = line.trim()
+    if (!trimmed) return null
+
+    if (trimmed.startsWith("## ")) {
+      return (
+        <p key={`${trimmed}-${index}`} className="mt-4 text-sm font-bold text-[#050F1A] first:mt-0">
+          {trimmed.replace(/^##\s+/, "")}
+        </p>
+      )
+    }
+
+    if (trimmed.startsWith("### ")) {
+      return (
+        <p key={`${trimmed}-${index}`} className="mt-4 text-xs font-bold uppercase tracking-[0.06em] text-[#8A919E]">
+          {trimmed.replace(/^###\s+/, "")}
+        </p>
+      )
+    }
+
+    if (trimmed.startsWith("- ")) {
+      return (
+        <p key={`${trimmed}-${index}`} className="pl-3 text-sm leading-6 text-[#5B616E] before:mr-2 before:content-['-']">
+          {trimmed.replace(/^[-*]\s+/, "")}
+        </p>
+      )
+    }
+
+    return (
+      <p key={`${trimmed}-${index}`} className="text-sm leading-6 text-[#5B616E]">
+        {trimmed}
+      </p>
+    )
+  })
+}
+
 export function AboutPage() {
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null)
   const [updateStatus, setUpdateStatus] = useState<
@@ -27,6 +79,7 @@ export function AboutPage() {
     total: null,
   })
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false)
 
   const handleCheckForUpdates = async () => {
     setUpdateStatus("checking")
@@ -38,6 +91,7 @@ export function AboutPage() {
         setUpdateInfo(update)
         setUpdateStatus("available")
         setUpdateMessage(`Version ${update.version} is available.`)
+        setShowUpdateDialog(true)
       } else {
         setUpdateInfo(null)
         setUpdateStatus("upToDate")
@@ -91,6 +145,42 @@ export function AboutPage() {
 
   return (
     <div className="h-full overflow-hidden bg-background">
+      <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+        <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] max-w-2xl gap-0 overflow-hidden rounded-2xl border border-[#D1D5DB] bg-white p-0 text-[#050F1A] shadow-[0_12px_24px_rgba(5,15,26,0.12)] [font-family:'DM_Sans',sans-serif]">
+          <DialogHeader className="border-b border-[#D1D5DB] bg-[#F9FAFB] px-5 py-4">
+            <DialogTitle className="text-lg font-bold leading-[1.2] tracking-[-0.02em] text-[#050F1A]">
+              Update {updateInfo?.version} is ready
+            </DialogTitle>
+            <DialogDescription className="text-sm leading-6 text-[#5B616E]">
+              Review what changed before installing this version.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[420px] overflow-y-auto px-5 py-4">
+            <div className="rounded-lg border border-[#D1D5DB] bg-[#F9FAFB] p-4">
+              {renderReleaseNotes(getUpdateNotes(updateInfo))}
+            </div>
+          </div>
+          <DialogFooter className="border-t border-[#D1D5DB] bg-white px-5 py-4">
+            <button
+              type="button"
+              onClick={() => setShowUpdateDialog(false)}
+              className="inline-flex h-11 min-w-[100px] items-center justify-center rounded-lg border border-[#D1D5DB] bg-white px-5 text-[15px] font-bold text-[#050F1A] transition-colors hover:bg-[#F9FAFB]"
+            >
+              Later
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleInstallUpdate()}
+              disabled={!updateInfo || updateStatus === "downloading" || updateStatus === "installing"}
+              className="inline-flex h-11 min-w-[100px] items-center justify-center gap-2 rounded-lg border border-[#0052FF] bg-[#0052FF] px-5 text-[15px] font-bold text-white transition-colors hover:border-[#003ECB] hover:bg-[#003ECB] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {updateStatus === "downloading" || updateStatus === "installing" ? <Spinner className="size-4" /> : null}
+              Download and install
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ScrollArea className="h-full">
         <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
           <section className="overflow-hidden rounded-[2rem] border border-border bg-card shadow-xs">
@@ -217,6 +307,14 @@ export function AboutPage() {
                   >
                     {updateStatus === "downloading" || updateStatus === "installing" ? <Spinner className="size-4" /> : null}
                     Download and install
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowUpdateDialog(true)}
+                    disabled={!updateInfo}
+                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    View changelog
                   </button>
                   <a
                     href={ABOUT_REPOSITORY + "/releases"}

@@ -36,9 +36,6 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
               <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-sidebar-primary ring-2 ring-background" />
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-semibold tracking-tight text-sidebar-foreground">
-                Vox
-              </p>
               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
                 Local Dictation
               </p>

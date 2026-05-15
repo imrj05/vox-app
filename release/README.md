@@ -6,6 +6,8 @@
 - signing the real archive
 - generating `release/latest.json` for `darwin-aarch64`
 
+The Tauri bundler must create updater artifacts. This is enabled with `bundle.createUpdaterArtifacts` in `src-tauri/tauri.conf.json`, which makes `pnpm desktop:build` produce the `.app.tar.gz` archive consumed by `release:prepare`.
+
 ## Local flow with a private key file
 
 1. Build the desktop app: `pnpm desktop:build`
@@ -38,10 +40,21 @@ For multi-platform use, pass `RELEASE_PLATFORMS_JSON` as a JSON object keyed by 
 
 ## Upload targets
 
-Upload both files to the GitHub release matching the tag used above:
+Upload these files to the GitHub release matching the tag used above:
 
 - the signed updater archive, for example `Vox.app.tar.gz`
+- the installer image, for example `Vox_0.0.1_aarch64.dmg`
 - `latest.json`
+
+The `.app.tar.gz` archive is required by Tauri's auto-updater. The `.dmg` is the user-facing installer asset people can download and install manually from GitHub Releases.
+
+## macOS — Gatekeeper warning
+
+If macOS blocks the app, run once in Terminal after installing:
+
+```bash
+xattr -cr /Applications/Vox.app
+```
 
 The updater endpoint is already configured to read:
 
@@ -56,6 +69,7 @@ The repository can publish releases through GitHub Actions using `.github/workfl
 Triggers:
 
 - pushing a tag like `v0.1.1`
+- pushing a release branch like `release/v0.1.1`
 - manual `workflow_dispatch`
 
 Required repository secrets:
@@ -65,14 +79,21 @@ Required repository secrets:
 
 Manual workflow runs must provide a `release_tag`, for example `v0.1.1`.
 
+When a `release/v*` branch is pushed, the workflow reads `src-tauri/tauri.conf.json`, creates the matching `v*` tag if it does not already exist, and publishes that release.
+
 The workflow will:
 
+- build `CHANGELOG.md` and `release/release-notes.md`
 - build the macOS app
 - run `pnpm release:prepare`
 - create or update the GitHub Release
-- upload the updater archive and `latest.json`
+- upload the updater archive, `.dmg` installer, and `latest.json`
 
 `release:prepare` also writes `release/release-metadata.json`, which the workflow uses to upload the exact generated assets.
+
+The release workflow sets `GGML_NATIVE=OFF`, `GGML_CPU_ARM_ARCH=armv8.2-a`, and undefines `__ARM_FEATURE_MATMUL_INT8` for `whisper-rs` builds. This avoids GitHub's Apple Silicon runners entering an unsupported `i8mm` CPU compile path while still allowing Metal acceleration.
+
+To generate changelog notes locally, run `pnpm changelog:build`. It reads the version from `src-tauri/tauri.conf.json`, groups commits by Conventional Commit type, updates `CHANGELOG.md`, and writes release notes to `release/release-notes.md`.
 
 ## Normal CI workflow
 

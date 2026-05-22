@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CheckCircle2, Mic, Pencil, Trash2, Wand2 } from "lucide-react";
+import { Check, CheckCircle2, Copy, Mic, Pencil, Trash2, Wand2 } from "lucide-react";
 import {
+  deleteRecordingFile,
   getNativeStatus,
   resolveAppIcon,
   startRecording,
@@ -30,6 +31,11 @@ import { withTimeout } from "@/lib/async";
 import { useAppStore } from "@/store/app-store";
 
 const HISTORY_LOAD_TIMEOUT_MS = 5000;
+const ANALYTICS_HISTORY_LIMIT = 1000;
+
+const AnalyticsPanels = lazy(() =>
+  import("@/pages/home-analytics").then(({ AnalyticsPanels }) => ({ default: AnalyticsPanels }))
+);
 
 export function HomePage() {
   const { hotkey, setHotkey, selectedModel, dictionary } = useAppStore();
@@ -72,8 +78,9 @@ export function HomePage() {
 
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
     setTranscriptionResult(result);
-    await saveTranscript(result.text, result.audioPath, result.appName, result.durationSeconds);
-    setHistory(await getTranscripts());
+    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds);
+    await deleteRecordingFile(result.audioPath).catch(() => {});
+    setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
   };
 
   // Load transcript history on mount
@@ -81,7 +88,7 @@ export function HomePage() {
     let active = true;
 
     void withTimeout(
-      getTranscripts(),
+      getTranscripts(ANALYTICS_HISTORY_LIMIT),
       HISTORY_LOAD_TIMEOUT_MS,
       "Timed out loading transcript history"
     )
@@ -150,11 +157,13 @@ export function HomePage() {
   const toggleRecording = async () => {
     setRecordingBusy(true);
     setError(null);
+    let cleanupPath: string | null = null;
 
     try {
       if (recordingStatus?.isRecording) {
         const status = await stopRecording();
         setRecordingStatus(status);
+        cleanupPath = status.path;
 
         if (status.path) {
           setTranscribing(true);
@@ -179,6 +188,9 @@ export function HomePage() {
         setTranscriptionResult(null);
       }
     } catch (err) {
+      if (cleanupPath) {
+        await deleteRecordingFile(cleanupPath).catch(() => {});
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTranscribing(false);
@@ -204,6 +216,7 @@ export function HomePage() {
       result.durationSeconds = recordingStatus.durationSeconds;
       await applyTranscriptionResult(result);
     } catch (err) {
+      await deleteRecordingFile(recordingStatus.path).catch(() => {});
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTranscribing(false);
@@ -248,11 +261,16 @@ export function HomePage() {
   const hourlyActivity = buildHourlyActivity(history);
   const usageTrend = buildUsageTrend(history);
   const topApps = buildTopApps(history);
+  const dailyWordTrend = buildDailyWordTrend(history);
+  const durationBuckets = buildDurationBuckets(history);
   const lastDuration = recordingStatus?.durationSeconds ?? 0;
 
   useEffect(() => {
-    const missingAppNames = topApps
-      .map((app) => app.name)
+    const visibleAppNames = [
+      ...topApps.map((app) => app.name),
+      ...history.slice(0, 6).map((item) => item.app_name ?? "Unknown app"),
+    ];
+    const missingAppNames = Array.from(new Set(visibleAppNames))
       .filter((name) => !(name in appIcons) && name !== "Unknown app");
 
     if (missingAppNames.length === 0) return;
@@ -271,7 +289,7 @@ export function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [topApps, appIcons]);
+  }, [topApps, history, appIcons]);
 
   return (
     <ScrollArea className="h-full">
@@ -298,6 +316,20 @@ export function HomePage() {
           </button>
         </div>
 
+        <CommandCenterCard
+          hotkey={hotkey}
+          selectedModel={selectedModel}
+          nativeStatus={nativeStatus}
+          recordingStatus={recordingStatus}
+          recordingBusy={recordingBusy}
+          checking={checking}
+          transcribing={transcribing}
+          onToggleRecording={toggleRecording}
+          onCheckEngine={checkEngine}
+          onTranscribe={transcribe}
+          onEditHotkey={() => setHotkeyPickerOpen(true)}
+        />
+
         <section className="grid gap-3 md:grid-cols-4">
           <InsightStat label="Words dictated" value={totalWords.toLocaleString()} />
           <InsightStat label="Transcriptions" value={history.length.toLocaleString()} />
@@ -309,7 +341,7 @@ export function HomePage() {
         </section>
 
         <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-6">
                 <div>
@@ -332,155 +364,57 @@ export function HomePage() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <p className="mb-4 text-sm font-semibold text-foreground">Quick dictation</p>
-            <div className="flex items-center gap-4">
-              <GlowRecordButton
-                isRecording={recordingStatus?.isRecording ?? false}
-                disabled={!nativeStatus || recordingBusy}
-                onClick={toggleRecording}
-              />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-foreground">
-                  {recordingStatus?.isRecording
-                    ? "Recording"
-                    : recordingBusy
-                      ? "Working"
-                      : "Ready to record"}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {nativeStatus ? "Engine ready" : "Check engine before recording"}
-                </p>
+          <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
+            <p className="mb-4 text-sm font-semibold text-foreground">Current setup</p>
+            <div className="grid gap-2 text-sm">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-3 py-2">
+                <span className="text-muted-foreground">Model</span>
+                <span className="font-mono text-xs text-foreground">{selectedModel}</span>
               </div>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button variant="secondary" size="sm" onClick={checkEngine} disabled={checking}>
-                <CheckCircle2 className="h-4 w-4" />
-                {checking ? "Checking..." : "Check engine"}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={transcribe}
-                disabled={!recordingStatus?.path || recordingStatus.isRecording || transcribing}
-              >
-                <Wand2 className="h-4 w-4" />
-                {transcribing ? "Transcribing..." : "Transcribe"}
-              </Button>
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-6">
-          <div className="mb-5 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-foreground">Activity</h3>
-            <p className="text-xs text-muted-foreground">Last 6 months of dictation</p>
-          </div>
-          <div className="mb-5 grid gap-3 sm:grid-cols-3">
-            <MetricPill label="Active days" value={activitySummary.activeDays.toLocaleString()} />
-            <MetricPill
-              label="Best day"
-              value={activitySummary.bestDayCount > 0 ? `${activitySummary.bestDayCount} sessions` : "No data"}
-              detail={activitySummary.bestDayLabel}
-            />
-            <MetricPill
-              label="Weekly average"
-              value={`${activitySummary.averagePerWeek.toFixed(1)} sessions`}
-            />
-          </div>
-          <ActivityGrid days={activityDays} />
-        </section>
-
-        <section className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <h3 className="mb-4 text-lg font-semibold text-foreground">Top apps</h3>
-            {historyLoading ? (
-              <LoadingInline label="Loading app usage..." />
-            ) : topApps.length > 0 ? (
-              <TopApps apps={topApps} appIcons={appIcons} />
-            ) : (
-              <p className="text-sm text-muted-foreground">App usage will appear after new transcriptions.</p>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">Time of day</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Usage by hour, plus where most of your dictation time goes.
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  Peak hour
-                </p>
-                <p className="text-sm font-medium text-foreground">{hourlyActivity.peakLabel}</p>
-              </div>
-            </div>
-            <div className="mb-4 grid gap-3 sm:grid-cols-3">
-              <MetricPill label="Morning" value={hourlyActivity.segments.morning.toLocaleString()} />
-              <MetricPill label="Afternoon" value={hourlyActivity.segments.afternoon.toLocaleString()} />
-              <MetricPill label="Evening" value={hourlyActivity.segments.evening.toLocaleString()} />
-            </div>
-            <HourlyChart values={hourlyActivity.values} durations={hourlyActivity.durations} />
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-5">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-lg font-semibold text-foreground">Usage over time</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Track how often you dictate and how much time you spend across the last 8 weeks.
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                Total recorded
-              </p>
-              <p className="text-sm font-medium text-foreground">
-                {formatDurationCompact(totalDurationSeconds)}
-              </p>
-            </div>
-          </div>
-          <UsageTrendChart points={usageTrend} />
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-5">
-          <h3 className="mb-4 text-lg font-semibold text-foreground">Recent transcripts</h3>
-          {historyLoading ? (
-            <LoadingInline label="Loading transcript history..." />
-          ) : historyError ? (
-            <p className="text-sm text-destructive">{historyError}</p>
-          ) : history.length > 0 ? (
-            <div className="grid gap-2 md:grid-cols-2">
-              {history.slice(0, 6).map((t) => (
-                <div
-                  key={t.id}
-                  className="group flex items-start gap-3 rounded-xl border border-border bg-background p-3 transition-colors hover:border-ring"
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-3 py-2">
+                <span className="text-muted-foreground">Shortcut</span>
+                <button
+                  onClick={() => setHotkeyPickerOpen(true)}
+                  className="font-mono text-xs text-primary transition-colors hover:text-foreground"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="line-clamp-2 text-sm leading-5 text-foreground">
-                      {t.text}
-                    </p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      {t.app_name ?? "Unknown app"} · {new Date(t.created_at).toLocaleString()}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleDelete(t.id)}
-                    className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                    aria-label="Delete transcript"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+                  {formatShortcut(hotkey)}
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-3 py-2">
+                <span className="text-muted-foreground">Engine</span>
+                <span className="text-xs font-medium text-foreground">
+                  {nativeStatus ? "Ready" : checking ? "Checking" : "Not checked"}
+                </span>
+              </div>
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No transcripts yet.</p>
-          )}
+          </div>
+        </section>
+
+        <div className="grid gap-5">
+          <Suspense fallback={<AnalyticsLoading />}>
+            <AnalyticsPanels
+              activitySummary={activitySummary}
+              activityDays={activityDays}
+              topApps={topApps}
+              appIcons={appIcons}
+              historyLoading={historyLoading}
+              hourlyActivity={hourlyActivity}
+              usageTrend={usageTrend}
+              dailyWordTrend={dailyWordTrend}
+              durationBuckets={durationBuckets}
+              totalDurationSeconds={totalDurationSeconds}
+            />
+          </Suspense>
+        </div>
+
+        <section className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
+          <RecentTranscripts
+            history={history}
+            historyLoading={historyLoading}
+            historyError={historyError}
+            appIcons={appIcons}
+            onDelete={handleDelete}
+          />
         </section>
 
         {error && (
@@ -490,7 +424,7 @@ export function HomePage() {
         )}
 
         {transcriptionResult && (
-          <section className="rounded-2xl border border-border bg-card p-5">
+          <section className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
               Latest transcript
             </p>
@@ -519,7 +453,11 @@ function countWords(text: string) {
 }
 
 function dayKey(timestamp: number) {
-  return new Date(timestamp).toISOString().slice(0, 10);
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function buildActivityDays(history: TranscriptRow[]) {
@@ -576,13 +514,15 @@ function buildHourlyActivity(history: TranscriptRow[]) {
     (best, value, hour) => (value > values[best] ? hour : best),
     0
   );
+  const totalSessions = values.reduce((sum, value) => sum + value, 0);
 
   return {
     values,
     durations,
     peakHour,
-    peakLabel: formatHourLabel(peakHour),
+    peakLabel: totalSessions > 0 ? formatHourLabel(peakHour) : "No activity yet",
     segments: {
+      night: values.slice(0, 6).reduce((sum, value) => sum + value, 0),
       morning: values.slice(6, 12).reduce((sum, value) => sum + value, 0),
       afternoon: values.slice(12, 18).reduce((sum, value) => sum + value, 0),
       evening: values.slice(18).reduce((sum, value) => sum + value, 0),
@@ -640,6 +580,50 @@ function buildUsageTrend(history: TranscriptRow[]) {
   return Array.from(buckets.values());
 }
 
+function buildDailyWordTrend(history: TranscriptRow[]) {
+  const buckets = new Map<string, { label: string; words: number; sessions: number }>();
+
+  for (let index = 13; index >= 0; index -= 1) {
+    const date = new Date();
+    date.setDate(date.getDate() - index);
+    const key = dayKey(date.getTime());
+    buckets.set(key, {
+      label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+      words: 0,
+      sessions: 0,
+    });
+  }
+
+  history.forEach((item) => {
+    const key = dayKey(item.created_at);
+    const bucket = buckets.get(key);
+    if (!bucket) return;
+    bucket.words += countWords(item.text);
+    bucket.sessions += 1;
+  });
+
+  return Array.from(buckets.values());
+}
+
+function buildDurationBuckets(history: TranscriptRow[]) {
+  const buckets = [
+    { label: "<30s", min: 0, max: 30, sessions: 0 },
+    { label: "30s-1m", min: 30, max: 60, sessions: 0 },
+    { label: "1-3m", min: 60, max: 180, sessions: 0 },
+    { label: "3-5m", min: 180, max: 300, sessions: 0 },
+    { label: "5m+", min: 300, max: Infinity, sessions: 0 },
+  ];
+
+  history.forEach((item) => {
+    const duration = item.duration_seconds;
+    if (!duration || duration <= 0) return;
+    const bucket = buckets.find(({ min, max }) => duration >= min && duration < max);
+    if (bucket) bucket.sessions += 1;
+  });
+
+  return buckets.map(({ label, sessions }) => ({ label, sessions }));
+}
+
 function buildTopApps(history: TranscriptRow[]) {
   const counts = new Map<string, { count: number; words: number }>();
   history.forEach((item) => {
@@ -656,245 +640,270 @@ function buildTopApps(history: TranscriptRow[]) {
     .slice(0, 12);
 }
 
+function AnalyticsLoading() {
+  return (
+    <div className="surface-depth-soft flex items-center gap-3 rounded-2xl border border-border bg-card px-5 py-4 text-sm text-muted-foreground">
+      <Spinner className="size-4" />
+      Loading analytics charts...
+    </div>
+  );
+}
+
+function CommandCenterCard({
+  hotkey,
+  selectedModel,
+  nativeStatus,
+  recordingStatus,
+  recordingBusy,
+  checking,
+  transcribing,
+  onToggleRecording,
+  onCheckEngine,
+  onTranscribe,
+  onEditHotkey,
+}: {
+  hotkey: string;
+  selectedModel: string;
+  nativeStatus: NativeStatus | null;
+  recordingStatus: RecordingStatus | null;
+  recordingBusy: boolean;
+  checking: boolean;
+  transcribing: boolean;
+  onToggleRecording: () => void;
+  onCheckEngine: () => void;
+  onTranscribe: () => void;
+  onEditHotkey: () => void;
+}) {
+  const isRecording = recordingStatus?.isRecording ?? false;
+  const statusLabel = isRecording
+    ? "Recording"
+    : transcribing
+      ? "Transcribing"
+      : recordingBusy
+        ? "Working"
+        : nativeStatus
+          ? "Ready"
+          : "Check engine";
+  const helperText = isRecording
+    ? "Listening locally. Press stop when you are done."
+    : transcribing
+      ? "Converting your audio into text."
+      : nativeStatus
+        ? "Start a local dictation session from here or use the global shortcut."
+        : "Verify the native engine before recording.";
+
+  return (
+    <section className="surface-depth rounded-[1.6rem] border border-border bg-card p-5">
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-4">
+          <GlowRecordButton
+            isRecording={isRecording}
+            disabled={!nativeStatus || recordingBusy || transcribing}
+            onClick={onToggleRecording}
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-lg font-semibold text-foreground">Dictation command center</p>
+              <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                {statusLabel}
+              </span>
+            </div>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{helperText}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+              <button
+                onClick={onEditHotkey}
+                className="rounded-full border border-border bg-background px-3 py-1 font-mono transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {formatShortcut(hotkey)}
+              </button>
+              <span className="rounded-full border border-border bg-background px-3 py-1 font-mono">
+                {selectedModel}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+          <Button variant="secondary" onClick={onCheckEngine} disabled={checking || recordingBusy || transcribing}>
+            <CheckCircle2 className="h-4 w-4" />
+            {checking ? "Checking..." : nativeStatus ? "Engine ready" : "Check engine"}
+          </Button>
+          <Button onClick={onToggleRecording} disabled={!nativeStatus || recordingBusy || transcribing}>
+            <Mic className="h-4 w-4" />
+            {isRecording ? "Stop recording" : "Start recording"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={onTranscribe}
+            disabled={!recordingStatus?.path || isRecording || transcribing}
+          >
+            <Wand2 className="h-4 w-4" />
+            {transcribing ? "Transcribing..." : "Transcribe last"}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function InsightStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
+    <div className="surface-depth-soft rounded-2xl border border-border bg-card p-4">
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className="mt-2 font-mono text-3xl font-semibold text-primary">{value}</p>
     </div>
   );
 }
 
-function LoadingInline({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Spinner className="size-4" />
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function MetricPill({
-  label,
-  value,
-  detail,
+function RecentTranscripts({
+  history,
+  historyLoading,
+  historyError,
+  appIcons,
+  onDelete,
 }: {
-  label: string;
-  value: string;
-  detail?: string;
+  history: TranscriptRow[];
+  historyLoading: boolean;
+  historyError: string | null;
+  appIcons: Record<string, string | null>;
+  onDelete: (id: number) => void;
 }) {
+  const recent = history.slice(0, 6);
+
   return (
-    <div className="rounded-xl border border-border bg-background px-4 py-3">
-      <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-medium text-foreground">{value}</p>
-      {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
-    </div>
-  );
-}
-
-function ActivityGrid({ days }: { days: Array<{ key: string; count: number }> }) {
-  const max = Math.max(1, ...days.map((day) => day.count));
-  const weeks = Array.from({ length: Math.ceil(days.length / 7) }, (_, index) =>
-    days.slice(index * 7, index * 7 + 7)
-  );
-  const seenMonths = new Set<string>();
-  const monthLabels = weeks.map((week, index) => {
-    const firstOfMonth = week.find((day) => new Date(day.key).getDate() <= 7);
-    if (!firstOfMonth) {
-      return { key: `${week[0]?.key ?? index}`, label: "" };
-    }
-
-    const date = new Date(firstOfMonth.key);
-    const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
-    if (seenMonths.has(monthKey)) {
-      return { key: `${firstOfMonth.key}-${index}`, label: "" };
-    }
-
-    seenMonths.add(monthKey);
-    return {
-      key: `${firstOfMonth.key}-${index}`,
-      label: date.toLocaleString(undefined, { month: "short", year: "numeric" }),
-    };
-  });
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-[repeat(26,minmax(0,1fr))] gap-1 text-[11px] text-muted-foreground">
-        {monthLabels.map((month) => (
-          <span key={month.key}>{month.label}</span>
-        ))}
-      </div>
-      <div className="grid grid-cols-[repeat(26,minmax(0,1fr))] gap-1 overflow-hidden">
-        {weeks.map((week, weekIndex) => (
-          <div key={week[0]?.key ?? weekIndex} className="grid grid-rows-7 gap-1">
-            {week.map((day) => (
-              <div
-                key={day.key}
-                title={`${day.key}: ${day.count} transcriptions`}
-                className={[
-                  "aspect-square rounded-[3px]",
-                  day.count === 0
-                    ? "bg-muted"
-                    : day.count / max > 0.66
-                      ? "bg-primary"
-                      : day.count / max > 0.33
-                        ? "bg-primary/65"
-                        : "bg-primary/30",
-                ].join(" ")}
-              />
-            ))}
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span>Less</span>
-        <span className="h-4 w-4 rounded bg-muted" />
-        <span className="h-4 w-4 rounded bg-primary/30" />
-        <span className="h-4 w-4 rounded bg-primary/65" />
-        <span className="h-4 w-4 rounded bg-primary" />
-        <span>More</span>
-      </div>
-    </div>
-  );
-}
-
-function HourlyChart({ values, durations }: { values: number[]; durations: number[] }) {
-  const max = Math.max(1, ...values);
-  const maxDuration = Math.max(1, ...durations);
-  return (
-    <div className="space-y-4">
-      <div className="flex h-52 items-end gap-1 rounded-xl border border-border bg-background p-3">
-        {values.map((value, hour) => (
-          <div key={hour} className="flex flex-1 flex-col items-center gap-2">
-            <div className="flex h-36 w-full items-end gap-1">
-              <div
-                className="w-1/2 rounded-t bg-primary transition-all"
-                style={{ height: `${Math.max(6, (value / max) * 100)}%`, opacity: value ? 1 : 0.18 }}
-                title={`${formatHourLabel(hour)}: ${value} transcriptions`}
-              />
-              <div
-                className="w-1/2 rounded-t bg-primary/35 transition-all"
-                style={{
-                  height: `${Math.max(6, (durations[hour] / maxDuration) * 100)}%`,
-                  opacity: durations[hour] ? 1 : 0.18,
-                }}
-                title={`${formatHourLabel(hour)}: ${formatDurationCompact(durations[hour])} recorded`}
-              />
-            </div>
-            {hour % 6 === 0 && (
-              <span className="text-[10px] text-muted-foreground">{hour === 0 ? "12a" : `${hour}h`}</span>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-          Sessions
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-foreground">Recent transcripts</h3>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-primary/35" />
-          Time spent
-        </div>
+        {history.length > 0 && (
+          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
+            {history.length} total
+          </span>
+        )}
       </div>
-    </div>
-  );
-}
 
-function UsageTrendChart({
-  points,
-}: {
-  points: Array<{ label: string; count: number; duration: number }>;
-}) {
-  const maxCount = Math.max(1, ...points.map((point) => point.count));
-  const maxDuration = Math.max(1, ...points.map((point) => point.duration));
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-border bg-background p-4">
-        <div className="space-y-3">
-          {points.map((point) => (
-            <div key={point.label} className="grid grid-cols-[56px_1fr_84px] items-center gap-3">
-              <span className="text-xs text-muted-foreground">{point.label}</span>
-              <div className="space-y-1">
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.max(6, (point.count / maxCount) * 100)}%` }}
-                  />
+      {historyLoading ? (
+        <div className="grid gap-2 md:grid-cols-2">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="rounded-xl border border-border bg-background p-3">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-lg bg-muted" />
+                <div className="space-y-2">
+                  <div className="h-3 w-24 rounded bg-muted" />
+                  <div className="h-2.5 w-32 rounded bg-muted/70" />
                 </div>
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary/35"
-                    style={{ width: `${Math.max(6, (point.duration / maxDuration) * 100)}%` }}
-                  />
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-medium text-foreground">{point.count} sessions</p>
-                <p className="text-[11px] text-muted-foreground">
-                  {formatDurationCompact(point.duration)}
-                </p>
               </div>
             </div>
           ))}
         </div>
-      </div>
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-          Usage count
+      ) : historyError ? (
+        <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+          {historyError}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-primary/35" />
-          Time spent
+      ) : recent.length > 0 ? (
+        <div className="grid gap-2 md:grid-cols-2">
+          {recent.map((item) => (
+            <TranscriptCard
+              key={item.id}
+              item={item}
+              iconSrc={appIcons[item.app_name ?? "Unknown app"] ?? null}
+              onDelete={onDelete}
+            />
+          ))}
         </div>
-      </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border bg-background px-5 py-6 text-center">
+          <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+            <Mic className="h-4 w-4" />
+          </div>
+          <p className="text-sm font-medium text-foreground">No transcripts yet</p>
+          <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+            Start a dictation session and your latest transcript previews will appear here.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
-function TopApps({
-  apps,
-  appIcons,
+function TranscriptCard({
+  item,
+  iconSrc,
+  onDelete,
 }: {
-  apps: Array<{ name: string; count: number; words: number }>;
-  appIcons: Record<string, string | null>;
+  item: TranscriptRow;
+  iconSrc: string | null;
+  onDelete: (id: number) => void;
 }) {
-  const totalWords = Math.max(1, apps.reduce((sum, app) => sum + app.words, 0));
-  const max = Math.max(1, ...apps.map((app) => app.words));
+  const appName = item.app_name ?? "Unknown app";
+  const words = countWords(item.text);
+  const [copied, setCopied] = useState(false);
+
+  const copyTranscript = async () => {
+    await navigator.clipboard.writeText(item.text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
+
   return (
-    <ScrollArea className="h-80 pr-3">
-      <div className="space-y-4">
-        {apps.map((app) => (
-          <div key={app.name} className="grid grid-cols-[36px_1fr] items-center gap-3">
-            <AppBadge name={app.name} iconSrc={appIcons[app.name] ?? null} />
-            <div className="min-w-0">
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{app.name}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {app.count} {app.count === 1 ? "dictation" : "dictations"} · {app.words.toLocaleString()} words
-                  </p>
-                </div>
-                <p className="font-mono text-xs text-muted-foreground">
-                  {Math.round((app.words / totalWords) * 100)}%
-                </p>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary"
-                  style={{ width: `${Math.max(6, (app.words / max) * 100)}%` }}
-                />
-              </div>
-            </div>
+    <article
+      className="group relative overflow-hidden rounded-xl border border-border bg-background px-3 py-2.5 transition-colors hover:border-ring"
+    >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+      <div className="mb-2 flex items-center justify-between gap-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <AppBadge name={appName} iconSrc={iconSrc} className="h-8 w-8 rounded-lg text-[11px]" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-foreground">{appName}</p>
+            <p className="text-[11px] text-muted-foreground">{formatTranscriptDate(item.created_at)}</p>
           </div>
-        ))}
+        </div>
+        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={() => void copyTranscript()}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            aria-label="Copy transcript"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+          <button
+            onClick={() => onDelete(item.id)}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            aria-label="Delete transcript"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
-    </ScrollArea>
+
+      <p className="line-clamp-2 text-sm leading-5 text-foreground/90">
+        {item.text}
+      </p>
+
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+        <span className="rounded-full border border-border bg-card px-2 py-0.5 font-mono">
+          {words} {words === 1 ? "word" : "words"}
+        </span>
+        {item.duration_seconds ? (
+          <span className="rounded-full border border-border bg-card px-2 py-0.5 font-mono">
+            {formatDurationCompact(item.duration_seconds)} audio
+          </span>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
-function AppBadge({ name, iconSrc }: { name: string; iconSrc: string | null }) {
+function AppBadge({
+  name,
+  iconSrc,
+  className,
+}: {
+  name: string;
+  iconSrc: string | null;
+  className?: string;
+}) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -903,9 +912,9 @@ function AppBadge({ name, iconSrc }: { name: string; iconSrc: string | null }) {
     .join("") || "?";
 
   return (
-    <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-sidebar-accent font-mono text-xs font-semibold text-primary">
+    <div className={["flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-sidebar-accent font-mono text-xs font-semibold text-primary", className].filter(Boolean).join(" ")}>
       {iconSrc ? (
-        <img src={iconSrc} alt="" className="h-7 w-7 rounded-lg object-cover" />
+        <img src={iconSrc} alt="" className="h-7 w-7 rounded-md object-cover" />
       ) : (
         initials
       )}
@@ -931,6 +940,28 @@ function formatDurationCompact(seconds: number) {
   return `${hours}h ${minutes}m`;
 }
 
+function formatTranscriptDate(timestamp: number) {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (dayKey(timestamp) === dayKey(today.getTime())) {
+    return `Today, ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+
+  if (dayKey(timestamp) === dayKey(yesterday.getTime())) {
+    return `Yesterday, ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function startOfWeek(date: Date) {
   const next = new Date(date);
   const day = next.getDay();
@@ -944,7 +975,9 @@ function DictationWidget({ mode }: { mode: "recording" | "transcribing" }) {
   const isRecording = mode === "recording";
 
   return (
-    <div className="fixed right-6 top-14 z-40 flex items-center gap-3 rounded-full border border-border bg-muted px-4 py-2 shadow-2xl shadow-black/40">
+    <div
+      className="fixed right-6 top-14 z-40 flex items-center gap-3 rounded-full border border-border bg-muted px-4 py-2"
+    >
       <div
         className={[
           "flex h-8 w-8 items-center justify-center rounded-full",

@@ -1,5 +1,4 @@
 import { Code2, ExternalLink, Globe, Mail, MonitorSmartphone, Sparkles } from "lucide-react"
-import { type Update } from "@tauri-apps/plugin-updater"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import {
@@ -8,56 +7,13 @@ import {
   ABOUT_VERSION,
   ABOUT_WEBSITE,
 } from "@/lib/about"
+import { openExternalLink } from "@/lib/external-link"
 import { useAppStore } from "@/store/app-store"
 
 function formatBytes(bytes: number) {
   const gb = bytes / 1024 / 1024 / 1024
   if (gb >= 1) return `${gb.toFixed(2).replace(/\.?0+$/, "")} GB`
   return `${Math.round(bytes / 1024 / 1024)} MB`
-}
-
-export function getUpdateNotes(update: Update | null) {
-  if (!update) return ""
-
-  const updateWithNotes = update as Update & { body?: string; notes?: string }
-  return updateWithNotes.body || updateWithNotes.notes || "No changelog was included for this update."
-}
-
-export function renderReleaseNotes(notes: string) {
-  return notes.split("\n").map((line, index) => {
-    const trimmed = line.trim()
-    if (!trimmed) return null
-
-    if (trimmed.startsWith("## ")) {
-      return (
-        <p key={`${trimmed}-${index}`} className="mt-4 text-sm font-semibold text-foreground first:mt-0">
-          {trimmed.replace(/^##\s+/, "")}
-        </p>
-      )
-    }
-
-    if (trimmed.startsWith("### ")) {
-      return (
-        <p key={`${trimmed}-${index}`} className="mt-3 text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">
-          {trimmed.replace(/^###\s+/, "")}
-        </p>
-      )
-    }
-
-    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      return (
-        <p key={`${trimmed}-${index}`} className="pl-3 text-sm leading-6 text-muted-foreground before:mr-2 before:content-['-']">
-          {trimmed.replace(/^[-*]\s+/, "")}
-        </p>
-      )
-    }
-
-    return (
-      <p key={`${trimmed}-${index}`} className="text-sm leading-6 text-muted-foreground">
-        {trimmed}
-      </p>
-    )
-  })
 }
 
 export function AboutPage() {
@@ -81,7 +37,7 @@ export function AboutPage() {
 
       <ScrollArea className="h-full">
         <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
-          <section className="overflow-hidden rounded-[2rem] border border-border bg-card shadow-xs">
+          <section className="overflow-hidden rounded-[2rem] border border-border bg-card">
             <div className="relative px-6 py-7 lg:px-8 lg:py-8">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.12),transparent_34%)]" />
               <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
@@ -91,7 +47,7 @@ export function AboutPage() {
                     About Vox
                   </div>
                   <div className="flex items-center gap-4">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-background shadow-sm">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-background">
                       <img src="/logo.png" alt="Vox" className="h-9 w-9 object-contain" />
                     </div>
                     <div>
@@ -122,7 +78,7 @@ export function AboutPage() {
 
           <section className="grid gap-4 lg:grid-cols-[0.82fr_1.18fr]">
             <div className="space-y-4">
-              <div className="rounded-2xl border border-border bg-card p-5 shadow-xs">
+              <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <MonitorSmartphone className="h-4 w-4" />
                 </div>
@@ -136,7 +92,7 @@ export function AboutPage() {
               </div>
             </div>
             <div className="space-y-4">
-              <div className="rounded-2xl border border-border bg-card p-5 shadow-xs">
+              <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-base font-semibold text-foreground">Updates</p>
@@ -218,6 +174,10 @@ export function AboutPage() {
                     href={ABOUT_REPOSITORY + "/releases"}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      openExternalLink(ABOUT_REPOSITORY + "/releases")
+                    }}
                     className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
                   >
                     View releases
@@ -239,6 +199,10 @@ function AboutLinkButton({ icon, href, label }: { icon: React.ReactNode; href: s
       href={href}
       target={href.startsWith("mailto:") ? undefined : "_blank"}
       rel={href.startsWith("mailto:") ? undefined : "noreferrer"}
+      onClick={(event) => {
+        event.preventDefault()
+        openExternalLink(href)
+      }}
       className="inline-flex items-center gap-2 rounded-full border border-border bg-background/85 px-3.5 py-2 text-sm font-medium text-foreground backdrop-blur transition-colors hover:bg-muted"
     >
       {icon}

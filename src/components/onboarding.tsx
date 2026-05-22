@@ -484,7 +484,7 @@ function ShortcutDisplay({ shortcut }: { shortcut: string }) {
     <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
       {shortcut.split("+").map((key, index, keys) => (
         <div key={`${key}-${index}`} className="flex items-center gap-3">
-          <kbd className="min-w-14 rounded-xl border border-border bg-background px-4 py-3 text-center font-mono text-xl font-semibold text-foreground shadow-sm">
+          <kbd className="min-w-14 rounded-xl border border-border bg-background px-4 py-3 text-center font-mono text-xl font-semibold text-foreground">
             {formatShortcut(key)}
           </kbd>
           {index < keys.length - 1 && (

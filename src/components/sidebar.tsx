@@ -1,4 +1,4 @@
-import { CircleHelp, Cpu, Home, Settings, Sparkles } from "lucide-react";
+import { CircleHelp, Cpu, FileText, Home, Settings, Sparkles } from "lucide-react";
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -14,6 +14,7 @@ interface SidebarProps {
 
 const primaryNav = [
   { id: "home", label: "Dictation", icon: Home },
+  { id: "transcripts", label: "Transcripts", icon: FileText },
   { id: "models", label: "Models", icon: Cpu },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "about", label: "About", icon: CircleHelp },
@@ -23,13 +24,13 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
   return (
     <ShadcnSidebar
       collapsible="none"
-      className="select-none border-r border-sidebar-border bg-sidebar/95"
+      className="surface-depth-soft select-none border-r border-sidebar-border bg-sidebar/95"
     >
       <SidebarHeader
         className="shrink-0 px-4 pb-4 pt-[52px]"
         data-tauri-drag-region
       >
-        <div className="rounded-2xl border border-sidebar-border bg-background/65 p-3 shadow-xs">
+        <div className="surface-depth-soft rounded-2xl border border-sidebar-border bg-background/65 p-3">
           <div className="flex items-center gap-3">
             <div className="relative flex items-center justify-center">
               <img src="/logo.png" alt="Vox" className="h-8 w-8 object-contain" />
@@ -59,7 +60,7 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
                 className={cn(
                   "group relative flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-150",
                   active
-                    ? "bg-background text-sidebar-foreground shadow-xs ring-1 ring-sidebar-border"
+                    ? "surface-depth-soft bg-background text-sidebar-foreground ring-1 ring-sidebar-border"
                     : "text-muted-foreground hover:bg-background/55 hover:text-sidebar-foreground"
                 )}
               >
@@ -84,7 +85,7 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
       </SidebarContent>
 
       <SidebarFooter className="p-3">
-        <div className="rounded-2xl border border-sidebar-border bg-background/65 p-3 shadow-xs">
+        <div className="surface-depth-soft rounded-2xl border border-sidebar-border bg-background/65 p-3">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium text-sidebar-foreground">
             <Sparkles className="h-3.5 w-3.5 text-primary" />
             Private by default

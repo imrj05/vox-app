@@ -1,7 +1,11 @@
 use std::{
-    fs::{self, File},
-    io::{Read, Write},
+    fs,
     path::{Path, PathBuf},
+};
+
+use tokio::{
+    fs::File,
+    io::AsyncWriteExt,
 };
 
 use serde::Serialize;
@@ -94,7 +98,7 @@ pub fn list_models(models_dir: &Path) -> Vec<WhisperModelInfo> {
         .collect()
 }
 
-pub fn download_model(
+pub async fn download_model(
     models_dir: &Path,
     model_name: &str,
     on_progress: impl Fn(u64, u64),
@@ -110,7 +114,9 @@ pub fn download_model(
     }
 
     let temp_path = path.with_extension("download");
-    let mut response = reqwest::blocking::get(model.url).map_err(|error| error.to_string())?;
+    let mut response = reqwest::get(model.url)
+        .await
+        .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "Model download failed with HTTP {}",
@@ -125,18 +131,20 @@ pub fn download_model(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(model.size);
 
-    let mut file = File::create(&temp_path).map_err(|error| error.to_string())?;
+    let mut file = File::create(&temp_path)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut downloaded: u64 = 0;
-    let mut buf = vec![0u8; 65_536];
     loop {
-        let n = response.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
+        let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? else {
             break;
-        }
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        downloaded += n as u64;
+        };
+        file.write_all(&chunk).await.map_err(|error| error.to_string())?;
+        downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
     }
+
+    file.flush().await.map_err(|error| error.to_string())?;
 
     let downloaded_size = fs::metadata(&temp_path)
         .map_err(|error| error.to_string())?

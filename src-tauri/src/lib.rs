@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -131,6 +132,32 @@ fn parse_shortcut(s: &str) -> Result<Shortcut, String> {
         Some(modifiers)
     };
     Ok(Shortcut::new(mods, code))
+}
+
+#[tauri::command]
+fn open_external_link(href: String) -> Result<(), String> {
+    let normalized = href.to_ascii_lowercase();
+    if !(normalized.starts_with("https://")
+        || normalized.starts_with("http://")
+        || normalized.starts_with("mailto:"))
+    {
+        return Err("Unsupported link type".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(&href).spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", href.as_str()])
+        .spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(&href).spawn();
+
+    result
+        .map(|_| ())
+        .map_err(|error| format!("Could not open link: {error}"))
 }
 
 mod whisper;
@@ -535,6 +562,57 @@ fn delete_whisper_model(app: AppHandle, model_name: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn delete_recording_file(audio_path: String) -> Result<(), String> {
+    let audio_path = PathBuf::from(audio_path);
+    if audio_path.exists() {
+        std::fs::remove_file(&audio_path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cleanup_recordings(app: AppHandle) -> Result<u64, String> {
+    let recordings_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("recordings");
+
+    if !recordings_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0;
+    for entry in fs::read_dir(&recordings_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+#[tauri::command]
+fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let recordings_dir = app_data_dir.join("recordings");
+    let models_dir = whisper::models_dir(app_data_dir);
+
+    if recordings_dir.exists() {
+        fs::remove_dir_all(&recordings_dir).map_err(|error| error.to_string())?;
+    }
+
+    if models_dir.exists() {
+        fs::remove_dir_all(&models_dir).map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn download_whisper_model(
     app: AppHandle,
     model_name: String,
@@ -542,20 +620,17 @@ async fn download_whisper_model(
     let models_dir = whisper_models_dir(&app)?;
     let app_progress = app.clone();
     let progress_name = model_name.clone();
-    tokio::task::spawn_blocking(move || -> Result<WhisperModelInfo, String> {
-        whisper::download_model(&models_dir, &model_name, move |downloaded, total| {
-            let _ = app_progress.emit(
-                "vox-download-progress",
-                DownloadProgress {
-                    model_name: progress_name.clone(),
-                    downloaded,
-                    total,
-                },
-            );
-        })
+    whisper::download_model(&models_dir, &model_name, move |downloaded, total| {
+        let _ = app_progress.emit(
+            "vox-download-progress",
+            DownloadProgress {
+                model_name: progress_name.clone(),
+                downloaded,
+                total,
+            },
+        );
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -832,6 +907,9 @@ pub fn run() {
             whisper_models,
             download_whisper_model,
             delete_whisper_model,
+            delete_recording_file,
+            cleanup_recordings,
+            wipe_local_app_files,
             transcribe_recording,
             transcribe_sample,
             get_current_shortcut,
@@ -845,6 +923,7 @@ pub fn run() {
             check_accessibility_permission,
             request_accessibility_permission,
             resolve_app_icon,
+            open_external_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Vox");

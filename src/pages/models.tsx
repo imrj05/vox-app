@@ -1,11 +1,24 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CheckCircle2, Download, Mic, Square, Trash2, Wand2 } from "lucide-react";
+import { Download, Mic, Square, Trash2, Wand2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
+import { saveTranscript } from "@/lib/db";
 import {
+  deleteRecordingFile,
   downloadWhisperModel,
   deleteWhisperModel,
   getNativeStatus,
@@ -26,14 +39,14 @@ interface DownloadProgress {
   total: number;
 }
 
-const MODEL_META: Record<string, { description: string; version: string }> = {
-  "tiny.en":          { description: "Fastest, lowest quality. Good for quick tests and very constrained machines.", version: "v1.0" },
-  "base.en":          { description: "Recommended default. Strong accuracy and real-time on Apple Silicon.", version: "v1.0" },
-  "small.en":         { description: "Better accuracy, especially for non-English. ~2x slower than base.", version: "v1.0" },
-  "medium.en":        { description: "Strong multilingual quality. ~4x slower than base; needs 8 GB+ RAM.", version: "v1.0" },
-  "large-v3":         { description: "Best accuracy, all languages. ~8x slower than base; needs 16 GB+ RAM.", version: "v3.0" },
-  "distil-large-v3":  { description: "Recommended English upgrade: ~2x faster than large-v3 with near-identical accuracy. English-focused.", version: "v3.0" },
-  "large-v3-turbo":   { description: "Premium: near large-v3 accuracy at ~2x the speed. All languages. Needs 8 GB+ RAM.", version: "v3.0" },
+const MODEL_META: Record<string, { description: string; version: string; badges: string[] }> = {
+  "tiny.en":          { description: "Fastest, lowest quality. Good for quick tests and very constrained machines.", version: "v1.0", badges: ["fastest", "english", "low memory"] },
+  "base.en":          { description: "Recommended default. Strong accuracy and real-time on Apple Silicon.", version: "v1.0", badges: ["recommended", "balanced", "english"] },
+  "small.en":         { description: "Better English accuracy with a moderate speed tradeoff. ~2x slower than base.", version: "v1.0", badges: ["accurate", "english", "medium"] },
+  "medium.en":        { description: "Strong quality. ~4x slower than base; needs 8 GB+ RAM.", version: "v1.0", badges: ["high quality", "english", "8 GB+"] },
+  "large-v3":         { description: "Best accuracy, all languages. ~8x slower than base; needs 16 GB+ RAM.", version: "v3.0", badges: ["best accuracy", "multilingual", "16 GB+"] },
+  "distil-large-v3":  { description: "Recommended English upgrade: ~2x faster than large-v3 with near-identical accuracy. English-focused.", version: "v3.0", badges: ["premium", "fast large", "english"] },
+  "large-v3-turbo":   { description: "Premium: near large-v3 accuracy at ~2x the speed. All languages. Needs 8 GB+ RAM.", version: "v3.0", badges: ["premium", "turbo", "multilingual"] },
 };
 
 function formatBytes(bytes: number) {
@@ -137,6 +150,7 @@ export function ModelsPage() {
   const toggleQuickDictation = async () => {
     setRecordingBusy(true);
     setError(null);
+    let cleanupPath: string | null = null;
     try {
       if (!nativeStatus) {
         setNativeStatus(await getNativeStatus());
@@ -145,6 +159,7 @@ export function ModelsPage() {
       if (recordingStatus?.isRecording) {
         const status = await stopRecording();
         setRecordingStatus(status);
+        cleanupPath = status.path;
         if (status.path) {
           setTranscribing(true);
           const result = await transcribeRecording(
@@ -155,7 +170,10 @@ export function ModelsPage() {
             status.windowTitle
           );
           result.appName = status.appName;
+          result.durationSeconds = status.durationSeconds;
           setTranscriptionResult(result);
+          await saveTranscript(result.text, undefined, result.appName, result.durationSeconds);
+          await deleteRecordingFile(result.audioPath).catch(() => {});
         }
         return;
       }
@@ -166,6 +184,9 @@ export function ModelsPage() {
         setTranscriptionResult(null);
       }
     } catch (err) {
+      if (cleanupPath) {
+        await deleteRecordingFile(cleanupPath).catch(() => {});
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTranscribing(false);
@@ -174,6 +195,8 @@ export function ModelsPage() {
   };
 
   const activeModel = models.find((model) => model.name === selectedModel);
+  const downloadedModels = models.filter((model) => model.downloaded);
+  const totalDownloadedSize = downloadedModels.reduce((sum, model) => sum + model.size, 0);
   const quickStatus = recordingStatus?.isRecording
     ? "Listening now"
     : transcribing
@@ -183,235 +206,311 @@ export function ModelsPage() {
         : "Check engine to start";
 
   return (
-    <ScrollArea className="h-full">
-      <div className="p-6 space-y-6 max-w-3xl">
-        <div>
-          <h2 className="text-sm font-semibold text-foreground mb-1">
-            Local Whisper Models
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Models are downloaded from HuggingFace and cached locally. Only the active model is used for transcription.
-          </p>
-        </div>
-
-        {error && (
-          <div className="rounded-lg border border-border bg-card p-3 text-xs text-destructive">
-            {error}
+    <div className="h-full overflow-hidden bg-background">
+      <ScrollArea className="h-full">
+        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Local Whisper models</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Download, compare, and manage the local models used for dictation.
+              </p>
+            </div>
+            <div className="flex justify-start lg:justify-end">
+              <span className="rounded-full border border-border bg-card px-3 py-2 text-xs font-medium text-muted-foreground">
+                {nativeStatus ? "Engine ready" : "Engine not checked"}
+              </span>
+            </div>
           </div>
-        )}
 
-        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-xs">
-          <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 items-start gap-4">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
-                <Wand2 className="h-5 w-5" />
-              </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <LibraryStat label="Downloaded" value={downloadedModels.length.toLocaleString()} />
+            <LibraryStat label="Stored" value={formatBytes(totalDownloadedSize)} />
+            <LibraryStat label="Active" value={activeModel?.displayName ?? selectedModel} />
+          </div>
+
+          {error && (
+            <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-4 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          <article className="rounded-2xl border border-border bg-card p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-sm font-semibold text-foreground">
-                    Quick dictation
-                  </h3>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-sidebar-accent text-primary">
+                    <Wand2 className="h-4 w-4" />
+                  </span>
+                  <p className="text-sm font-medium text-foreground">Quick dictation</p>
                   <Badge variant="secondary" className="h-5">
                     {activeModel?.displayName ?? selectedModel}
                   </Badge>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                <p className="text-sm leading-6 text-foreground/90">
                   Test the active model instantly before changing downloads or defaults.
                 </p>
-                <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  {quickStatus}
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                  <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                    {quickStatus}
+                  </span>
+                  <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                    {selectedModel}
+                  </span>
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void checkEngine()}
+                  disabled={checkingEngine || recordingBusy || transcribing}
+                >
+                  {checkingEngine ? "Checking…" : nativeStatus ? "Ready" : "Check"}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void toggleQuickDictation()}
+                  disabled={recordingBusy || transcribing}
+                >
+                  {recordingStatus?.isRecording ? (
+                    <>
+                      <Square className="h-3.5 w-3.5" />
+                      Stop
+                    </>
+                  ) : transcribing ? (
+                    "Transcribing…"
+                  ) : (
+                    <>
+                      <Mic className="h-3.5 w-3.5" />
+                      Record
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+            {transcriptionResult && (
+              <div className="mt-3 rounded-xl border border-border bg-background px-4 py-3">
+                <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Latest transcript
+                </p>
+                <p className="line-clamp-4 text-sm leading-6 text-foreground/90">
+                  {transcriptionResult.text}
                 </p>
               </div>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void checkEngine()}
-                disabled={checkingEngine || recordingBusy || transcribing}
-              >
-                {checkingEngine ? "Checking…" : nativeStatus ? "Ready" : "Check"}
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => void toggleQuickDictation()}
-                disabled={recordingBusy || transcribing}
-              >
-                {recordingStatus?.isRecording ? (
-                  <>
-                    <Square className="h-3.5 w-3.5" />
-                    Stop
-                  </>
-                ) : transcribing ? (
-                  "Transcribing…"
-                ) : (
-                  <>
-                    <Mic className="h-3.5 w-3.5" />
-                    Record
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-          {transcriptionResult && (
-            <div className="border-t border-border bg-muted/35 px-5 py-4">
-              <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                Latest transcript
-              </p>
-              <p className="line-clamp-3 text-sm leading-6 text-foreground">
-                {transcriptionResult.text}
-              </p>
-            </div>
-          )}
-        </div>
+            )}
+          </article>
 
-        <div className="grid gap-3">
-          {loading && (
-            <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+          {loading ? (
+            <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
               <Spinner className="size-4" />
-              <div>
-                <p className="text-sm font-medium text-foreground">Loading models</p>
-                <p className="text-xs text-muted-foreground">Checking local Whisper status and downloads.</p>
-              </div>
+              Loading Whisper models
             </div>
-          )}
+          ) : models.length > 0 ? (
+            <div className="grid gap-3">
+              {models.map((model) => {
+                const isDownloading = downloading === model.name;
+                const isDeleting = deleting === model.name;
+                const isActive = selectedModel === model.name;
+                const meta = MODEL_META[model.name];
+                const pct =
+                  isDownloading && progress && progress.total > 0
+                    ? Math.round((progress.downloaded / progress.total) * 100)
+                    : null;
+                const downloadedMB = progress ? Math.round(progress.downloaded / 1024 / 1024) : 0;
+                const totalMB = progress ? Math.round(progress.total / 1024 / 1024) : 0;
 
-          {models.map((model) => {
-            const isDownloading = downloading === model.name;
-            const isDeleting = deleting === model.name;
-            const isActive = selectedModel === model.name;
-            const meta = MODEL_META[model.name];
-            const pct =
-              isDownloading && progress && progress.total > 0
-                ? Math.round((progress.downloaded / progress.total) * 100)
-                : null;
-            const downloadedMB = progress ? Math.round(progress.downloaded / 1024 / 1024) : 0;
-            const totalMB = progress ? Math.round(progress.total / 1024 / 1024) : 0;
+                return (
+                  <article key={model.name} className="rounded-2xl border border-border bg-card p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-medium text-foreground">{model.displayName}</p>
+                          {meta?.version && (
+                            <span className="text-[11px] font-mono text-muted-foreground">{meta.version}</span>
+                          )}
+                          <span className="text-[11px] font-mono text-muted-foreground">STT</span>
+                          {model.recommended && (
+                            <Badge variant="secondary" className="text-[10px] uppercase tracking-[0.08em]">
+                              recommended
+                            </Badge>
+                          )}
+                          {isActive && (
+                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                              active
+                            </span>
+                          )}
+                        </div>
 
-            return (
-              <div
-                key={model.name}
-                className={`flex items-start gap-4 p-4 rounded-xl border transition-colors ${
-                  isActive
-                    ? "border-primary bg-sidebar-accent"
-                    : "border-border bg-card hover:border-ring"
-                }`}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-sm font-semibold text-foreground">
-                      {model.displayName}
-                    </h3>
-                    {meta?.version && (
-                      <span className="text-[11px] text-muted-foreground font-mono">
-                        {meta.version}
-                      </span>
-                    )}
-                    <span className="text-[11px] text-muted-foreground font-mono">STT</span>
-                    {model.recommended && (
-                      <Badge variant="secondary" className="text-[10px]">default</Badge>
-                    )}
-                    {isActive && (
-                      <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
-                        active
-                      </span>
-                    )}
-                  </div>
+                        {meta?.description && (
+                          <p className="text-sm leading-6 text-foreground/90">{meta.description}</p>
+                        )}
 
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    {formatBytes(model.size)}
-                  </p>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                            {formatBytes(model.size)}
+                          </span>
+                          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                            {isActive ? "Active" : model.downloaded ? "Downloaded" : "Not downloaded"}
+                          </span>
+                          {meta?.badges?.map((badge) => (
+                            <span
+                              key={badge}
+                              className="rounded-full border border-border bg-background px-2.5 py-1 font-medium uppercase tracking-[0.08em]"
+                            >
+                              {badge}
+                            </span>
+                          ))}
+                        </div>
 
-                  {meta?.description && (
-                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                      {meta.description}
-                    </p>
-                  )}
-
-                  {/* Download progress */}
-                  {isDownloading && (
-                    <div className="mt-3 space-y-1.5">
-                      <div className="h-1.5 w-full rounded-full bg-border overflow-hidden">
-                        {pct !== null ? (
-                          <div
-                            className="h-full rounded-full bg-primary transition-all duration-150"
-                            style={{ width: `${pct}%` }}
-                          />
-                        ) : (
-                          <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
+                        {isDownloading && (
+                          <div className="mt-3 space-y-1.5">
+                            <div className="h-1.5 overflow-hidden rounded-full bg-border">
+                              {pct !== null ? (
+                                <div
+                                  className="h-full rounded-full bg-primary transition-all duration-150"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              ) : (
+                                <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>
+                                {pct !== null ? `${downloadedMB} MB / ${totalMB} MB` : "Connecting…"}
+                              </span>
+                              {pct !== null && <span>{pct}%</span>}
+                            </div>
+                          </div>
                         )}
                       </div>
-                      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                        <span>
-                          {pct !== null
-                            ? `${downloadedMB} MB / ${totalMB} MB`
-                            : "Connecting…"}
-                        </span>
-                        {pct !== null && <span>{pct}%</span>}
-                      </div>
-                    </div>
-                  )}
-                </div>
 
-                <div className="shrink-0 flex flex-col items-end gap-2 pt-0.5">
-                  {model.downloaded ? (
-                    <>
-                      <div className="flex items-center gap-1.5 text-primary">
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span className="text-xs font-medium">Downloaded</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {!isActive && (
+                      <div className="flex shrink-0 gap-2">
+                        {model.downloaded ? (
+                          <>
+                            {!isActive && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleSetActive(model.name)}
+                                disabled={isDeleting}
+                              >
+                                Set active
+                              </Button>
+                            )}
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  disabled={isDeleting || downloading !== null}
+                                >
+                                  {isDeleting ? (
+                                    "Removing…"
+                                  ) : (
+                                    <>
+                                      <Trash2 className="h-4 w-4" />
+                                      Delete
+                                    </>
+                                  )}
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Delete model?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    Remove <span className="font-medium text-foreground">{model.displayName}</span> from this device.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+
+                                <div className="space-y-3 text-sm text-muted-foreground">
+                                  <div className="rounded-xl border border-border bg-background px-4 py-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span>Model</span>
+                                      <span className="font-medium text-foreground">{model.displayName}</span>
+                                    </div>
+                                    <div className="mt-2 flex items-center justify-between gap-3">
+                                      <span>Size</span>
+                                      <span className="font-mono text-foreground">{formatBytes(model.size)}</span>
+                                    </div>
+                                    <div className="mt-2 flex items-center justify-between gap-3">
+                                      <span>Status</span>
+                                      <span className="font-medium text-foreground">
+                                        {isActive ? "Active model" : "Downloaded model"}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <p>
+                                    This deletes the local model file from your device, not just the entry in Vox.
+                                  </p>
+
+                                  {isActive && (
+                                    <p>
+                                      Vox will switch back to <span className="font-medium text-foreground">base.en</span> after deletion.
+                                    </p>
+                                  )}
+                                </div>
+
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    variant="destructive"
+                                    onClick={() => {
+                                      void handleDelete(model.name);
+                                    }}
+                                  >
+                                    Delete model
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </>
+                        ) : (
                           <Button
-                            variant="outline"
+                            variant="default"
                             size="sm"
-                            onClick={() => void handleSetActive(model.name)}
-                            disabled={isDeleting}
+                            onClick={() => void handleDownload(model.name)}
+                            disabled={downloading !== null}
                           >
-                            Set active
+                            {isDownloading ? (
+                              <>
+                                <Spinner className="size-3.5" />
+                                {pct !== null ? `${pct}%` : "Starting…"}
+                              </>
+                            ) : (
+                              <>
+                                <Download className="h-4 w-4" />
+                                Download
+                              </>
+                            )}
                           </Button>
                         )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => void handleDelete(model.name)}
-                          disabled={isDeleting || downloading !== null}
-                          className="text-muted-foreground hover:text-destructive"
-                        >
-                          {isDeleting ? (
-                            <span className="text-xs">Removing…</span>
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
                       </div>
-                    </>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handleDownload(model.name)}
-                      disabled={downloading !== null}
-                    >
-                      {isDownloading ? (
-                        <>
-                          <Spinner className="size-3.5" />
-                          {pct !== null ? `${pct}%` : "Starting…"}
-                        </>
-                      ) : (
-                        <>
-                          <Download className="h-3.5 w-3.5" />
-                          Download
-                        </>
-                      )}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border bg-card px-5 py-10 text-center">
+              <p className="text-sm font-medium text-foreground">No models available</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Open the desktop app to load local Whisper model availability.
+              </p>
+            </div>
+          )}
         </div>
-      </div>
-    </ScrollArea>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function LibraryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 font-mono text-2xl font-semibold text-primary">{value}</p>
+    </div>
   );
 }

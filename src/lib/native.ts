@@ -104,6 +104,18 @@ export async function deleteWhisperModel(modelName: string) {
   return invoke<void>("delete_whisper_model", { modelName });
 }
 
+export async function deleteRecordingFile(audioPath: string) {
+  return invoke<void>("delete_recording_file", { audioPath });
+}
+
+export async function cleanupRecordings() {
+  return invoke<number>("cleanup_recordings");
+}
+
+export async function wipeLocalAppFiles() {
+  return invoke<void>("wipe_local_app_files");
+}
+
 export async function getCurrentShortcut() {
   return invoke<string>("get_current_shortcut");
 }

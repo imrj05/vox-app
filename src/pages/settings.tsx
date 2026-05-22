@@ -36,34 +36,36 @@ export function SettingsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="mx-auto grid min-h-full max-w-5xl gap-6 p-6 lg:grid-cols-[220px_1fr] lg:p-8">
-          <aside className="lg:sticky lg:top-0 lg:h-fit">
-            <div className="rounded-2xl border border-border bg-card p-2 shadow-xs">
-              <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Settings
-              </p>
-              <div className="grid gap-1 sm:grid-cols-4 lg:grid-cols-1">
-                {settingsPageSections.map((section) => {
-                  const Icon = section.icon;
-                  return (
-                    <button
-                      key={section.id}
-                      onClick={() => setActiveSection(section.id)}
-                      className={cn(
-                        "flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors",
-                        activeSection === section.id
-                          ? "bg-primary/10 font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                      )}
-                    >
-                      <Icon className="h-4 w-4 shrink-0" />
-                      <span>{section.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
+        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
+          <div className="flex flex-col gap-2">
+            <h2 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h2>
+            <p className="text-sm text-muted-foreground">
+              Manage how Vox records, transcribes, stores data, and integrates with your desktop workflow.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card p-2">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              {settingsPageSections.map((section) => {
+                const Icon = section.icon;
+                return (
+                  <button
+                    key={section.id}
+                    onClick={() => setActiveSection(section.id)}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-3 text-left text-sm transition-colors",
+                      activeSection === section.id
+                        ? "border-primary/30 bg-primary/10 font-medium text-foreground"
+                        : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/40 hover:text-foreground"
+                    )}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span>{section.label}</span>
+                  </button>
+                );
+              })}
             </div>
-          </aside>
+          </div>
 
           <main className="min-w-0 pb-8">
             {renderContent()}

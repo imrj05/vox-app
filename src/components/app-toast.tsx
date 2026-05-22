@@ -14,7 +14,7 @@ export function AppToast({
   const isWarning = tone === "warning";
 
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-[100] max-w-sm rounded-2xl border border-border bg-card/95 px-4 py-3 shadow-2xl shadow-black/40 backdrop-blur-xl">
+    <div className="pointer-events-none fixed bottom-6 right-6 z-[100] max-w-sm rounded-2xl border border-border bg-card/95 px-4 py-3 backdrop-blur-xl">
       <div className="flex items-start gap-3">
         <div
           className={isWarning ? "text-destructive" : "text-primary"}

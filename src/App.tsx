@@ -1,14 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
-import { HomePage } from "@/pages/home";
-import { ModelsPage } from "@/pages/models";
-import { SettingsPage } from "@/pages/settings";
-import { AboutPage } from "@/pages/about";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +21,25 @@ import {
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
-import { getUpdateNotes, renderReleaseNotes } from "@/pages/about";
+import { getUpdateNotes, renderReleaseNotes } from "@/components/release-notes";
+
+const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
+const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
+const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
+const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
+const AboutPage = lazy(() => import("@/pages/about").then(({ AboutPage }) => ({ default: AboutPage })));
+
+function PageFallback() {
+  return (
+      <div className="flex min-h-full items-center justify-center bg-background px-6 py-10">
+        <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3">
+        <Spinner className="size-5" />
+        <p className="text-sm font-medium text-foreground">Loading page</p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const {
     onboardingComplete,
@@ -118,7 +132,7 @@ function App() {
   if (onboardingComplete === null) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background px-6">
-        <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3">
           <Spinner className="size-5" />
           <div>
             <p className="text-sm font-medium text-foreground">Preparing Vox</p>
@@ -132,6 +146,8 @@ function App() {
     switch (activeNav) {
       case "home":
         return <HomePage />;
+      case "transcripts":
+        return <TranscriptsPage />;
       case "models":
         return <ModelsPage />;
       case "settings":
@@ -196,7 +212,9 @@ function App() {
           />
           <SidebarInset className="overflow-hidden">
             <div className="flex-1 overflow-y-auto scrollbar-thin">
-              {renderPage()}
+              <Suspense fallback={<PageFallback />}>
+                {renderPage()}
+              </Suspense>
             </div>
           </SidebarInset>
         </SidebarProvider>

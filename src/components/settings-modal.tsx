@@ -49,7 +49,9 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AppToast } from "@/components/app-toast";
 import { ABOUT_LINKS } from "@/lib/about";
+import { openExternalLink } from "@/lib/external-link";
 import {
+  cleanupRecordings,
   formatShortcut,
   setGlobalShortcut,
   checkAccessibilityPermission,
@@ -60,6 +62,7 @@ import {
   requestMicrophonePermission,
   setStartAtLogin,
   setTriggerMode as setNativeTriggerMode,
+  wipeLocalAppFiles,
 } from "@/lib/native";
 import { HotkeyPicker } from "@/components/hotkey-picker";
 import {
@@ -107,7 +110,7 @@ function SettingsCard({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-border bg-card p-4 shadow-xs",
+        "rounded-2xl border border-border bg-card p-4",
         className
       )}
     >
@@ -386,7 +389,7 @@ export function DictionarySection() {
         title="Dictionary"
         description="Add specialized words so transcription recognizes names, jargon, acronyms, and product terms accurately."
       />
-      <SettingsCard className="space-y-3 bg-muted/55 p-5">
+      <SettingsCard className="space-y-3 p-5">
         <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
           <Input
             value={wordInput}
@@ -434,7 +437,7 @@ export function DictionarySection() {
         </p>
       </SettingsCard>
 
-      <SettingsCard className="min-h-48 bg-muted/55 p-5">
+      <SettingsCard className="min-h-48 p-5">
         {entries.length === 0 ? (
           <div className="flex min-h-40 flex-col items-center justify-center text-center">
             <BookOpenText className="h-10 w-10 text-muted-foreground/45" />
@@ -489,7 +492,7 @@ export function DictionarySection() {
 
 export function DataSection() {
   const resetAppState = useAppStore((state) => state.resetAppState);
-  const [busyAction, setBusyAction] = useState<"history" | "app" | null>(null);
+  const [busyAction, setBusyAction] = useState<"history" | "recordings" | "app" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -513,9 +516,30 @@ export function DataSection() {
     setError(null);
     try {
       await clearAppData();
+      await wipeLocalAppFiles();
       resetAppState();
+      setMessage("All local Vox data, recordings, and downloaded models were removed.");
+      setBusyAction(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setBusyAction(null);
+    }
+  };
+
+  const handleCleanupRecordings = async () => {
+    setBusyAction("recordings");
+    setMessage(null);
+    setError(null);
+    try {
+      const removed = await cleanupRecordings();
+      setMessage(
+        removed === 0
+          ? "No leftover recording files were found."
+          : `Removed ${removed} leftover recording file${removed === 1 ? "" : "s"}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
       setBusyAction(null);
     }
   };
@@ -524,18 +548,18 @@ export function DataSection() {
     <div className="space-y-5">
       <SectionHeader
         title="Data"
-        description="Clear local Vox data from this Mac. Downloaded transcription models are kept."
+        description="Clear local Vox data from this Mac, including leftover recordings or the full local app footprint."
       />
       <SettingsCard className="space-y-4">
         <SettingRow
           icon={<Trash2 className="h-4 w-4" />}
-          title="Clear history"
+          title="Clear transcript history"
           description="Delete all saved transcript history, activity stats, app usage, and recent transcripts."
           action={
             <ConfirmDataAction
               title="Clear transcript history?"
               description="This deletes all saved transcripts and dashboard history. Your app settings and downloaded models stay in place."
-              actionLabel="Clear history"
+              actionLabel="Clear transcript history"
               busy={busyAction === "history"}
               onConfirm={handleClearHistory}
             />
@@ -543,14 +567,29 @@ export function DataSection() {
         />
         <div className="h-px bg-border" />
         <SettingRow
-          icon={<Database className="h-4 w-4" />}
-          title="Reset app data"
-          description="Delete transcript history and all saved settings, then return Vox to onboarding."
+          icon={<Mic className="h-4 w-4" />}
+          title="Clean leftover recordings"
+          description="Delete any temporary .wav recording files left in Vox storage on this Mac."
           action={
             <ConfirmDataAction
-              title="Reset all app data?"
-              description="This deletes saved transcripts and preferences including hotkey, dictionary, theme, trigger mode, selected model, and onboarding status. Downloaded models stay installed."
-              actionLabel="Reset app"
+              title="Delete leftover recordings?"
+              description="This removes temporary local recording files from Vox storage. Saved transcript text and settings stay in place."
+              actionLabel="Clean recordings"
+              busy={busyAction === "recordings"}
+              onConfirm={handleCleanupRecordings}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Database className="h-4 w-4" />}
+          title="Clean app entirely"
+          description="Delete transcript history, saved settings, temporary recordings, and downloaded models, then return Vox to onboarding."
+          action={
+            <ConfirmDataAction
+              title="Clean app entirely?"
+              description="This deletes saved transcripts, preferences, temporary recordings, and downloaded models from this Mac. Vox will return to onboarding and you will need to download models again."
+              actionLabel="Clean app"
               busy={busyAction === "app"}
               onConfirm={handleClearAppData}
             />
@@ -1086,6 +1125,10 @@ export function AboutSection() {
                 href={item.href}
                 target={item.href.startsWith("mailto:") ? undefined : "_blank"}
                 rel={item.href.startsWith("mailto:") ? undefined : "noreferrer"}
+                onClick={(event) => {
+                  event.preventDefault();
+                  openExternalLink(item.href);
+                }}
                 className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-border bg-card px-3 py-2 text-xs text-foreground transition-colors hover:bg-muted"
               >
                 {item.action}

@@ -42,19 +42,19 @@
 }
 
 .dark {
-    --background: oklch(0.148 0.004 228.8);
+    --background: oklch(0.25 0.004 240);
     --foreground: oklch(0.987 0.002 197.1);
-    --card: oklch(0.218 0.008 223.9);
+    --card: oklch(0.29 0.004 240);
     --card-foreground: oklch(0.987 0.002 197.1);
-    --popover: oklch(0.218 0.008 223.9);
+    --popover: oklch(0.29 0.004 240);
     --popover-foreground: oklch(0.987 0.002 197.1);
     --primary: oklch(0.437 0.078 188.216);
     --primary-foreground: oklch(0.984 0.014 180.72);
     --secondary: oklch(0.274 0.006 286.033);
     --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.275 0.011 216.9);
+    --muted: oklch(0.34 0.004 240);
     --muted-foreground: oklch(0.723 0.014 214.4);
-    --accent: oklch(0.275 0.011 216.9);
+    --accent: oklch(0.34 0.004 240);
     --accent-foreground: oklch(0.987 0.002 197.1);
     --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 10%);
@@ -65,11 +65,11 @@
     --chart-3: oklch(0.6 0.118 184.704);
     --chart-4: oklch(0.511 0.096 186.391);
     --chart-5: oklch(0.437 0.078 188.216);
-    --sidebar: oklch(0.218 0.008 223.9);
+    --sidebar: oklch(0.28 0.004 240);
     --sidebar-foreground: oklch(0.987 0.002 197.1);
     --sidebar-primary: oklch(0.704 0.14 182.503);
     --sidebar-primary-foreground: oklch(0.277 0.046 192.524);
-    --sidebar-accent: oklch(0.275 0.011 216.9);
+    --sidebar-accent: oklch(0.34 0.004 240);
     --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.56 0.021 213.5);
@@ -139,6 +139,16 @@
     }
 }
 
+@layer utilities {
+    .surface-depth {
+        box-shadow: none;
+    }
+
+    .surface-depth-soft {
+        box-shadow: none;
+    }
+}
+
 .widget-document,
 .widget-document body,
 .widget-document #root {
@@ -166,7 +176,7 @@
     align-items: center;
     justify-content: center;
     padding: 12px 15px;
-    background: rgb(0 0 0 / 96%);
+    background: rgb(45 48 54 / 94%);
     border: 0;
     border-radius: 999px;
     box-shadow: none;

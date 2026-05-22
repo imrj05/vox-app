@@ -491,7 +491,11 @@ export function DictionarySection() {
 }
 
 export function DataSection() {
-  const resetAppState = useAppStore((state) => state.resetAppState);
+  const {
+    errorReportingEnabled,
+    resetAppState,
+    setErrorReportingEnabled,
+  } = useAppStore();
   const [busyAction, setBusyAction] = useState<"history" | "recordings" | "app" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -551,6 +555,19 @@ export function DataSection() {
         description="Clear local Vox data from this Mac, including leftover recordings or the full local app footprint."
       />
       <SettingsCard className="space-y-4">
+        <SettingRow
+          icon={<ShieldCheck className="h-4 w-4" />}
+          title="Error reporting"
+          description="Send anonymous crash and error reports to GlitchTip. Vox does not send transcripts, audio, or personal identity."
+          action={
+            <Switch
+              checked={errorReportingEnabled}
+              onCheckedChange={(checked) => void setErrorReportingEnabled(checked)}
+              aria-label="Toggle anonymous error reporting"
+            />
+          }
+        />
+        <div className="h-px bg-border" />
         <SettingRow
           icon={<Trash2 className="h-4 w-4" />}
           title="Clear transcript history"

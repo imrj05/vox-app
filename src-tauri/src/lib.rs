@@ -27,6 +27,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
 use serde::{Deserialize, Serialize};
+use sentry::ClientInitGuard;
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
@@ -177,6 +178,48 @@ struct DictionaryState {
 
 struct TranscriptFormattingState {
     mode: Mutex<TranscriptFormattingMode>,
+}
+
+#[derive(Default)]
+struct ErrorReportingState {
+    guard: Mutex<Option<ClientInitGuard>>,
+}
+
+#[tauri::command]
+fn set_error_reporting_enabled(
+    state: State<'_, ErrorReportingState>,
+    enabled: bool,
+    dsn: Option<String>,
+) -> Result<(), String> {
+    let mut guard = state
+        .guard
+        .lock()
+        .map_err(|_| "Error reporting state is unavailable".to_string())?;
+
+    if !enabled {
+        *guard = None;
+        return Ok(());
+    }
+
+    let Some(dsn) = dsn.filter(|value| !value.trim().is_empty()) else {
+        *guard = None;
+        return Ok(());
+    };
+
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let release = format!("{}@{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    *guard = Some(sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: Some(release.into()),
+            send_default_pii: false,
+            ..Default::default()
+        },
+    )));
+    Ok(())
 }
 
 impl Default for TranscriptFormattingState {
@@ -881,6 +924,7 @@ pub fn run() {
         .manage(DictionaryState::default())
         .manage(TranscriptFormattingState::default())
         .manage(FocusContextState::default())
+        .manage(ErrorReportingState::default())
         .setup(move |app| {
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
@@ -918,6 +962,7 @@ pub fn run() {
             set_trigger_mode,
             set_dictionary,
             set_transcript_formatting_mode,
+            set_error_reporting_enabled,
             set_editable_focus_context,
             hotkey_diagnostics,
             check_accessibility_permission,

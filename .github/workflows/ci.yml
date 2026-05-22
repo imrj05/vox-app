@@ -9,6 +9,8 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

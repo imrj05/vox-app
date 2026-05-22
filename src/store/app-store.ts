@@ -3,7 +3,6 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting } from "@/lib/db";
-
 export const HOTKEY_KEY = "hotkey";
 export const ONBOARDING_KEY = "onboarding_complete";
 export const TRIGGER_MODE_KEY = "trigger_mode";
@@ -12,6 +11,7 @@ export const SELECTED_MODEL_KEY = "selected_model";
 export const DICTIONARY_KEY = "dictionary";
 export const THEME_KEY = "theme";
 export const TRANSCRIPT_FORMATTING_MODE_KEY = "transcript_formatting_mode";
+export const ERROR_REPORTING_ENABLED_KEY = "error_reporting_enabled";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
 export type TriggerMode = "toggle" | "pushToTalk";
@@ -21,7 +21,6 @@ export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
-
 export type UpdateStatus =
   | "idle"
   | "checking"
@@ -30,11 +29,9 @@ export type UpdateStatus =
   | "installing"
   | "upToDate"
   | "error";
-
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
 }
-
 interface AppState {
   /** null = not yet loaded from DB */
   onboardingComplete: boolean | null;
@@ -45,10 +42,9 @@ interface AppState {
   dictionary: string;
   theme: AppTheme;
   transcriptFormattingMode: TranscriptFormattingMode;
-
+  errorReportingEnabled: boolean;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
-
   setOnboardingComplete: (value: boolean) => Promise<void>;
   setHotkey: (value: string) => Promise<void>;
   setTriggerMode: (value: TriggerMode) => Promise<void>;
@@ -57,8 +53,8 @@ interface AppState {
   setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
+  setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
-
   // Update
   updateInfo: Update | null;
   updateStatus: UpdateStatus;
@@ -69,7 +65,6 @@ interface AppState {
   installUpdate: () => Promise<void>;
   setShowUpdateDialog: (show: boolean) => void;
 }
-
 const defaultAppState = {
   onboardingComplete: null,
   hotkey: DEFAULT_HOTKEY,
@@ -79,6 +74,7 @@ const defaultAppState = {
   dictionary: "",
   theme: DEFAULT_THEME,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
+  errorReportingEnabled: true,
   // Update
   updateInfo: null,
   updateStatus: "idle" as UpdateStatus,
@@ -86,10 +82,8 @@ const defaultAppState = {
   updateMessage: null,
   showUpdateDialog: false,
 };
-
 export const useAppStore = create<AppState>((set) => ({
   ...defaultAppState,
-
   hydrate: async () => {
     try {
       const [
@@ -101,6 +95,7 @@ export const useAppStore = create<AppState>((set) => ({
         dictionary,
         theme,
         transcriptFormattingMode,
+        errorReportingEnabled,
       ] = await withTimeout(
         Promise.all([
           getSetting(ONBOARDING_KEY),
@@ -111,6 +106,7 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
           getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
+          getSetting(ERROR_REPORTING_ENABLED_KEY),
         ]),
         SETTINGS_HYDRATE_TIMEOUT_MS,
         "Timed out loading app settings"
@@ -132,6 +128,7 @@ export const useAppStore = create<AppState>((set) => ({
         dictionary: dictionary ?? "",
         theme: resolvedTheme,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
+        errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
       });
     } catch (error) {
       console.error("Failed to hydrate app settings", error);
@@ -140,56 +137,50 @@ export const useAppStore = create<AppState>((set) => ({
       set({ onboardingComplete: false });
     }
   },
-
   setOnboardingComplete: async (value) => {
     await setSetting(ONBOARDING_KEY, String(value));
     set({ onboardingComplete: value });
   },
-
   setHotkey: async (value) => {
     await setSetting(HOTKEY_KEY, value);
     set({ hotkey: value });
   },
-
   setTriggerMode: async (value) => {
     await setSetting(TRIGGER_MODE_KEY, value);
     set({ triggerMode: value });
   },
-
   setSoundEnabled: async (value) => {
     await setSetting(SOUND_ENABLED_KEY, String(value));
     // Sync to localStorage so the widget window picks it up immediately
     localStorage.setItem(SOUND_ENABLED_KEY, String(value));
     set({ soundEnabled: value });
   },
-
   setSelectedModel: async (value) => {
     await setSetting(SELECTED_MODEL_KEY, value);
     set({ selectedModel: value });
   },
-
   setDictionary: async (value) => {
     await setSetting(DICTIONARY_KEY, value);
     set({ dictionary: value });
   },
-
   setTheme: async (value) => {
     await setSetting(THEME_KEY, value);
     localStorage.setItem(THEME_KEY, value);
     set({ theme: value });
   },
-
   setTranscriptFormattingMode: async (value) => {
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);
     set({ transcriptFormattingMode: value });
   },
-
+  setErrorReportingEnabled: async (value) => {
+    await setSetting(ERROR_REPORTING_ENABLED_KEY, String(value));
+    set({ errorReportingEnabled: value });
+  },
   resetAppState: () => {
     localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
     set({ ...defaultAppState, onboardingComplete: false });
   },
-
   checkForUpdates: async () => {
     set({ updateStatus: "checking", updateMessage: null });
     try {
@@ -212,7 +203,6 @@ export const useAppStore = create<AppState>((set) => ({
       });
     }
   },
-
   installUpdate: async () => {
     const { updateInfo } = useAppStore.getState();
     if (!updateInfo) return;
@@ -242,22 +232,18 @@ export const useAppStore = create<AppState>((set) => ({
       set({ updateStatus: "error", updateMessage: error instanceof Error ? error.message : String(error) });
     }
   },
-
   setShowUpdateDialog: (show) => set({ showUpdateDialog: show }),
 }));
-
 function parseThemeSetting(value: string | null): AppTheme {
   return value === "light" || value === "dark" || value === "system"
     ? value
     : DEFAULT_THEME;
 }
-
 function parseTriggerModeSetting(value: string | null): TriggerMode {
   return value === "toggle" || value === "pushToTalk"
     ? value
     : DEFAULT_TRIGGER_MODE;
 }
-
 function parseTranscriptFormattingModeSetting(
   value: string | null
 ): TranscriptFormattingMode {

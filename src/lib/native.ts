@@ -150,6 +150,14 @@ export async function setTranscriptFormattingMode(
   return invoke<void>("set_transcript_formatting_mode", { mode });
 }
 
+export async function setNativeErrorReporting(enabled: boolean) {
+  const dsn = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
+  return invoke<void>("set_error_reporting_enabled", {
+    enabled,
+    dsn: enabled ? dsn : null,
+  });
+}
+
 export async function setEditableFocusContext(isEditableFocused: boolean) {
   return invoke<void>("set_editable_focus_context", { isEditableFocused });
 }

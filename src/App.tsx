@@ -17,11 +17,13 @@ import {
   setGlobalShortcut,
   setEditableFocusContext,
   setNativeDictionary,
+  setNativeErrorReporting,
   setTranscriptFormattingMode,
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 import { getUpdateNotes, renderReleaseNotes } from "@/components/release-notes";
+import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
@@ -48,6 +50,7 @@ function App() {
     dictionary,
     theme,
     transcriptFormattingMode,
+    errorReportingEnabled,
     hydrate,
     updateInfo,
     updateStatus,
@@ -87,6 +90,11 @@ function App() {
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
+  useEffect(() => {
+    if (onboardingComplete === null) return;
+    configureErrorReporting(errorReportingEnabled);
+    void setNativeErrorReporting(errorReportingEnabled).catch(() => {});
+  }, [errorReportingEnabled, onboardingComplete]);
   useEffect(() => {
     const isEditableElement = (element: Element | null) => {
       if (!(element instanceof HTMLElement)) return false;

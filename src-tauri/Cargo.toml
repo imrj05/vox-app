@@ -30,4 +30,4 @@ tauri-plugin-process = "2.3.0"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-updater = "2.10.1"
 whisper-rs = { version = "0.15.1", features = ["metal"] }
-sentry = { version = "0.48.2", default-features = false, features = ["panic"] }
+sentry = { version = "0.48.2", default-features = false, features = ["panic", "reqwest", "rustls"] }

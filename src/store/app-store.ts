@@ -27,6 +27,7 @@ export type UpdateStatus =
   | "available"
   | "downloading"
   | "installing"
+  | "restarting"
   | "upToDate"
   | "error";
 function parseBooleanSetting(value: string | null, fallback: boolean) {
@@ -82,6 +83,48 @@ const defaultAppState = {
   updateMessage: null,
   showUpdateDialog: false,
 };
+
+let updateProgressTimer: number | null = null;
+let updateProgressTarget = 0;
+
+function stopUpdateProgressSmoothing() {
+  if (updateProgressTimer !== null) {
+    window.clearInterval(updateProgressTimer);
+    updateProgressTimer = null;
+  }
+}
+
+function resetUpdateProgressSmoothing() {
+  stopUpdateProgressSmoothing();
+  updateProgressTarget = 0;
+}
+
+function setUpdateProgressTarget(target: number) {
+  updateProgressTarget = Math.max(updateProgressTarget, target);
+
+  if (updateProgressTimer !== null) return;
+
+  updateProgressTimer = window.setInterval(() => {
+    useAppStore.setState((state) => {
+      const { downloaded, total } = state.updateProgress;
+      if (downloaded >= updateProgressTarget) {
+        stopUpdateProgressSmoothing();
+        return state;
+      }
+
+      const remaining = updateProgressTarget - downloaded;
+      const nextDownloaded = downloaded + Math.max(1, Math.ceil(remaining * 0.18));
+
+      return {
+        updateProgress: {
+          downloaded: Math.min(nextDownloaded, updateProgressTarget),
+          total,
+        },
+      };
+    });
+  }, 80);
+}
+
 export const useAppStore = create<AppState>((set) => ({
   ...defaultAppState,
   hydrate: async () => {
@@ -206,29 +249,39 @@ export const useAppStore = create<AppState>((set) => ({
   installUpdate: async () => {
     const { updateInfo } = useAppStore.getState();
     if (!updateInfo) return;
+    resetUpdateProgressSmoothing();
     set({ updateStatus: "downloading", updateProgress: { downloaded: 0, total: null }, updateMessage: `Downloading version ${updateInfo.version}...` });
     try {
-      await updateInfo.downloadAndInstall((event) => {
+      let downloaded = 0;
+      let total: number | null = null;
+
+      await updateInfo.download((event) => {
         switch (event.event) {
           case "Started":
-            set({ updateProgress: { downloaded: 0, total: event.data.contentLength ?? null } });
+            downloaded = 0;
+            total = event.data.contentLength ?? null;
+            set({ updateProgress: { downloaded: 0, total } });
             break;
           case "Progress":
-            useAppStore.setState((s) => ({
-              updateProgress: {
-                downloaded: s.updateProgress.downloaded + event.data.chunkLength,
-                total: s.updateProgress.total,
-              },
-            }));
+            downloaded += event.data.chunkLength;
+            setUpdateProgressTarget(total ? Math.min(downloaded, total) : downloaded);
             break;
           case "Finished":
+            stopUpdateProgressSmoothing();
+            if (total) {
+              set({ updateProgress: { downloaded: total, total } });
+            }
             set({ updateStatus: "installing", updateMessage: "Installing update..." });
             break;
         }
       });
-      set({ updateMessage: "Update installed. Relaunching Vox..." });
+
+      set({ updateStatus: "installing", updateMessage: "Installing update..." });
+      await updateInfo.install();
+      set({ updateStatus: "restarting", updateMessage: "Update installed. Restarting Vox..." });
       await relaunch();
     } catch (error) {
+      resetUpdateProgressSmoothing();
       set({ updateStatus: "error", updateMessage: error instanceof Error ? error.message : String(error) });
     }
   },

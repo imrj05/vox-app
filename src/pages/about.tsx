@@ -29,8 +29,9 @@ export function AboutPage() {
 
   const progressPct =
     updateProgress.total && updateProgress.total > 0
-      ? Math.round((updateProgress.downloaded / updateProgress.total) * 100)
+      ? Math.min(100, Math.round((updateProgress.downloaded / updateProgress.total) * 100))
       : null
+  const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting"
 
   return (
     <div className="h-full overflow-hidden bg-background">
@@ -118,26 +119,30 @@ export function AboutPage() {
                         {updateMessage ?? "Use the updater to check for the latest published release."}
                       </p>
                     </div>
-                    {(updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing") && (
+                    {updateBusy && (
                       <Spinner className="size-4 shrink-0" />
                     )}
                   </div>
-                  {updateStatus === "downloading" && (
+                  {(updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting") && (
                     <div className="mt-3 space-y-1.5">
                       <div className="h-2 overflow-hidden rounded-full bg-muted">
                         <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${progressPct ?? 12}%` }}
+                          className="h-full rounded-full bg-primary transition-all duration-300"
+                          style={{ width: `${updateStatus === "downloading" ? progressPct ?? 12 : 100}%` }}
                         />
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                         <span>{formatBytes(updateProgress.downloaded)}</span>
                         <span>
-                          {progressPct !== null
-                            ? `${progressPct}%`
-                            : updateProgress.total
-                              ? formatBytes(updateProgress.total)
-                              : "Preparing..."}
+                          {updateStatus === "downloading"
+                            ? progressPct !== null
+                              ? `${progressPct}%`
+                              : updateProgress.total
+                                ? formatBytes(updateProgress.total)
+                                : "Preparing..."
+                            : updateStatus === "installing"
+                              ? "Installing..."
+                              : "Restarting..."}
                         </span>
                       </div>
                     </div>
@@ -147,7 +152,7 @@ export function AboutPage() {
                   <button
                     type="button"
                     onClick={() => void checkForUpdates()}
-                    disabled={updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing"}
+                    disabled={updateBusy}
                     className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {updateStatus === "checking" ? <Spinner className="size-4" /> : null}
@@ -156,11 +161,17 @@ export function AboutPage() {
                   <button
                     type="button"
                     onClick={() => void installUpdate()}
-                    disabled={!updateInfo || updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing"}
+                    disabled={!updateInfo || updateBusy}
                     className="inline-flex items-center gap-2 rounded-xl border border-border bg-primary px-3 py-2 text-sm text-primary-foreground transition-colors hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {updateStatus === "downloading" || updateStatus === "installing" ? <Spinner className="size-4" /> : null}
-                    Download and install
+                    {updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting" ? <Spinner className="size-4" /> : null}
+                    {updateStatus === "downloading"
+                      ? "Downloading..."
+                      : updateStatus === "installing"
+                        ? "Installing..."
+                        : updateStatus === "restarting"
+                          ? "Restarting..."
+                          : "Download and install"}
                   </button>
                   <button
                     type="button"

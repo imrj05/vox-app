@@ -26,8 +26,8 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use hound::{SampleFormat, WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
-use serde::{Deserialize, Serialize};
 use sentry::ClientInitGuard;
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
@@ -35,6 +35,10 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 #[cfg(target_os = "macos")]
 #[link(name = "AppKit", kind = "framework")]
+extern "C" {}
+
+#[cfg(target_os = "macos")]
+#[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 
 mod event_tap;
@@ -375,6 +379,23 @@ fn request_accessibility_permission() -> bool {
     event_tap::request_accessibility_permission()
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn check_microphone_permission() -> bool {
+    unsafe {
+        let media_type = nsstring_from_str("soun");
+        let status: i64 =
+            msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type];
+        status == 3
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn check_microphone_permission() -> bool {
+    true
+}
+
 #[tauri::command]
 fn resolve_app_icon(app_name: String) -> Option<String> {
     resolve_app_icon_data_url(&app_name)
@@ -640,7 +661,10 @@ fn cleanup_recordings(app: AppHandle) -> Result<u64, String> {
 
 #[tauri::command]
 fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     let recordings_dir = app_data_dir.join("recordings");
     let models_dir = whisper::models_dir(app_data_dir);
 
@@ -967,6 +991,7 @@ pub fn run() {
             hotkey_diagnostics,
             check_accessibility_permission,
             request_accessibility_permission,
+            check_microphone_permission,
             resolve_app_icon,
             open_external_link,
         ])

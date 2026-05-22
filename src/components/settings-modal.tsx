@@ -55,6 +55,7 @@ import {
   formatShortcut,
   setGlobalShortcut,
   checkAccessibilityPermission,
+  checkMicrophonePermission,
   getHotkeyDiagnostics,
   getStartAtLogin,
   isEventTapOnlyShortcut,
@@ -80,7 +81,6 @@ interface SettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
 function SectionHeader({
   title,
   description,
@@ -99,7 +99,6 @@ function SectionHeader({
     </div>
   );
 }
-
 function SettingsCard({
   children,
   className,
@@ -118,7 +117,6 @@ function SettingsCard({
     </div>
   );
 }
-
 function SettingRow({
   icon,
   title,
@@ -149,7 +147,6 @@ function SettingRow({
     </div>
   );
 }
-
 export function GeneralSection() {
   const {
     soundEnabled,
@@ -162,7 +159,6 @@ export function GeneralSection() {
   const [startAtLogin, setStartAtLoginState] = useState(false);
   const [startAtLoginLoading, setStartAtLoginLoading] = useState(true);
   const [startAtLoginError, setStartAtLoginError] = useState<string | null>(null);
-
   useEffect(() => {
     let ignore = false;
     void getStartAtLogin()
@@ -181,7 +177,6 @@ export function GeneralSection() {
       ignore = true;
     };
   }, []);
-
   const handleStartAtLoginChange = async (enabled: boolean) => {
     const previous = startAtLogin;
     setStartAtLoginState(enabled);
@@ -196,7 +191,6 @@ export function GeneralSection() {
       setStartAtLoginLoading(false);
     }
   };
-
   return (
     <div className="space-y-5">
       <div>
@@ -315,7 +309,6 @@ export function GeneralSection() {
     </div>
   );
 }
-
 const themeOptions: Array<{
   value: AppTheme;
   label: string;
@@ -325,7 +318,6 @@ const themeOptions: Array<{
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
 ];
-
 const formattingModeOptions: Array<{
   value: TranscriptFormattingMode;
   label: string;
@@ -347,25 +339,21 @@ const formattingModeOptions: Array<{
     description: "Always prefer code punctuation, structure, identifier formatting, and template snippets.",
   },
 ];
-
 export function DictionarySection() {
   const { dictionary, setDictionary } = useAppStore();
   const [wordInput, setWordInput] = useState("");
   const [hintInput, setHintInput] = useState("");
   const [categoryInput, setCategoryInput] = useState("General");
   const entries = parseDictionaryEntries(dictionary);
-
   const saveEntries = (nextEntries: DictionaryEntry[]) => {
     void setDictionary(serializeDictionaryEntries(nextEntries));
   };
-
   const handleAddEntries = () => {
     const words = wordInput
       .split(",")
       .map((word) => word.trim())
       .filter(Boolean);
     if (words.length === 0) return;
-
     const nextEntries = [
       ...entries,
       ...words.map((word) => ({
@@ -378,11 +366,9 @@ export function DictionarySection() {
     setWordInput("");
     setHintInput("");
   };
-
   const handleRemoveEntry = (entry: DictionaryEntry) => {
     saveEntries(entries.filter((item) => dictionaryEntryKey(item) !== dictionaryEntryKey(entry)));
   };
-
   return (
     <div className="space-y-5">
       <SectionHeader
@@ -436,7 +422,6 @@ export function DictionarySection() {
           Separate multiple words with commas to add them at once.
         </p>
       </SettingsCard>
-
       <SettingsCard className="min-h-48 p-5">
         {entries.length === 0 ? (
           <div className="flex min-h-40 flex-col items-center justify-center text-center">
@@ -489,7 +474,6 @@ export function DictionarySection() {
     </div>
   );
 }
-
 export function DataSection() {
   const {
     errorReportingEnabled,
@@ -499,7 +483,6 @@ export function DataSection() {
   const [busyAction, setBusyAction] = useState<"history" | "recordings" | "app" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   const handleClearHistory = async () => {
     setBusyAction("history");
     setMessage(null);
@@ -513,7 +496,6 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   const handleClearAppData = async () => {
     setBusyAction("app");
     setMessage(null);
@@ -529,7 +511,6 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   const handleCleanupRecordings = async () => {
     setBusyAction("recordings");
     setMessage(null);
@@ -547,7 +528,6 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   return (
     <div className="space-y-5">
       <SectionHeader
@@ -558,7 +538,7 @@ export function DataSection() {
         <SettingRow
           icon={<ShieldCheck className="h-4 w-4" />}
           title="Error reporting"
-          description="Send anonymous crash and error reports to GlitchTip. Vox does not send transcripts, audio, or personal identity."
+          description="Send anonymous crash and error reports to Vox Server. Vox does not send transcripts, audio, or personal identity."
           action={
             <Switch
               checked={errorReportingEnabled}
@@ -626,7 +606,6 @@ export function DataSection() {
     </div>
   );
 }
-
 function ConfirmDataAction({
   title,
   description,
@@ -668,13 +647,11 @@ function ConfirmDataAction({
     </AlertDialog>
   );
 }
-
 interface DictionaryEntry {
   word: string;
   hint: string;
   category: string;
 }
-
 function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
   return dictionary
     .split("\n")
@@ -691,13 +668,11 @@ function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
     })
     .filter((entry) => entry.word);
 }
-
 function serializeDictionaryEntries(entries: DictionaryEntry[]) {
   return entries
     .map((entry) => [entry.word, entry.hint, entry.category].join(" | "))
     .join("\n");
 }
-
 function dedupeDictionaryEntries(entries: DictionaryEntry[]) {
   const seen = new Set<string>();
   return entries.filter((entry) => {
@@ -707,7 +682,6 @@ function dedupeDictionaryEntries(entries: DictionaryEntry[]) {
     return true;
   });
 }
-
 function dictionaryEntryKey(entry: DictionaryEntry) {
   return `${entry.word}|${entry.hint}|${entry.category}`;
 }
@@ -791,9 +765,8 @@ export function PermissionsSection() {
     void checkAccessibilityPermission().then((trusted) => {
       setAccessibilityStatus(trusted ? "granted" : "denied");
     });
-    // Microphone: attempt a silent probe — if it succeeds the permission is granted
-    void requestMicrophonePermission()
-      .then(() => setMicStatus("granted"))
+    void checkMicrophonePermission()
+      .then((granted) => setMicStatus(granted ? "granted" : "denied"))
       .catch(() => setMicStatus("denied"));
   }, []);
   // Poll accessibility while denied (user may grant in System Settings)
@@ -1112,7 +1085,6 @@ export function ShortcutsSection() {
     </div>
   );
 }
-
 export function AboutSection() {
   return (
     <div className="space-y-5">
@@ -1160,7 +1132,6 @@ export function AboutSection() {
     </div>
   );
 }
-
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("general");

@@ -60,6 +60,10 @@ export async function requestMicrophonePermission() {
   return invoke<void>("request_microphone_permission");
 }
 
+export async function checkMicrophonePermission() {
+  return invoke<boolean>("check_microphone_permission");
+}
+
 export async function transcribeSample() {
   return invoke<TranscriptPreview>("transcribe_sample");
 }

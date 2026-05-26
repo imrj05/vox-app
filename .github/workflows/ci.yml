@@ -110,16 +110,32 @@ jobs:
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
 
-      - name: Upload desktop artifacts
+      - name: Upload macOS artifacts
+        if: matrix.platform.name == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vox-${{ matrix.platform.name }}-desktop
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*.app
+
+      - name: Upload Windows artifacts
+        if: matrix.platform.name == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vox-${{ matrix.platform.name }}-desktop
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+
+      - name: Upload Linux artifacts
+        if: matrix.platform.name == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: vox-${{ matrix.platform.name }}-desktop
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.app.tar.gz
             src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.rpm

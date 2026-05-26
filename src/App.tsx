@@ -17,11 +17,14 @@ import {
   setGlobalShortcut,
   setEditableFocusContext,
   setNativeDictionary,
+  setNativeErrorReporting,
+  setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 import { getUpdateNotes, renderReleaseNotes } from "@/components/release-notes";
+import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
@@ -47,11 +50,14 @@ function App() {
     triggerMode,
     dictionary,
     theme,
+    widgetEnabled,
     transcriptFormattingMode,
+    errorReportingEnabled,
     hydrate,
     updateInfo,
     updateStatus,
     updateProgress,
+    updateMessage,
     showUpdateDialog,
     checkForUpdates,
     installUpdate,
@@ -87,6 +93,14 @@ function App() {
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
+  useEffect(() => {
+    void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
+  }, [widgetEnabled]);
+  useEffect(() => {
+    if (onboardingComplete === null) return;
+    configureErrorReporting(errorReportingEnabled);
+    void setNativeErrorReporting(errorReportingEnabled).catch(() => {});
+  }, [errorReportingEnabled, onboardingComplete]);
   useEffect(() => {
     const isEditableElement = (element: Element | null) => {
       if (!(element instanceof HTMLElement)) return false;
@@ -126,8 +140,9 @@ function App() {
   // Still loading from DB
   const progressPct =
     updateProgress.total && updateProgress.total > 0
-      ? Math.round((updateProgress.downloaded / updateProgress.total) * 100)
+      ? Math.min(100, Math.round((updateProgress.downloaded / updateProgress.total) * 100))
       : null;
+  const updateBusy = updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting";
 
   if (onboardingComplete === null) {
     return (
@@ -160,12 +175,17 @@ function App() {
   };
   return (
     <TooltipProvider delayDuration={300}>
-      <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+      <Dialog open={showUpdateDialog} onOpenChange={(open) => {
+        if (!open && updateBusy) return;
+        setShowUpdateDialog(open);
+      }}>
         <DialogContent className="max-w-xl gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border px-6 py-5">
-            <DialogTitle>Update {updateInfo?.version} is ready</DialogTitle>
+            <DialogTitle>
+              {updateBusy ? `Updating to ${updateInfo?.version}` : `Update ${updateInfo?.version} is ready`}
+            </DialogTitle>
             <DialogDescription>
-              Review what changed before installing this version.
+              {updateBusy ? updateMessage : "Review what changed before installing this version."}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[400px] overflow-y-auto px-6 py-5">
@@ -173,31 +193,39 @@ function App() {
               {renderReleaseNotes(getUpdateNotes(updateInfo))}
             </div>
           </div>
-          {updateStatus === "downloading" && (
+          {updateBusy && (
             <div className="space-y-1.5 border-t border-border px-6 py-4">
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
                   className="h-full rounded-full bg-primary transition-all duration-300"
-                  style={{ width: `${progressPct ?? 8}%` }}
+                  style={{ width: `${updateStatus === "downloading" ? progressPct ?? 8 : 100}%` }}
                 />
               </div>
               <p className="text-right text-[11px] text-muted-foreground">
-                {progressPct !== null ? `${progressPct}%` : "Preparing..."}
+                {updateStatus === "downloading"
+                  ? progressPct !== null ? `${progressPct}%` : "Preparing..."
+                  : updateStatus === "installing" ? "Installing..." : "Restarting..."}
               </p>
             </div>
           )}
           <DialogFooter className="border-t border-border px-6 py-4">
-            <Button variant="outline" onClick={() => setShowUpdateDialog(false)}>
+            <Button variant="outline" onClick={() => setShowUpdateDialog(false)} disabled={updateBusy}>
               Later
             </Button>
             <Button
               onClick={() => void installUpdate()}
-              disabled={!updateInfo || updateStatus === "downloading" || updateStatus === "installing"}
+              disabled={!updateInfo || updateBusy}
             >
-              {(updateStatus === "downloading" || updateStatus === "installing") && (
+              {updateBusy && (
                 <Spinner className="size-4" />
               )}
-              {updateStatus === "installing" ? "Installing..." : "Download and install"}
+              {updateStatus === "downloading"
+                ? "Downloading..."
+                : updateStatus === "installing"
+                  ? "Installing..."
+                  : updateStatus === "restarting"
+                    ? "Restarting..."
+                    : "Download and install"}
             </Button>
           </DialogFooter>
         </DialogContent>

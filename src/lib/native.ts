@@ -43,6 +43,7 @@ export interface WhisperModelInfo {
 }
 
 export interface HotkeyDiagnostics {
+  platform: string;
   currentShortcut: string;
   triggerMode: "toggle" | "pushToTalk";
   accessibilityTrusted: boolean;
@@ -50,6 +51,18 @@ export interface HotkeyDiagnostics {
   eventTapError: string | null;
   hasDownloadedModel: boolean;
   isRecording: boolean;
+  appDataDir: string | null;
+  modelsDir: string | null;
+  recordingsDir: string | null;
+  textInsertion: {
+    directTypingSupported: boolean;
+    x11Available: boolean;
+    waylandAvailable: boolean;
+    xdotoolAvailable: boolean;
+    wtypeAvailable: boolean;
+    dotoolAvailable: boolean;
+    guidance: string | null;
+  };
 }
 
 export async function getNativeStatus() {
@@ -58,6 +71,10 @@ export async function getNativeStatus() {
 
 export async function requestMicrophonePermission() {
   return invoke<void>("request_microphone_permission");
+}
+
+export async function checkMicrophonePermission() {
+  return invoke<boolean>("check_microphone_permission");
 }
 
 export async function transcribeSample() {
@@ -148,6 +165,18 @@ export async function setTranscriptFormattingMode(
   mode: "auto" | "plain" | "developer"
 ) {
   return invoke<void>("set_transcript_formatting_mode", { mode });
+}
+
+export async function setNativeWidgetEnabled(enabled: boolean) {
+  return invoke<void>("set_widget_enabled", { enabled });
+}
+
+export async function setNativeErrorReporting(enabled: boolean) {
+  const dsn = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
+  return invoke<void>("set_error_reporting_enabled", {
+    enabled,
+    dsn: enabled ? dsn : null,
+  });
 }
 
 export async function setEditableFocusContext(isEditableFocused: boolean) {

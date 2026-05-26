@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   checkAccessibilityPermission,
+  checkMicrophonePermission,
   downloadWhisperModel,
   listWhisperModels,
   requestAccessibilityPermission,
@@ -57,12 +58,11 @@ export function Onboarding() {
       const trusted = await checkAccessibilityPermission();
       if (trusted) {
         setAccessibilityReady(true);
-        // Also probe mic — if already granted skip to model step
-        try {
-          await requestMicrophonePermission();
+        const microphoneReady = await checkMicrophonePermission();
+        if (microphoneReady) {
           setPermissionReady(true);
           setStep("model");
-        } catch {
+        } else {
           setStep("permission");
         }
       }
@@ -88,13 +88,11 @@ export function Onboarding() {
   useEffect(() => {
     if (step !== "permission" || permissionReady) return;
     const interval = setInterval(async () => {
-      try {
-        await requestMicrophonePermission();
+      const microphoneReady = await checkMicrophonePermission();
+      if (microphoneReady) {
         setPermissionReady(true);
         setStep("model");
         clearInterval(interval);
-      } catch {
-        // not yet granted
       }
     }, 2000);
     return () => clearInterval(interval);

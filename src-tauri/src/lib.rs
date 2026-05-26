@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "linux")]
+use std::{env, io::Write, process::Stdio};
+
 #[cfg(target_os = "macos")]
 use core_foundation::{
     base::{CFType, TCFType},
@@ -26,6 +29,7 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use hound::{SampleFormat, WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
+use sentry::ClientInitGuard;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
@@ -36,7 +40,70 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {}
 
+#[cfg(target_os = "macos")]
+#[link(name = "AVFoundation", kind = "framework")]
+extern "C" {}
+
+#[cfg(target_os = "macos")]
 mod event_tap;
+
+#[cfg(not(target_os = "macos"))]
+mod event_tap {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct HotKey {
+        shortcut: String,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum TriggerMode {
+        Toggle,
+        PushToTalk,
+    }
+
+    pub struct TapState {
+        pub hotkey: Mutex<HotKey>,
+        pub mode: Mutex<TriggerMode>,
+        pub is_active: Mutex<bool>,
+        pub last_error: Mutex<Option<String>>,
+    }
+
+    pub fn is_accessibility_trusted() -> bool {
+        true
+    }
+
+    pub fn request_accessibility_permission() -> bool {
+        true
+    }
+
+    pub fn parse_hotkey(shortcut: &str) -> Result<HotKey, String> {
+        if shortcut.trim().is_empty() {
+            return Err("Shortcut cannot be empty".to_string());
+        }
+
+        Ok(HotKey {
+            shortcut: shortcut.to_string(),
+        })
+    }
+
+    pub fn start(
+        initial_hotkey: HotKey,
+        initial_mode: TriggerMode,
+        _on_press: impl Fn() + Send + Sync + 'static,
+        _on_release: impl Fn() + Send + Sync + 'static,
+    ) -> Arc<TapState> {
+        Arc::new(TapState {
+            hotkey: Mutex::new(initial_hotkey),
+            mode: Mutex::new(initial_mode),
+            is_active: Mutex::new(false),
+            last_error: Mutex::new(Some(
+                "Native event tap is only available on macOS; using Tauri global shortcuts."
+                    .to_string(),
+            )),
+        })
+    }
+}
 
 /// Parse a shortcut string like "Meta+Shift+Space" or a bare "F9" into a `Shortcut`.
 /// Supported modifiers: Meta, Ctrl, Alt/AltLeft/AltRight, Shift.
@@ -179,6 +246,104 @@ struct TranscriptFormattingState {
     mode: Mutex<TranscriptFormattingMode>,
 }
 
+struct WidgetPreferencesState {
+    enabled: Mutex<bool>,
+}
+
+#[derive(Default)]
+struct ErrorReportingState {
+    guard: Mutex<Option<ClientInitGuard>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CliCommand {
+    ToggleRecording,
+    StartRecording,
+    StopRecording,
+    Cancel,
+    Show,
+    Hide,
+    Diagnostics,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CliOptions {
+    start_hidden: bool,
+    commands: Vec<CliCommand>,
+}
+
+impl CliOptions {
+    fn from_env() -> Self {
+        Self::from_args(std::env::args().skip(1))
+    }
+
+    fn from_forwarded_args(args: Vec<String>) -> Self {
+        Self::from_args(args.into_iter().skip(1))
+    }
+
+    fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        let mut options = Self::default();
+
+        for arg in args {
+            match arg.as_str() {
+                "--toggle-recording" => options.commands.push(CliCommand::ToggleRecording),
+                "--start-recording" => options.commands.push(CliCommand::StartRecording),
+                "--stop-recording" => options.commands.push(CliCommand::StopRecording),
+                "--cancel" => options.commands.push(CliCommand::Cancel),
+                "--show" => options.commands.push(CliCommand::Show),
+                "--hide" => options.commands.push(CliCommand::Hide),
+                "--start-hidden" => options.start_hidden = true,
+                "--diagnostics" => options.commands.push(CliCommand::Diagnostics),
+                "--help" | "-h" => options.commands.push(CliCommand::Diagnostics),
+                _ => {}
+            }
+        }
+
+        options
+    }
+
+    fn has_actions(&self) -> bool {
+        self.start_hidden || !self.commands.is_empty()
+    }
+}
+
+#[tauri::command]
+fn set_error_reporting_enabled(
+    state: State<'_, ErrorReportingState>,
+    enabled: bool,
+    dsn: Option<String>,
+) -> Result<(), String> {
+    let mut guard = state
+        .guard
+        .lock()
+        .map_err(|_| "Error reporting state is unavailable".to_string())?;
+
+    if !enabled {
+        *guard = None;
+        return Ok(());
+    }
+
+    let Some(dsn) = dsn.filter(|value| !value.trim().is_empty()) else {
+        *guard = None;
+        return Ok(());
+    };
+
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let release = format!("{}@{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    *guard = Some(sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: Some(release.into()),
+            send_default_pii: false,
+            ..Default::default()
+        },
+    )));
+    Ok(())
+}
+
 impl Default for TranscriptFormattingState {
     fn default() -> Self {
         Self {
@@ -280,6 +445,7 @@ struct EventTapHandle {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HotkeyDiagnostics {
+    platform: &'static str,
     current_shortcut: String,
     trigger_mode: TriggerMode,
     accessibility_trusted: bool,
@@ -287,6 +453,22 @@ struct HotkeyDiagnostics {
     event_tap_error: Option<String>,
     has_downloaded_model: bool,
     is_recording: bool,
+    app_data_dir: Option<String>,
+    models_dir: Option<String>,
+    recordings_dir: Option<String>,
+    text_insertion: TextInsertionDiagnostics,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextInsertionDiagnostics {
+    direct_typing_supported: bool,
+    x11_available: bool,
+    wayland_available: bool,
+    xdotool_available: bool,
+    wtype_available: bool,
+    dotool_available: bool,
+    guidance: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -332,6 +514,23 @@ fn request_accessibility_permission() -> bool {
     event_tap::request_accessibility_permission()
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn check_microphone_permission() -> bool {
+    unsafe {
+        let media_type = nsstring_from_str("soun");
+        let status: i64 =
+            msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type];
+        status == 3
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn check_microphone_permission() -> bool {
+    true
+}
+
 #[tauri::command]
 fn resolve_app_icon(app_name: String) -> Option<String> {
     resolve_app_icon_data_url(&app_name)
@@ -340,10 +539,32 @@ fn resolve_app_icon(app_name: String) -> Option<String> {
 #[tauri::command]
 fn native_status() -> NativeStatus {
     NativeStatus {
-        platform: "macOS desktop shell",
+        platform: platform_label(),
         engine: "Tauri command bridge + native WAV recorder + model-managed Whisper",
         recording_supported: true,
         transcription_supported: true,
+    }
+}
+
+fn platform_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macOS desktop shell"
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        "Windows desktop shell"
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        "Linux desktop shell"
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "Unsupported desktop shell"
     }
 }
 
@@ -597,7 +818,10 @@ fn cleanup_recordings(app: AppHandle) -> Result<u64, String> {
 
 #[tauri::command]
 fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     let recordings_dir = app_data_dir.join("recordings");
     let models_dir = whisper::models_dir(app_data_dir);
 
@@ -790,6 +1014,18 @@ fn set_transcript_formatting_mode(
 }
 
 #[tauri::command]
+fn set_widget_enabled(
+    enabled: bool,
+    state: State<'_, WidgetPreferencesState>,
+) -> Result<(), String> {
+    *state
+        .enabled
+        .lock()
+        .map_err(|_| "Widget preference state unavailable".to_string())? = enabled;
+    Ok(())
+}
+
+#[tauri::command]
 fn set_editable_focus_context(
     is_editable_focused: bool,
     state: State<'_, FocusContextState>,
@@ -830,8 +1066,12 @@ fn hotkey_diagnostics(
                 .any(|m| m.downloaded)
         })
         .unwrap_or(false);
+    let app_data_dir = app.path().app_data_dir().ok();
+    let models_dir = app_data_dir.clone().map(whisper::models_dir);
+    let recordings_dir = app_data_dir.clone().map(|path| path.join("recordings"));
 
     Ok(HotkeyDiagnostics {
+        platform: platform_label(),
         current_shortcut,
         trigger_mode,
         accessibility_trusted: event_tap::is_accessibility_trusted(),
@@ -839,16 +1079,73 @@ fn hotkey_diagnostics(
         event_tap_error,
         has_downloaded_model,
         is_recording,
+        app_data_dir: path_to_string(app_data_dir),
+        models_dir: path_to_string(models_dir),
+        recordings_dir: path_to_string(recordings_dir),
+        text_insertion: text_insertion_diagnostics(),
     })
+}
+
+fn path_to_string(path: Option<PathBuf>) -> Option<String> {
+    path.map(|path| path.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn text_insertion_diagnostics() -> TextInsertionDiagnostics {
+    let x11_available = env::var_os("DISPLAY").is_some();
+    let wayland_available = env::var_os("WAYLAND_DISPLAY").is_some();
+    let xdotool_available = command_exists("xdotool");
+    let wtype_available = command_exists("wtype");
+    let dotool_available = command_exists("dotool");
+    let has_linux_helper = xdotool_available || wtype_available || dotool_available;
+
+    TextInsertionDiagnostics {
+        direct_typing_supported: true,
+        x11_available,
+        wayland_available,
+        xdotool_available,
+        wtype_available,
+        dotool_available,
+        guidance: if has_linux_helper {
+            None
+        } else {
+            Some("Install xdotool for X11, or wtype/dotool for Wayland.")
+        },
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn text_insertion_diagnostics() -> TextInsertionDiagnostics {
+    TextInsertionDiagnostics {
+        direct_typing_supported: true,
+        x11_available: false,
+        wayland_available: false,
+        xdotool_available: false,
+        wtype_available: false,
+        dotool_available: false,
+        guidance: None,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let cli_options = CliOptions::from_env();
     let default_shortcut = Shortcut::new(Some(Modifiers::META | Modifiers::SHIFT), Code::Space);
     let default_hotkey =
         event_tap::parse_hotkey(DEFAULT_SHORTCUT).expect("DEFAULT_SHORTCUT must be valid");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |app, args, _working_directory| {
+                let options = CliOptions::from_forwarded_args(args);
+                if options.has_actions() {
+                    apply_startup_visibility(app, &options);
+                    run_cli_commands(app, &options);
+                } else {
+                    show_main_window(app);
+                }
+            },
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, _pressed_shortcut, event| {
@@ -880,7 +1177,11 @@ pub fn run() {
         })
         .manage(DictionaryState::default())
         .manage(TranscriptFormattingState::default())
+        .manage(WidgetPreferencesState {
+            enabled: Mutex::new(true),
+        })
         .manage(FocusContextState::default())
+        .manage(ErrorReportingState::default())
         .setup(move |app| {
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
@@ -895,6 +1196,9 @@ pub fn run() {
                 move || handle_hotkey_release(app_release.clone()),
             );
             app.manage(EventTapHandle { state: tap_state });
+
+            apply_startup_visibility(app.handle(), &cli_options);
+            run_cli_commands(app.handle(), &cli_options);
 
             Ok(())
         })
@@ -918,15 +1222,91 @@ pub fn run() {
             set_trigger_mode,
             set_dictionary,
             set_transcript_formatting_mode,
+            set_widget_enabled,
+            set_error_reporting_enabled,
             set_editable_focus_context,
             hotkey_diagnostics,
             check_accessibility_permission,
             request_accessibility_permission,
+            check_microphone_permission,
             resolve_app_icon,
             open_external_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Vox");
+}
+
+fn apply_startup_visibility(app: &AppHandle, options: &CliOptions) {
+    if options.start_hidden {
+        hide_main_window(app);
+    }
+}
+
+fn run_cli_commands(app: &AppHandle, options: &CliOptions) {
+    for command in &options.commands {
+        match command {
+            CliCommand::ToggleRecording => handle_hotkey_press(app.clone()),
+            CliCommand::StartRecording => start_recording_flow(app.clone()),
+            CliCommand::StopRecording => stop_and_transcribe(app.clone()),
+            CliCommand::Cancel => cancel_recording(app.clone()),
+            CliCommand::Show => show_main_window(app),
+            CliCommand::Hide => hide_main_window(app),
+            CliCommand::Diagnostics => print_cli_diagnostics(app, options),
+        }
+    }
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+fn print_cli_diagnostics(app: &AppHandle, options: &CliOptions) {
+    let status = native_status();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|error| format!("Unavailable: {error}"));
+    let current_shortcut = app
+        .try_state::<ActiveShortcut>()
+        .map(|state| {
+            state
+                .current
+                .lock()
+                .map(|shortcut| shortcut.clone())
+                .unwrap_or_else(|_| DEFAULT_SHORTCUT.to_string())
+        })
+        .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string());
+    let is_recording = app
+        .try_state::<RecorderState>()
+        .and_then(|state| state.session.lock().ok().map(|session| session.is_some()))
+        .unwrap_or(false);
+
+    eprintln!("Vox CLI");
+    eprintln!("  platform: {}", status.platform);
+    eprintln!("  engine: {}", status.engine);
+    eprintln!("  app data: {app_data_dir}");
+    eprintln!("  shortcut: {current_shortcut}");
+    eprintln!("  recording: {is_recording}");
+    eprintln!("  start hidden: {}", options.start_hidden);
+    eprintln!("  commands:");
+    eprintln!("    vox --toggle-recording");
+    eprintln!("    vox --start-recording");
+    eprintln!("    vox --stop-recording");
+    eprintln!("    vox --cancel");
+    eprintln!("    vox --show");
+    eprintln!("    vox --hide");
+    eprintln!("    vox --start-hidden");
+    eprintln!("    vox --diagnostics");
 }
 
 fn handle_hotkey_press(app: AppHandle) {
@@ -1091,9 +1471,41 @@ fn stop_and_transcribe(app: AppHandle) {
     }
 }
 
-/// Type `text` at the current cursor position using enigo's text injection.
-/// This works in any focused text field without touching the clipboard.
+fn cancel_recording(app: AppHandle) {
+    let recorder_state = app.state::<RecorderState>();
+    match stop_recording_inner(&recorder_state) {
+        Ok(status) => {
+            if let Some(path) = status.path {
+                let _ = fs::remove_file(path);
+            }
+            show_widget(&app, "idle", "Recording cancelled");
+            hide_widget_after_delay(app, 900);
+        }
+        Err(error) if error == "Recording is not running" => {
+            hide_widget_after_delay(app, 0);
+        }
+        Err(error) => {
+            show_widget(&app, "error", &error);
+            hide_widget_after_delay(app, 4000);
+        }
+    }
+}
+
+/// Type `text` at the current cursor position.
 fn paste_text(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        paste_text_linux(text)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        paste_text_with_enigo(text)
+    }
+}
+
+/// Type `text` through enigo's direct text injection.
+fn paste_text_with_enigo(text: &str) -> Result<(), String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
 
     let mut lines = text.split('\n').peekable();
@@ -1110,6 +1522,142 @@ fn paste_text(text: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn paste_text_linux(text: &str) -> Result<(), String> {
+    if paste_text_with_enigo(text).is_ok() {
+        return Ok(());
+    }
+
+    let is_wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    let is_x11 = env::var_os("DISPLAY").is_some();
+
+    if is_wayland {
+        if command_exists("wtype") {
+            return paste_text_with_wtype(text);
+        }
+
+        if command_exists("dotool") {
+            return paste_text_with_dotool(text);
+        }
+    }
+
+    if is_x11 && command_exists("xdotool") {
+        return paste_text_with_xdotool(text);
+    }
+
+    if command_exists("wtype") {
+        return paste_text_with_wtype(text);
+    }
+
+    if command_exists("dotool") {
+        return paste_text_with_dotool(text);
+    }
+
+    if command_exists("xdotool") {
+        return paste_text_with_xdotool(text);
+    }
+
+    Err("Could not insert text. Install xdotool for X11, or wtype/dotool for Wayland.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn paste_text_with_xdotool(text: &str) -> Result<(), String> {
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if !line.is_empty() {
+            run_command(
+                "xdotool",
+                &["type", "--clearmodifiers", "--delay", "0", line],
+            )?;
+        }
+
+        if lines.peek().is_some() {
+            run_command("xdotool", &["key", "Return"])?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn paste_text_with_wtype(text: &str) -> Result<(), String> {
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if !line.is_empty() {
+            run_command("wtype", &[line])?;
+        }
+
+        if lines.peek().is_some() {
+            run_command("wtype", &["-k", "Return"])?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn paste_text_with_dotool(text: &str) -> Result<(), String> {
+    let mut script = String::new();
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if !line.is_empty() {
+            script.push_str("type ");
+            script.push_str(line);
+            script.push('\n');
+        }
+
+        if lines.peek().is_some() {
+            script.push_str("key enter\n");
+        }
+    }
+
+    let mut child = Command::new("dotool")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not run dotool: {error}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|error| format!("Could not write to dotool: {error}"))?;
+    }
+
+    child
+        .wait()
+        .map_err(|error| format!("dotool failed: {error}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("dotool exited with {status}"))
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
+    Command::new(program)
+        .args(args)
+        .status()
+        .map_err(|error| format!("Could not run {program}: {error}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{program} exited with {status}"))
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn command_exists(name: &str) -> bool {
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+
+    env::split_paths(&paths).any(|path| path.join(name).is_file())
 }
 
 fn build_context_prompt(app_name: Option<&str>, window_title: Option<&str>) -> Option<String> {
@@ -2286,6 +2834,10 @@ fn show_widget_with_elapsed(
     message: &str,
     elapsed_seconds: Option<u64>,
 ) {
+    if !is_widget_enabled(app) {
+        return;
+    }
+
     if let Some(window) = app.get_webview_window("widget") {
         position_widget_bottom_right(&window);
         // Ensure the window is visible even if macOS hid it (e.g. after a focus change).
@@ -2301,6 +2853,12 @@ fn show_widget_with_elapsed(
         );
         // Do NOT steal focus — we need the previous app to keep focus for paste
     }
+}
+
+fn is_widget_enabled(app: &AppHandle) -> bool {
+    app.try_state::<WidgetPreferencesState>()
+        .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
+        .unwrap_or(true)
 }
 
 fn position_widget_bottom_right(window: &WebviewWindow) {
@@ -2356,14 +2914,16 @@ fn start_recording_timer(app: AppHandle) {
                 .lock()
                 .map(|b| *b)
                 .unwrap_or([0.0; 7]);
-            if let Some(window) = app.get_webview_window("widget") {
-                let level = bars.iter().copied().fold(0.0, f32::max);
-                #[cfg(debug_assertions)]
-                if ticks % 20 == 0 {
-                    eprintln!("[vox] audio bars max={level:.3} bars={bars:?}");
+            if is_widget_enabled(&app) {
+                if let Some(window) = app.get_webview_window("widget") {
+                    let level = bars.iter().copied().fold(0.0, f32::max);
+                    #[cfg(debug_assertions)]
+                    if ticks % 20 == 0 {
+                        eprintln!("[vox] audio bars max={level:.3} bars={bars:?}");
+                    }
+                    let _ = window.emit("vox-audio-level", AudioLevel { level });
+                    let _ = window.emit("vox-audio-bars", AudioBars { bars });
                 }
-                let _ = window.emit("vox-audio-level", AudioLevel { level });
-                let _ = window.emit("vox-audio-bars", AudioBars { bars });
             }
 
             // Elapsed counter (every ~1 s)

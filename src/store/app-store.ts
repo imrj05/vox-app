@@ -3,7 +3,6 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting } from "@/lib/db";
-
 export const HOTKEY_KEY = "hotkey";
 export const ONBOARDING_KEY = "onboarding_complete";
 export const TRIGGER_MODE_KEY = "trigger_mode";
@@ -11,7 +10,9 @@ export const SOUND_ENABLED_KEY = "sound_enabled";
 export const SELECTED_MODEL_KEY = "selected_model";
 export const DICTIONARY_KEY = "dictionary";
 export const THEME_KEY = "theme";
+export const WIDGET_ENABLED_KEY = "widget_enabled";
 export const TRANSCRIPT_FORMATTING_MODE_KEY = "transcript_formatting_mode";
+export const ERROR_REPORTING_ENABLED_KEY = "error_reporting_enabled";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
 export type TriggerMode = "toggle" | "pushToTalk";
@@ -21,20 +22,18 @@ export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
-
 export type UpdateStatus =
   | "idle"
   | "checking"
   | "available"
   | "downloading"
   | "installing"
+  | "restarting"
   | "upToDate"
   | "error";
-
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
 }
-
 interface AppState {
   /** null = not yet loaded from DB */
   onboardingComplete: boolean | null;
@@ -44,11 +43,11 @@ interface AppState {
   selectedModel: string;
   dictionary: string;
   theme: AppTheme;
+  widgetEnabled: boolean;
   transcriptFormattingMode: TranscriptFormattingMode;
-
+  errorReportingEnabled: boolean;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
-
   setOnboardingComplete: (value: boolean) => Promise<void>;
   setHotkey: (value: string) => Promise<void>;
   setTriggerMode: (value: TriggerMode) => Promise<void>;
@@ -56,9 +55,10 @@ interface AppState {
   setSelectedModel: (value: string) => Promise<void>;
   setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
+  setWidgetEnabled: (value: boolean) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
+  setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
-
   // Update
   updateInfo: Update | null;
   updateStatus: UpdateStatus;
@@ -69,7 +69,6 @@ interface AppState {
   installUpdate: () => Promise<void>;
   setShowUpdateDialog: (show: boolean) => void;
 }
-
 const defaultAppState = {
   onboardingComplete: null,
   hotkey: DEFAULT_HOTKEY,
@@ -78,7 +77,9 @@ const defaultAppState = {
   selectedModel: DEFAULT_SELECTED_MODEL,
   dictionary: "",
   theme: DEFAULT_THEME,
+  widgetEnabled: true,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
+  errorReportingEnabled: true,
   // Update
   updateInfo: null,
   updateStatus: "idle" as UpdateStatus,
@@ -87,9 +88,49 @@ const defaultAppState = {
   showUpdateDialog: false,
 };
 
+let updateProgressTimer: number | null = null;
+let updateProgressTarget = 0;
+
+function stopUpdateProgressSmoothing() {
+  if (updateProgressTimer !== null) {
+    window.clearInterval(updateProgressTimer);
+    updateProgressTimer = null;
+  }
+}
+
+function resetUpdateProgressSmoothing() {
+  stopUpdateProgressSmoothing();
+  updateProgressTarget = 0;
+}
+
+function setUpdateProgressTarget(target: number) {
+  updateProgressTarget = Math.max(updateProgressTarget, target);
+
+  if (updateProgressTimer !== null) return;
+
+  updateProgressTimer = window.setInterval(() => {
+    useAppStore.setState((state) => {
+      const { downloaded, total } = state.updateProgress;
+      if (downloaded >= updateProgressTarget) {
+        stopUpdateProgressSmoothing();
+        return state;
+      }
+
+      const remaining = updateProgressTarget - downloaded;
+      const nextDownloaded = downloaded + Math.max(1, Math.ceil(remaining * 0.18));
+
+      return {
+        updateProgress: {
+          downloaded: Math.min(nextDownloaded, updateProgressTarget),
+          total,
+        },
+      };
+    });
+  }, 80);
+}
+
 export const useAppStore = create<AppState>((set) => ({
   ...defaultAppState,
-
   hydrate: async () => {
     try {
       const [
@@ -100,7 +141,9 @@ export const useAppStore = create<AppState>((set) => ({
         selectedModel,
         dictionary,
         theme,
+        widgetEnabled,
         transcriptFormattingMode,
+        errorReportingEnabled,
       ] = await withTimeout(
         Promise.all([
           getSetting(ONBOARDING_KEY),
@@ -110,7 +153,9 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(SELECTED_MODEL_KEY),
           getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
+          getSetting(WIDGET_ENABLED_KEY),
           getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
+          getSetting(ERROR_REPORTING_ENABLED_KEY),
         ]),
         SETTINGS_HYDRATE_TIMEOUT_MS,
         "Timed out loading app settings"
@@ -120,9 +165,11 @@ export const useAppStore = create<AppState>((set) => ({
       const resolvedTranscriptFormattingMode = parseTranscriptFormattingModeSetting(
         transcriptFormattingMode
       );
+      const resolvedWidgetEnabled = parseBooleanSetting(widgetEnabled, true);
       // Sync to localStorage so the widget window can read it without IPC
       localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
       localStorage.setItem(THEME_KEY, resolvedTheme);
+      localStorage.setItem(WIDGET_ENABLED_KEY, String(resolvedWidgetEnabled));
       set({
         onboardingComplete: onboarding === "true",
         hotkey: hotkey ?? DEFAULT_HOTKEY,
@@ -131,65 +178,68 @@ export const useAppStore = create<AppState>((set) => ({
         selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
         dictionary: dictionary ?? "",
         theme: resolvedTheme,
+        widgetEnabled: resolvedWidgetEnabled,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
+        errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
       });
     } catch (error) {
       console.error("Failed to hydrate app settings", error);
       localStorage.setItem(SOUND_ENABLED_KEY, String(true));
       localStorage.setItem(THEME_KEY, DEFAULT_THEME);
+      localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
       set({ onboardingComplete: false });
     }
   },
-
   setOnboardingComplete: async (value) => {
     await setSetting(ONBOARDING_KEY, String(value));
     set({ onboardingComplete: value });
   },
-
   setHotkey: async (value) => {
     await setSetting(HOTKEY_KEY, value);
     set({ hotkey: value });
   },
-
   setTriggerMode: async (value) => {
     await setSetting(TRIGGER_MODE_KEY, value);
     set({ triggerMode: value });
   },
-
   setSoundEnabled: async (value) => {
     await setSetting(SOUND_ENABLED_KEY, String(value));
     // Sync to localStorage so the widget window picks it up immediately
     localStorage.setItem(SOUND_ENABLED_KEY, String(value));
     set({ soundEnabled: value });
   },
-
   setSelectedModel: async (value) => {
     await setSetting(SELECTED_MODEL_KEY, value);
     set({ selectedModel: value });
   },
-
   setDictionary: async (value) => {
     await setSetting(DICTIONARY_KEY, value);
     set({ dictionary: value });
   },
-
   setTheme: async (value) => {
     await setSetting(THEME_KEY, value);
     localStorage.setItem(THEME_KEY, value);
     set({ theme: value });
   },
-
+  setWidgetEnabled: async (value) => {
+    await setSetting(WIDGET_ENABLED_KEY, String(value));
+    localStorage.setItem(WIDGET_ENABLED_KEY, String(value));
+    set({ widgetEnabled: value });
+  },
   setTranscriptFormattingMode: async (value) => {
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);
     set({ transcriptFormattingMode: value });
   },
-
+  setErrorReportingEnabled: async (value) => {
+    await setSetting(ERROR_REPORTING_ENABLED_KEY, String(value));
+    set({ errorReportingEnabled: value });
+  },
   resetAppState: () => {
     localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
+    localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
     set({ ...defaultAppState, onboardingComplete: false });
   },
-
   checkForUpdates: async () => {
     set({ updateStatus: "checking", updateMessage: null });
     try {
@@ -212,52 +262,57 @@ export const useAppStore = create<AppState>((set) => ({
       });
     }
   },
-
   installUpdate: async () => {
     const { updateInfo } = useAppStore.getState();
     if (!updateInfo) return;
+    resetUpdateProgressSmoothing();
     set({ updateStatus: "downloading", updateProgress: { downloaded: 0, total: null }, updateMessage: `Downloading version ${updateInfo.version}...` });
     try {
-      await updateInfo.downloadAndInstall((event) => {
+      let downloaded = 0;
+      let total: number | null = null;
+
+      await updateInfo.download((event) => {
         switch (event.event) {
           case "Started":
-            set({ updateProgress: { downloaded: 0, total: event.data.contentLength ?? null } });
+            downloaded = 0;
+            total = event.data.contentLength ?? null;
+            set({ updateProgress: { downloaded: 0, total } });
             break;
           case "Progress":
-            useAppStore.setState((s) => ({
-              updateProgress: {
-                downloaded: s.updateProgress.downloaded + event.data.chunkLength,
-                total: s.updateProgress.total,
-              },
-            }));
+            downloaded += event.data.chunkLength;
+            setUpdateProgressTarget(total ? Math.min(downloaded, total) : downloaded);
             break;
           case "Finished":
+            stopUpdateProgressSmoothing();
+            if (total) {
+              set({ updateProgress: { downloaded: total, total } });
+            }
             set({ updateStatus: "installing", updateMessage: "Installing update..." });
             break;
         }
       });
-      set({ updateMessage: "Update installed. Relaunching Vox..." });
+
+      set({ updateStatus: "installing", updateMessage: "Installing update..." });
+      await updateInfo.install();
+      set({ updateStatus: "restarting", updateMessage: "Update installed. Restarting Vox..." });
       await relaunch();
     } catch (error) {
+      resetUpdateProgressSmoothing();
       set({ updateStatus: "error", updateMessage: error instanceof Error ? error.message : String(error) });
     }
   },
-
   setShowUpdateDialog: (show) => set({ showUpdateDialog: show }),
 }));
-
 function parseThemeSetting(value: string | null): AppTheme {
   return value === "light" || value === "dark" || value === "system"
     ? value
     : DEFAULT_THEME;
 }
-
 function parseTriggerModeSetting(value: string | null): TriggerMode {
   return value === "toggle" || value === "pushToTalk"
     ? value
     : DEFAULT_TRIGGER_MODE;
 }
-
 function parseTranscriptFormattingModeSetting(
   value: string | null
 ): TranscriptFormattingMode {

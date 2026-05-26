@@ -55,7 +55,9 @@ import {
   formatShortcut,
   setGlobalShortcut,
   checkAccessibilityPermission,
+  checkMicrophonePermission,
   getHotkeyDiagnostics,
+  getNativeStatus,
   getStartAtLogin,
   isEventTapOnlyShortcut,
   requestAccessibilityPermission,
@@ -80,7 +82,6 @@ interface SettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
 function SectionHeader({
   title,
   description,
@@ -99,7 +100,6 @@ function SectionHeader({
     </div>
   );
 }
-
 function SettingsCard({
   children,
   className,
@@ -118,7 +118,6 @@ function SettingsCard({
     </div>
   );
 }
-
 function SettingRow({
   icon,
   title,
@@ -149,20 +148,20 @@ function SettingRow({
     </div>
   );
 }
-
 export function GeneralSection() {
   const {
     soundEnabled,
     setSoundEnabled,
     theme,
     setTheme,
+    widgetEnabled,
+    setWidgetEnabled,
     transcriptFormattingMode,
     setTranscriptFormattingMode,
   } = useAppStore();
   const [startAtLogin, setStartAtLoginState] = useState(false);
   const [startAtLoginLoading, setStartAtLoginLoading] = useState(true);
   const [startAtLoginError, setStartAtLoginError] = useState<string | null>(null);
-
   useEffect(() => {
     let ignore = false;
     void getStartAtLogin()
@@ -181,7 +180,6 @@ export function GeneralSection() {
       ignore = true;
     };
   }, []);
-
   const handleStartAtLoginChange = async (enabled: boolean) => {
     const previous = startAtLogin;
     setStartAtLoginState(enabled);
@@ -196,7 +194,6 @@ export function GeneralSection() {
       setStartAtLoginLoading(false);
     }
   };
-
   return (
     <div className="space-y-5">
       <div>
@@ -255,6 +252,19 @@ export function GeneralSection() {
           }
         />
         <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Monitor className="h-4 w-4" />}
+          title="Floating widget"
+          description="Show the small recording status window while Vox listens and transcribes."
+          action={
+            <Switch
+              id="floating-widget"
+              checked={widgetEnabled}
+              onCheckedChange={(checked) => void setWidgetEnabled(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
         <div className="space-y-3">
           <div className="flex min-w-0 items-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
@@ -296,7 +306,7 @@ export function GeneralSection() {
         <SettingRow
           icon={<LogIn className="h-4 w-4" />}
           title="Start at login"
-          description="Launch Vox automatically when you sign in to this Mac."
+          description="Launch Vox automatically when you sign in to this device."
           action={
             <Switch
               id="start-at-login"
@@ -315,7 +325,6 @@ export function GeneralSection() {
     </div>
   );
 }
-
 const themeOptions: Array<{
   value: AppTheme;
   label: string;
@@ -325,7 +334,6 @@ const themeOptions: Array<{
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
 ];
-
 const formattingModeOptions: Array<{
   value: TranscriptFormattingMode;
   label: string;
@@ -347,25 +355,21 @@ const formattingModeOptions: Array<{
     description: "Always prefer code punctuation, structure, identifier formatting, and template snippets.",
   },
 ];
-
 export function DictionarySection() {
   const { dictionary, setDictionary } = useAppStore();
   const [wordInput, setWordInput] = useState("");
   const [hintInput, setHintInput] = useState("");
   const [categoryInput, setCategoryInput] = useState("General");
   const entries = parseDictionaryEntries(dictionary);
-
   const saveEntries = (nextEntries: DictionaryEntry[]) => {
     void setDictionary(serializeDictionaryEntries(nextEntries));
   };
-
   const handleAddEntries = () => {
     const words = wordInput
       .split(",")
       .map((word) => word.trim())
       .filter(Boolean);
     if (words.length === 0) return;
-
     const nextEntries = [
       ...entries,
       ...words.map((word) => ({
@@ -378,11 +382,9 @@ export function DictionarySection() {
     setWordInput("");
     setHintInput("");
   };
-
   const handleRemoveEntry = (entry: DictionaryEntry) => {
     saveEntries(entries.filter((item) => dictionaryEntryKey(item) !== dictionaryEntryKey(entry)));
   };
-
   return (
     <div className="space-y-5">
       <SectionHeader
@@ -436,7 +438,6 @@ export function DictionarySection() {
           Separate multiple words with commas to add them at once.
         </p>
       </SettingsCard>
-
       <SettingsCard className="min-h-48 p-5">
         {entries.length === 0 ? (
           <div className="flex min-h-40 flex-col items-center justify-center text-center">
@@ -489,13 +490,31 @@ export function DictionarySection() {
     </div>
   );
 }
-
 export function DataSection() {
-  const resetAppState = useAppStore((state) => state.resetAppState);
+  const {
+    errorReportingEnabled,
+    resetAppState,
+    setErrorReportingEnabled,
+  } = useAppStore();
   const [busyAction, setBusyAction] = useState<"history" | "recordings" | "app" | null>(null);
+  const [diagnostics, setDiagnostics] = useState<Awaited<
+    ReturnType<typeof getHotkeyDiagnostics>
+  > | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
+  useEffect(() => {
+    let ignore = false;
+    void getHotkeyDiagnostics()
+      .then((next) => {
+        if (!ignore) setDiagnostics(next);
+      })
+      .catch(() => {
+        if (!ignore) setDiagnostics(null);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, []);
   const handleClearHistory = async () => {
     setBusyAction("history");
     setMessage(null);
@@ -509,7 +528,6 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   const handleClearAppData = async () => {
     setBusyAction("app");
     setMessage(null);
@@ -525,7 +543,6 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   const handleCleanupRecordings = async () => {
     setBusyAction("recordings");
     setMessage(null);
@@ -543,14 +560,38 @@ export function DataSection() {
       setBusyAction(null);
     }
   };
-
   return (
     <div className="space-y-5">
       <SectionHeader
         title="Data"
-        description="Clear local Vox data from this Mac, including leftover recordings or the full local app footprint."
+        description="Clear local Vox data from this device, including leftover recordings or the full local app footprint."
       />
       <SettingsCard className="space-y-4">
+        <div className="space-y-2 rounded-xl border border-border bg-background px-3 py-3 text-[11px] text-muted-foreground">
+          <p>
+            App data: <span className="font-mono">{diagnostics?.appDataDir ?? "Checking"}</span>
+          </p>
+          <p>
+            Models: <span className="font-mono">{diagnostics?.modelsDir ?? "Checking"}</span>
+          </p>
+          <p>
+            Recordings: <span className="font-mono">{diagnostics?.recordingsDir ?? "Checking"}</span>
+          </p>
+        </div>
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<ShieldCheck className="h-4 w-4" />}
+          title="Error reporting"
+          description="Send anonymous crash and error reports to Vox Server. Vox does not send transcripts, audio, or personal identity."
+          action={
+            <Switch
+              checked={errorReportingEnabled}
+              onCheckedChange={(checked) => void setErrorReportingEnabled(checked)}
+              aria-label="Toggle anonymous error reporting"
+            />
+          }
+        />
+        <div className="h-px bg-border" />
         <SettingRow
           icon={<Trash2 className="h-4 w-4" />}
           title="Clear transcript history"
@@ -569,7 +610,7 @@ export function DataSection() {
         <SettingRow
           icon={<Mic className="h-4 w-4" />}
           title="Clean leftover recordings"
-          description="Delete any temporary .wav recording files left in Vox storage on this Mac."
+          description="Delete any temporary .wav recording files left in Vox storage on this device."
           action={
             <ConfirmDataAction
               title="Delete leftover recordings?"
@@ -588,7 +629,7 @@ export function DataSection() {
           action={
             <ConfirmDataAction
               title="Clean app entirely?"
-              description="This deletes saved transcripts, preferences, temporary recordings, and downloaded models from this Mac. Vox will return to onboarding and you will need to download models again."
+              description="This deletes saved transcripts, preferences, temporary recordings, and downloaded models from this device. Vox will return to onboarding and you will need to download models again."
               actionLabel="Clean app"
               busy={busyAction === "app"}
               onConfirm={handleClearAppData}
@@ -609,7 +650,6 @@ export function DataSection() {
     </div>
   );
 }
-
 function ConfirmDataAction({
   title,
   description,
@@ -651,13 +691,11 @@ function ConfirmDataAction({
     </AlertDialog>
   );
 }
-
 interface DictionaryEntry {
   word: string;
   hint: string;
   category: string;
 }
-
 function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
   return dictionary
     .split("\n")
@@ -674,13 +712,11 @@ function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
     })
     .filter((entry) => entry.word);
 }
-
 function serializeDictionaryEntries(entries: DictionaryEntry[]) {
   return entries
     .map((entry) => [entry.word, entry.hint, entry.category].join(" | "))
     .join("\n");
 }
-
 function dedupeDictionaryEntries(entries: DictionaryEntry[]) {
   const seen = new Set<string>();
   return entries.filter((entry) => {
@@ -690,11 +726,11 @@ function dedupeDictionaryEntries(entries: DictionaryEntry[]) {
     return true;
   });
 }
-
 function dictionaryEntryKey(entry: DictionaryEntry) {
   return `${entry.word}|${entry.hint}|${entry.category}`;
 }
 type PermissionStatus = "checking" | "granted" | "denied";
+type PlatformKind = "macos" | "windows" | "linux" | "unknown";
 interface PermissionRowProps {
   icon: React.ReactNode;
   title: string;
@@ -703,6 +739,65 @@ interface PermissionRowProps {
   actionLabel: string;
   onAction: () => void;
   busy: boolean;
+}
+function platformKind(platform?: string): PlatformKind {
+  const value = platform?.toLowerCase() ?? "";
+  if (value.includes("macos")) return "macos";
+  if (value.includes("windows")) return "windows";
+  if (value.includes("linux")) return "linux";
+  return "unknown";
+}
+function permissionCopy(kind: PlatformKind) {
+  switch (kind) {
+    case "macos":
+      return {
+        description: "macOS access required for local dictation and global shortcuts.",
+        loading: "Vox is verifying Accessibility and Microphone access.",
+        accessibilityTitle: "Accessibility",
+        accessibilityDescription:
+          "Required to detect global hotkeys like Globe, bare Option, or Fn keys via CGEventTap.",
+        accessibilityAction: "Open Settings",
+        microphoneDescription:
+          "Required to capture your voice locally. Audio never leaves your device.",
+        note: "If a permission was recently granted, it may take a moment to reflect here.",
+      };
+    case "windows":
+      return {
+        description: "Windows privacy settings and startup behavior for local dictation.",
+        loading: "Vox is checking microphone access and desktop integration status.",
+        accessibilityTitle: "Desktop input",
+        accessibilityDescription:
+          "Windows does not require macOS Accessibility permission. Global shortcuts use the desktop shortcut API.",
+        accessibilityAction: "Refresh",
+        microphoneDescription:
+          "Required to capture your voice locally. If blocked, enable microphone access in Windows Privacy settings.",
+        note: "For startup behavior, use Start at login in General settings and confirm Windows allows startup apps.",
+      };
+    case "linux":
+      return {
+        description: "Linux microphone access and input helper readiness for X11 and Wayland.",
+        loading: "Vox is checking microphone access and Linux desktop integration status.",
+        accessibilityTitle: "Input helpers",
+        accessibilityDescription:
+          "Linux does not use macOS Accessibility permission. For text insertion, install xdotool on X11 or wtype/dotool on Wayland.",
+        accessibilityAction: "Refresh",
+        microphoneDescription:
+          "Required to capture your voice locally. Check PipeWire, PulseAudio, or ALSA if access is blocked.",
+        note: "Wayland may restrict global shortcuts. Bind Vox CLI commands in your desktop keyboard settings when needed.",
+      };
+    default:
+      return {
+        description: "Desktop access required for local dictation and shortcuts.",
+        loading: "Vox is checking desktop permissions.",
+        accessibilityTitle: "Desktop input",
+        accessibilityDescription:
+          "Used for shortcuts and text insertion where the operating system allows it.",
+        accessibilityAction: "Refresh",
+        microphoneDescription:
+          "Required to capture your voice locally. Audio never leaves your device.",
+        note: "If a permission was recently granted, it may take a moment to reflect here.",
+      };
+  }
 }
 function PermissionRow({
   icon,
@@ -762,21 +857,26 @@ function PermissionRow({
   );
 }
 export function PermissionsSection() {
+  const [platform, setPlatform] = useState<string | null>(null);
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<PermissionStatus>("checking");
   const [micStatus, setMicStatus] = useState<PermissionStatus>("checking");
   const [accessibilityBusy, setAccessibilityBusy] = useState(false);
   const [micBusy, setMicBusy] = useState(false);
+  const kind = platformKind(platform ?? undefined);
+  const copy = permissionCopy(kind);
   const isLoadingPermissions =
     accessibilityStatus === "checking" || micStatus === "checking";
   // Check both permissions on mount
   useEffect(() => {
+    void getNativeStatus()
+      .then((status) => setPlatform(status.platform))
+      .catch(() => setPlatform("Unknown desktop shell"));
     void checkAccessibilityPermission().then((trusted) => {
       setAccessibilityStatus(trusted ? "granted" : "denied");
     });
-    // Microphone: attempt a silent probe — if it succeeds the permission is granted
-    void requestMicrophonePermission()
-      .then(() => setMicStatus("granted"))
+    void checkMicrophonePermission()
+      .then((granted) => setMicStatus(granted ? "granted" : "denied"))
       .catch(() => setMicStatus("denied"));
   }, []);
   // Poll accessibility while denied (user may grant in System Settings)
@@ -816,7 +916,7 @@ export function PermissionsSection() {
     <div className="space-y-5">
       <SectionHeader
         title="Permissions"
-        description="macOS access required for local dictation and global shortcuts."
+        description={copy.description}
       />
       {isLoadingPermissions && (
         <SettingsCard className="flex items-center gap-3 bg-muted/35 px-4 py-4">
@@ -826,7 +926,7 @@ export function PermissionsSection() {
               Checking permissions
             </p>
             <p className="text-xs text-muted-foreground">
-              Vox is verifying Accessibility and Microphone access.
+              {copy.loading}
             </p>
           </div>
         </SettingsCard>
@@ -834,17 +934,17 @@ export function PermissionsSection() {
       <SettingsCard className="space-y-3">
         <PermissionRow
           icon={<ShieldCheck className="h-4 w-4" />}
-          title="Accessibility"
-          description="Required to detect global hotkeys like Globe, bare Option, or Fn keys via CGEventTap."
+          title={copy.accessibilityTitle}
+          description={copy.accessibilityDescription}
           status={accessibilityStatus}
-          actionLabel="Open Settings"
+          actionLabel={copy.accessibilityAction}
           onAction={handleGrantAccessibility}
           busy={accessibilityBusy}
         />
         <PermissionRow
           icon={<Mic className="h-4 w-4" />}
           title="Microphone"
-          description="Required to capture your voice locally. Audio never leaves your device."
+          description={copy.microphoneDescription}
           status={micStatus}
           actionLabel="Allow"
           onAction={handleGrantMic}
@@ -852,7 +952,7 @@ export function PermissionsSection() {
         />
       </SettingsCard>
       <p className="text-[11px] text-muted-foreground">
-        If a permission was recently granted, it may take a moment to reflect here.
+        {copy.note}
       </p>
     </div>
   );
@@ -949,10 +1049,28 @@ export function ShortcutsSection() {
               ? "Hold to record, release to transcribe"
               : "Press once to start, press again to stop",
         },
+        {
+          label: "Text insertion",
+          ok:
+            diagnostics.textInsertion.directTypingSupported ||
+            diagnostics.textInsertion.xdotoolAvailable ||
+            diagnostics.textInsertion.wtypeAvailable ||
+            diagnostics.textInsertion.dotoolAvailable,
+          detail:
+            diagnostics.textInsertion.guidance ??
+            [
+              diagnostics.textInsertion.directTypingSupported && "Direct typing",
+              diagnostics.textInsertion.xdotoolAvailable && "xdotool",
+              diagnostics.textInsertion.wtypeAvailable && "wtype",
+              diagnostics.textInsertion.dotoolAvailable && "dotool",
+            ]
+              .filter(Boolean)
+              .join(", "),
+        },
       ]
     : [];
   const info = [
-    { label: "Version", value: "0.0.1" },
+    { label: "Platform", value: diagnostics?.platform ?? "Checking" },
     { label: "Desktop shell", value: "Tauri v2" },
     { label: "Audio format", value: "16-bit WAV" },
   ];
@@ -1072,6 +1190,17 @@ export function ShortcutsSection() {
               {" · "}
               Recording: <span className="font-medium">{diagnostics.isRecording ? "Yes" : "No"}</span>
             </div>
+            <div className="space-y-1 rounded-xl border border-border bg-background px-3 py-2 text-[11px] text-muted-foreground">
+              <p>
+                App data: <span className="font-mono">{diagnostics.appDataDir ?? "Unavailable"}</span>
+              </p>
+              <p>
+                Models: <span className="font-mono">{diagnostics.modelsDir ?? "Unavailable"}</span>
+              </p>
+              <p>
+                Recordings: <span className="font-mono">{diagnostics.recordingsDir ?? "Unavailable"}</span>
+              </p>
+            </div>
           </div>
         ) : (
           <div className="flex items-center gap-3 rounded-xl border border-border bg-background px-3 py-3">
@@ -1095,7 +1224,6 @@ export function ShortcutsSection() {
     </div>
   );
 }
-
 export function AboutSection() {
   return (
     <div className="space-y-5">
@@ -1143,7 +1271,6 @@ export function AboutSection() {
     </div>
   );
 }
-
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("general");

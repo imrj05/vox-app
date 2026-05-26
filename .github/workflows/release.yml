@@ -280,7 +280,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build desktop app
-        run: pnpm tauri build --bundles ${{ matrix.platform.bundles }}
+        run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
 
       - name: Upload platform installers
         env:

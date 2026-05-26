@@ -14,11 +14,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 cpal = "0.17.3"
-core-foundation = "0.10"
-core-graphics = { version = "0.24", features = ["highsierra"] }
 enigo = "0.2"
 hound = "3.5.1"
-objc = "0.2"
 reqwest = "0.13.3"
 tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
@@ -29,5 +26,12 @@ tauri-plugin-global-shortcut = "2.3.1"
 tauri-plugin-process = "2.3.0"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-updater = "2.10.1"
-whisper-rs = { version = "0.15.1", features = ["metal"] }
+whisper-rs = "0.15.1"
 sentry = { version = "0.48.2", default-features = false, features = ["panic", "reqwest", "rustls"] }
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["highsierra"] }
+objc = "0.2"
+whisper-rs = { version = "0.15.1", features = ["metal"] }

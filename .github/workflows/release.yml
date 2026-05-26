@@ -53,6 +53,12 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: macos-release
+
       - name: Resolve release tag
         shell: bash
         run: |
@@ -170,5 +176,133 @@ jobs:
               assets+=("$installer_path")
             fi
           done <<< "${{ steps.release_metadata.outputs.installer_paths }}"
+
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+  release-platform-installers:
+    name: Release installers (${{ matrix.platform.name }})
+    needs: release
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Windows
+            runner: windows-latest
+            bundles: nsis
+          - name: Linux
+            runner: ubuntu-22.04
+            bundles: deb
+    env:
+      RELEASE_REPO: ${{ github.repository }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
+      GGML_NATIVE: "OFF"
+      GGML_CPU_ARM_ARCH: "armv8.2-a"
+      CMAKE_C_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+      CMAKE_CXX_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux system dependencies
+        if: matrix.platform.name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            curl \
+            file \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            wget
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.platform.name }}-release
+
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_tag="${{ github.event.inputs.release_tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_tag="${GITHUB_REF#refs/tags/}"
+          else
+            release_tag="v${version}"
+          fi
+
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+
+      - name: Validate release secrets
+        shell: bash
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "Missing required secret: TAURI_SIGNING_PRIVATE_KEY" >&2
+            exit 1
+          fi
+
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+            echo "Missing required secret: TAURI_SIGNING_PRIVATE_KEY_PASSWORD" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop app
+        run: pnpm tauri build --bundles ${{ matrix.platform.bundles }}
+
+      - name: Upload platform installers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          mapfile -t assets < <(find src-tauri/target/release/bundle -type f \( \
+            -name '*.AppImage' -o \
+            -name '*.AppImage.sig' -o \
+            -name '*.deb' -o \
+            -name '*.deb.sig' -o \
+            -name '*.rpm' -o \
+            -name '*.rpm.sig' -o \
+            -name '*.msi' -o \
+            -name '*.msi.sig' -o \
+            -name '*.exe' -o \
+            -name '*.exe.sig' \
+          \) -print)
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No installer assets found." >&2
+            exit 1
+          fi
 
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

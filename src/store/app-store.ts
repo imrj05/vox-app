@@ -10,6 +10,7 @@ export const SOUND_ENABLED_KEY = "sound_enabled";
 export const SELECTED_MODEL_KEY = "selected_model";
 export const DICTIONARY_KEY = "dictionary";
 export const THEME_KEY = "theme";
+export const WIDGET_ENABLED_KEY = "widget_enabled";
 export const TRANSCRIPT_FORMATTING_MODE_KEY = "transcript_formatting_mode";
 export const ERROR_REPORTING_ENABLED_KEY = "error_reporting_enabled";
 export const DEFAULT_SELECTED_MODEL = "base.en";
@@ -42,6 +43,7 @@ interface AppState {
   selectedModel: string;
   dictionary: string;
   theme: AppTheme;
+  widgetEnabled: boolean;
   transcriptFormattingMode: TranscriptFormattingMode;
   errorReportingEnabled: boolean;
   /** Load all persisted settings from SQLite. Call once on app mount. */
@@ -53,6 +55,7 @@ interface AppState {
   setSelectedModel: (value: string) => Promise<void>;
   setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
+  setWidgetEnabled: (value: boolean) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
   setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
@@ -74,6 +77,7 @@ const defaultAppState = {
   selectedModel: DEFAULT_SELECTED_MODEL,
   dictionary: "",
   theme: DEFAULT_THEME,
+  widgetEnabled: true,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
   errorReportingEnabled: true,
   // Update
@@ -137,6 +141,7 @@ export const useAppStore = create<AppState>((set) => ({
         selectedModel,
         dictionary,
         theme,
+        widgetEnabled,
         transcriptFormattingMode,
         errorReportingEnabled,
       ] = await withTimeout(
@@ -148,6 +153,7 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(SELECTED_MODEL_KEY),
           getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
+          getSetting(WIDGET_ENABLED_KEY),
           getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
           getSetting(ERROR_REPORTING_ENABLED_KEY),
         ]),
@@ -159,9 +165,11 @@ export const useAppStore = create<AppState>((set) => ({
       const resolvedTranscriptFormattingMode = parseTranscriptFormattingModeSetting(
         transcriptFormattingMode
       );
+      const resolvedWidgetEnabled = parseBooleanSetting(widgetEnabled, true);
       // Sync to localStorage so the widget window can read it without IPC
       localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
       localStorage.setItem(THEME_KEY, resolvedTheme);
+      localStorage.setItem(WIDGET_ENABLED_KEY, String(resolvedWidgetEnabled));
       set({
         onboardingComplete: onboarding === "true",
         hotkey: hotkey ?? DEFAULT_HOTKEY,
@@ -170,6 +178,7 @@ export const useAppStore = create<AppState>((set) => ({
         selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
         dictionary: dictionary ?? "",
         theme: resolvedTheme,
+        widgetEnabled: resolvedWidgetEnabled,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
         errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
       });
@@ -177,6 +186,7 @@ export const useAppStore = create<AppState>((set) => ({
       console.error("Failed to hydrate app settings", error);
       localStorage.setItem(SOUND_ENABLED_KEY, String(true));
       localStorage.setItem(THEME_KEY, DEFAULT_THEME);
+      localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
       set({ onboardingComplete: false });
     }
   },
@@ -211,6 +221,11 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem(THEME_KEY, value);
     set({ theme: value });
   },
+  setWidgetEnabled: async (value) => {
+    await setSetting(WIDGET_ENABLED_KEY, String(value));
+    localStorage.setItem(WIDGET_ENABLED_KEY, String(value));
+    set({ widgetEnabled: value });
+  },
   setTranscriptFormattingMode: async (value) => {
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);
     set({ transcriptFormattingMode: value });
@@ -222,6 +237,7 @@ export const useAppStore = create<AppState>((set) => ({
   resetAppState: () => {
     localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
+    localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
     set({ ...defaultAppState, onboardingComplete: false });
   },
   checkForUpdates: async () => {

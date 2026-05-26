@@ -18,6 +18,7 @@ import {
   setEditableFocusContext,
   setNativeDictionary,
   setNativeErrorReporting,
+  setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
 } from "@/lib/native";
@@ -49,6 +50,7 @@ function App() {
     triggerMode,
     dictionary,
     theme,
+    widgetEnabled,
     transcriptFormattingMode,
     errorReportingEnabled,
     hydrate,
@@ -91,6 +93,9 @@ function App() {
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
+  useEffect(() => {
+    void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
+  }, [widgetEnabled]);
   useEffect(() => {
     if (onboardingComplete === null) return;
     configureErrorReporting(errorReportingEnabled);

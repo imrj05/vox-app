@@ -3,10 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tokio::{
-    fs::File,
-    io::AsyncWriteExt,
-};
+use tokio::{fs::File, io::AsyncWriteExt};
 
 use serde::Serialize;
 use whisper_rs::{
@@ -139,7 +136,9 @@ pub async fn download_model(
         let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? else {
             break;
         };
-        file.write_all(&chunk).await.map_err(|error| error.to_string())?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| error.to_string())?;
         downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
     }

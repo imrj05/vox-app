@@ -1,4 +1,4 @@
-import { Code2, ExternalLink, Globe, Mail, MonitorSmartphone, Sparkles } from "lucide-react"
+import { Code2, ExternalLink, Globe, Mail, MonitorSmartphone, Sparkles } from "@/components/icons"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import {
@@ -49,7 +49,7 @@ export function AboutPage() {
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-background">
-                      <img src="/logo.png" alt="Vox" className="h-9 w-9 object-contain" />
+                      <img src="/logo.svg" alt="" width="36" height="36" className="h-9 w-9 object-contain" />
                     </div>
                     <div>
                       <h1 className="text-3xl font-semibold tracking-tight text-foreground">Vox</h1>

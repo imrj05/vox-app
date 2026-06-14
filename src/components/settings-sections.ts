@@ -1,4 +1,4 @@
-import { BookOpenText, CircleHelp, Database, Keyboard, Settings, ShieldCheck } from "lucide-react";
+import { BookOpenText, CircleHelp, Database, Keyboard, Settings, ShieldCheck } from "@/components/icons";
 
 export const settingsSections = [
   { id: "general", label: "General", icon: Settings },

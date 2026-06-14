@@ -45,7 +45,6 @@ type HourlyActivity = {
 
 type UsageTrendPoint = { label: string; count: number; duration: number };
 type DailyWordPoint = { label: string; words: number; sessions: number };
-type DurationBucket = { label: string; sessions: number };
 
 const hourlyChartConfig = {
   sessions: {
@@ -101,13 +100,6 @@ const appShareChartConfig = {
   },
 } satisfies ChartConfig;
 
-const durationChartConfig = {
-  sessions: {
-    label: "Sessions",
-    color: "var(--primary)",
-  },
-} satisfies ChartConfig;
-
 const piePalette = [
   "var(--chart-1)",
   "var(--chart-2)",
@@ -125,7 +117,6 @@ export function AnalyticsPanels({
   hourlyActivity,
   usageTrend,
   dailyWordTrend,
-  durationBuckets,
   totalDurationSeconds,
 }: {
   activitySummary: ActivitySummary;
@@ -136,7 +127,6 @@ export function AnalyticsPanels({
   hourlyActivity: HourlyActivity;
   usageTrend: UsageTrendPoint[];
   dailyWordTrend: DailyWordPoint[];
-  durationBuckets: DurationBucket[];
   totalDurationSeconds: number;
 }) {
   return (
@@ -212,7 +202,7 @@ export function AnalyticsPanels({
         <UsageTrendChart points={usageTrend} />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-3">
+      <section className="grid gap-4 xl:grid-cols-2">
         <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
           <div className="mb-4">
             <h3 className="text-lg font-semibold text-foreground">Daily words</h3>
@@ -227,14 +217,6 @@ export function AnalyticsPanels({
             <p className="mt-1 text-xs text-muted-foreground">Where your dictated words are going most often.</p>
           </div>
           <AppShareChart apps={topApps} />
-        </div>
-
-        <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold text-foreground">Session length</h3>
-            <p className="mt-1 text-xs text-muted-foreground">A quick view of short vs longer dictation sessions.</p>
-          </div>
-          <SessionLengthChart buckets={durationBuckets} />
         </div>
       </section>
     </>
@@ -527,26 +509,6 @@ function AppShareChart({ apps }: { apps: TopApp[] }) {
         ))}
       </div>
     </div>
-  );
-}
-
-function SessionLengthChart({ buckets }: { buckets: DurationBucket[] }) {
-  const hasData = buckets.some((bucket) => bucket.sessions > 0);
-
-  if (!hasData) {
-    return <EmptyChartState label="No recorded durations yet" />;
-  }
-
-  return (
-    <ChartContainer config={durationChartConfig} className="h-72 w-full rounded-xl border border-border bg-background p-3">
-      <BarChart data={buckets} margin={{ left: -18, right: 8, top: 8, bottom: 0 }}>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" />
-        <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} />
-        <YAxis tickLine={false} axisLine={false} tickMargin={8} allowDecimals={false} />
-        <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-        <Bar dataKey="sessions" fill="var(--color-sessions)" radius={[7, 7, 2, 2]} animationDuration={650} />
-      </BarChart>
-    </ChartContainer>
   );
 }
 

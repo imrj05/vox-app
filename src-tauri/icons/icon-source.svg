@@ -1,27 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">Vox app icon</title>
-  <desc id="desc">A microphone, waveform, and text cue on a rounded responsive tile.</desc>
-  <style>
-    :root {
-      --tile-bg: #ffffff;
-      --tile-stroke: #f4f6f8;
-      --shadow: #d8dce3;
-      --ink: #1b2d35;
-      --line-muted: #bce9df;
-      --line-faint: #d4f3ee;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --tile-bg: #172123;
-        --tile-stroke: #263b3f;
-        --shadow: #020617;
-        --ink: #f2fffc;
-        --line-muted: #5eead4;
-        --line-faint: #2dd4bf;
-      }
-    }
-  </style>
+  <desc id="desc">A microphone, waveform, and text cue on a rounded light tile.</desc>
   <defs>
     <linearGradient id="mic-gradient" x1="286" y1="306" x2="500" y2="748" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#98ead8"/>
@@ -34,15 +13,15 @@
       <stop offset="1" stop-color="#14b8a6"/>
     </linearGradient>
     <filter id="tile-shadow" x="36" y="42" width="952" height="964" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
-      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="var(--shadow)" flood-opacity="0.46"/>
+      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="#d8dce3" flood-opacity="0.46"/>
     </filter>
     <filter id="glyph-shadow" x="180" y="250" width="760" height="620" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
       <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0f766e" flood-opacity="0.16"/>
     </filter>
   </defs>
   <g filter="url(#tile-shadow)">
-    <rect x="96" y="94" width="832" height="832" rx="190" fill="var(--tile-bg)"/>
-    <rect x="97.5" y="95.5" width="829" height="829" rx="188.5" fill="none" stroke="var(--tile-stroke)" stroke-width="3"/>
+    <rect x="96" y="94" width="832" height="832" rx="190" fill="#ffffff"/>
+    <rect x="97.5" y="95.5" width="829" height="829" rx="188.5" fill="none" stroke="#eef2f4" stroke-width="3"/>
   </g>
   <g filter="url(#glyph-shadow)">
     <rect x="300" y="332" width="172" height="236" rx="86" fill="url(#mic-gradient)"/>
@@ -53,10 +32,10 @@
     <path d="M624 446v120" fill="none" stroke="#7bdfcf" stroke-linecap="round" stroke-width="28"/>
     <path d="M672 390v232" fill="none" stroke="url(#wave-gradient)" stroke-linecap="round" stroke-width="28"/>
     <path d="M720 460v106" fill="none" stroke="#85e3d4" stroke-linecap="round" stroke-width="28"/>
-    <path d="M790 390h92" fill="none" stroke="var(--ink)" stroke-linecap="round" stroke-width="28"/>
-    <path d="M836 414v78" fill="none" stroke="var(--ink)" stroke-linecap="round" stroke-width="28"/>
+    <path d="M790 390h92" fill="none" stroke="#1b2d35" stroke-linecap="round" stroke-width="28"/>
+    <path d="M836 414v78" fill="none" stroke="#1b2d35" stroke-linecap="round" stroke-width="28"/>
     <path d="M790 548h100" fill="none" stroke="#25bdae" stroke-linecap="round" stroke-width="26"/>
-    <path d="M790 608h100" fill="none" stroke="var(--line-muted)" stroke-linecap="round" stroke-width="26"/>
-    <path d="M790 668h100" fill="none" stroke="var(--line-faint)" stroke-linecap="round" stroke-width="26"/>
+    <path d="M790 608h100" fill="none" stroke="#bce9df" stroke-linecap="round" stroke-width="26"/>
+    <path d="M790 668h100" fill="none" stroke="#d4f3ee" stroke-linecap="round" stroke-width="26"/>
   </g>
 </svg>

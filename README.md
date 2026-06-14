@@ -217,7 +217,9 @@ vox-app/
 
 Vox is designed to be private by default:
 
-- No analytics, telemetry, or tracking.
+- No usage analytics or tracking. Anonymous crash reporting is optional, off by
+  default, and strips messages, transcripts, audio details, local paths, and
+  personal identity before transmission.
 - No account or sign-in required.
 - All audio is processed locally and never transmitted.
 - Downloaded model files stay on your machine.

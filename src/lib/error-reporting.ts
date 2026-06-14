@@ -1,11 +1,12 @@
 import * as Sentry from "@sentry/react";
 
 const GLITCHTIP_DSN = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
+const REDACTED = "[redacted]";
 
 let errorReportingEnabled = false;
 
 export function configureErrorReporting(enabled: boolean) {
-  if (!enabled || !GLITCHTIP_DSN) {
+  if (!enabled || !isValidGlitchTipDsn(GLITCHTIP_DSN)) {
     errorReportingEnabled = false;
     void Sentry.getClient()?.close(0);
     return;
@@ -19,7 +20,7 @@ export function configureErrorReporting(enabled: boolean) {
     sendDefaultPii: false,
     tracesSampleRate: 0,
     beforeSend(event) {
-      return scrubEvent(event);
+      return sanitizeErrorEvent(event);
     },
   });
   Sentry.setUser(null);
@@ -28,37 +29,45 @@ export function configureErrorReporting(enabled: boolean) {
 
 export const ErrorBoundary = Sentry.ErrorBoundary;
 
-function scrubEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
+export function isValidGlitchTipDsn(dsn: string | undefined): dsn is string {
+  if (!dsn) return false;
+
+  try {
+    const url = new URL(dsn);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      Boolean(url.username) &&
+      url.pathname.split("/").some(Boolean)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function sanitizeErrorEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
   delete event.user;
   delete event.request;
-  event.extra = scrubValue(event.extra) as Sentry.ErrorEvent["extra"];
-  event.contexts = scrubValue(event.contexts) as Sentry.ErrorEvent["contexts"];
-  event.breadcrumbs = event.breadcrumbs?.map((breadcrumb) => ({
-    ...breadcrumb,
-    data: scrubValue(breadcrumb.data) as Record<string, unknown> | undefined,
-  }));
+  delete event.message;
+  delete event.logentry;
+  delete event.transaction;
+  delete event.extra;
+  delete event.contexts;
+  delete event.tags;
+  event.breadcrumbs = [];
+  event.exception?.values?.forEach((exception) => {
+    exception.value = REDACTED;
+    scrubStacktrace(exception.stacktrace);
+  });
+  event.threads?.values?.forEach((thread) => scrubStacktrace(thread.stacktrace));
   return event;
 }
 
-function scrubValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(scrubValue);
-  if (!value || typeof value !== "object") {
-    return typeof value === "string" ? scrubString(value) : value;
-  }
-
-  return Object.fromEntries(
-    Object.entries(value).map(([key, nestedValue]) => [
-      key,
-      shouldRedactKey(key) ? "[redacted]" : scrubValue(nestedValue),
-    ])
-  );
-}
-
-function shouldRedactKey(key: string) {
-  return /audio|path|recording|text|transcript|dictionary|hotkey|shortcut/i.test(key);
-}
-
-function scrubString(value: string) {
-  if (/\.wav\b|\/Users\/|file:\/\//i.test(value)) return "[redacted]";
-  return value;
+function scrubStacktrace(stacktrace: Sentry.Stacktrace | undefined) {
+  stacktrace?.frames?.forEach((frame) => {
+    delete frame.abs_path;
+    delete frame.pre_context;
+    delete frame.context_line;
+    delete frame.post_context;
+    delete frame.vars;
+  });
 }

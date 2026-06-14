@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, Search, Trash2 } from "lucide-react";
+import { Check, Copy, Search, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
@@ -85,26 +96,29 @@ export function TranscriptsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="page-shell max-w-5xl">
+          <header className="page-header">
             <div>
-              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Transcript library</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <h1 className="page-title">Transcript Library</h1>
+              <p className="page-description">
                 Search, copy, and manage your local dictation history.
               </p>
             </div>
             <div className="relative w-full lg:w-80">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                aria-label="Search transcripts or apps"
+                name="transcript-search"
+                autoComplete="off"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search transcripts or apps"
-                className="h-11 rounded-xl bg-card pl-9"
+                placeholder="Search transcripts or apps…"
+                className="h-10 rounded-lg bg-card pl-9"
               />
             </div>
-          </div>
+          </header>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="stat-strip divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
             <LibraryStat label="Transcripts" value={history.length.toLocaleString()} />
             <LibraryStat label="Visible" value={filtered.length.toLocaleString()} />
             <LibraryStat label="Words" value={history.reduce((sum, item) => sum + countWords(item.text), 0).toLocaleString()} />
@@ -120,9 +134,9 @@ export function TranscriptsPage() {
               {error}
             </div>
           ) : filtered.length > 0 ? (
-            <div className="grid gap-3">
+            <div className="panel divide-y divide-border overflow-hidden">
               {filtered.map((item) => (
-                <article key={item.id} className="surface-depth-soft rounded-2xl border border-border bg-card p-4">
+                <article key={item.id} className="p-4 transition-colors hover:bg-muted/25">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -135,11 +149,11 @@ export function TranscriptsPage() {
                       </div>
                       <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{item.text}</p>
                       <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                        <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                        <span className="font-mono tabular-nums">
                           {countWords(item.text)} words
                         </span>
                         {item.duration_seconds ? (
-                          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                          <span className="font-mono tabular-nums">
                             {formatDurationCompact(item.duration_seconds)} audio
                           </span>
                         ) : null}
@@ -150,10 +164,31 @@ export function TranscriptsPage() {
                         {copiedId === item.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                         {copiedId === item.id ? "Copied" : "Copy"}
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => void removeTranscript(item.id)}>
-                        <Trash2 className="h-4 w-4" />
-                        Delete
-                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive">
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete Transcript?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This permanently removes the transcript from your local history.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={() => void removeTranscript(item.id)}
+                            >
+                              Delete Transcript
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   </div>
                 </article>
@@ -175,9 +210,9 @@ export function TranscriptsPage() {
 
 function LibraryStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="surface-depth-soft rounded-2xl border border-border bg-card p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-2xl font-semibold text-primary">{value}</p>
+    <div className="stat-cell">
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
+      <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-foreground">{value}</p>
     </div>
   );
 }
@@ -197,9 +232,9 @@ function AppBadge({
     .join("") || "?";
 
   return (
-    <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-sidebar-accent font-mono text-[11px] font-semibold text-primary">
+    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 font-mono text-[11px] font-semibold text-primary">
       {iconSrc ? (
-        <img src={iconSrc} alt="" className="h-7 w-7 rounded-md object-cover" />
+        <img src={iconSrc} alt="" width="28" height="28" loading="lazy" className="h-7 w-7 rounded-md object-cover" />
       ) : (
         initials
       )}

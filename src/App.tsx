@@ -17,6 +17,8 @@ import {
   setGlobalShortcut,
   setEditableFocusContext,
   setNativeDictionary,
+  setNativeEnhanceIconEnabled,
+  setNativeEnhancementModel,
   setNativeErrorReporting,
   setNativeWidgetEnabled,
   setTranscriptFormattingMode,
@@ -51,6 +53,8 @@ function App() {
     dictionary,
     theme,
     widgetEnabled,
+    enhanceIconEnabled,
+    enhancementModel,
     transcriptFormattingMode,
     errorReportingEnabled,
     hydrate,
@@ -96,6 +100,12 @@ function App() {
   useEffect(() => {
     void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
   }, [widgetEnabled]);
+  useEffect(() => {
+    void setNativeEnhanceIconEnabled(enhanceIconEnabled).catch(() => {});
+  }, [enhanceIconEnabled]);
+  useEffect(() => {
+    void setNativeEnhancementModel(enhancementModel).catch(() => {});
+  }, [enhancementModel]);
   useEffect(() => {
     if (onboardingComplete === null) return;
     configureErrorReporting(errorReportingEnabled);
@@ -238,12 +248,12 @@ function App() {
             activeNav={activeNav}
             onNavChange={setActiveNav}
           />
-          <SidebarInset className="overflow-hidden">
-            <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <SidebarInset className="overflow-hidden bg-[linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--muted)_22%,var(--background)))]">
+            <main id="main-content" className="flex-1 overflow-y-auto scrollbar-thin">
               <Suspense fallback={<PageFallback />}>
                 {renderPage()}
               </Suspense>
-            </div>
+            </main>
           </SidebarInset>
         </SidebarProvider>
       )}

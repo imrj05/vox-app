@@ -42,6 +42,22 @@ export interface WhisperModelInfo {
   recommended: boolean;
 }
 
+export interface TextEnhancementModelInfo {
+  name: string;
+  displayName: string;
+  size: number;
+  url: string;
+  downloaded: boolean;
+  recommended: boolean;
+}
+
+export interface EnhanceResult {
+  originalLength: number;
+  enhancedLength: number;
+  appName: string | null;
+  replacementMethod: "accessibilityValue" | "typingFallback";
+}
+
 export interface HotkeyDiagnostics {
   platform: string;
   currentShortcut: string;
@@ -121,6 +137,30 @@ export async function deleteWhisperModel(modelName: string) {
   return invoke<void>("delete_whisper_model", { modelName });
 }
 
+export async function listTextEnhancementModels() {
+  return invoke<TextEnhancementModelInfo[]>("text_enhancement_models");
+}
+
+export async function downloadTextEnhancementModel(modelName: string) {
+  return invoke<TextEnhancementModelInfo>("download_text_enhancement_model", { modelName });
+}
+
+export async function deleteTextEnhancementModel(modelName: string) {
+  return invoke<void>("delete_text_enhancement_model", { modelName });
+}
+
+export async function setNativeEnhanceIconEnabled(enabled: boolean) {
+  return invoke<void>("set_enhance_icon_enabled", { enabled });
+}
+
+export async function setNativeEnhancementModel(modelName: string) {
+  return invoke<void>("set_enhancement_model", { modelName });
+}
+
+export async function enhanceFocusedInput(snapshotId: string) {
+  return invoke<EnhanceResult>("enhance_focused_input", { snapshotId });
+}
+
 export async function deleteRecordingFile(audioPath: string) {
   return invoke<void>("delete_recording_file", { audioPath });
 }
@@ -175,7 +215,7 @@ export async function setNativeErrorReporting(enabled: boolean) {
   const dsn = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
   return invoke<void>("set_error_reporting_enabled", {
     enabled,
-    dsn: enabled ? dsn : null,
+    dsn: enabled && dsn ? dsn : null,
   });
 }
 

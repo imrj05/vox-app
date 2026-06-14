@@ -1,7 +1,9 @@
 #![allow(unexpected_cfgs)]
 
 use std::{
+    collections::hash_map::DefaultHasher,
     fs::{self, File},
+    hash::{Hash, Hasher},
     io::BufWriter,
     path::PathBuf,
     process::Command,
@@ -15,7 +17,7 @@ use std::{env, io::Write, process::Stdio};
 
 #[cfg(target_os = "macos")]
 use core_foundation::{
-    base::{CFType, TCFType},
+    base::{CFRelease, CFType, CFTypeRef, TCFType},
     dictionary::{CFDictionary, CFDictionaryRef},
     string::{CFString, CFStringRef},
 };
@@ -33,7 +35,11 @@ use sentry::ClientInitGuard;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+    App, AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewWindow,
+};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "macos")]
@@ -45,7 +51,12 @@ extern "C" {}
 extern "C" {}
 
 #[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {}
+
+#[cfg(target_os = "macos")]
 mod event_tap;
+mod text_enhancement;
 
 #[cfg(not(target_os = "macos"))]
 mod event_tap {
@@ -230,6 +241,8 @@ fn open_external_link(href: String) -> Result<(), String> {
 mod whisper;
 
 const DEFAULT_SHORTCUT: &str = "Meta+Shift+Space";
+const TRAY_OPEN_APP_ID: &str = "open_app";
+const TRAY_QUIT_ID: &str = "quit";
 
 type SharedWriter = Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>;
 
@@ -327,6 +340,7 @@ fn set_error_reporting_enabled(
         *guard = None;
         return Ok(());
     };
+    let parsed_dsn = parse_error_reporting_dsn(&dsn)?;
 
     if guard.is_some() {
         return Ok(());
@@ -334,14 +348,68 @@ fn set_error_reporting_enabled(
 
     let release = format!("{}@{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     *guard = Some(sentry::init((
-        dsn,
+        parsed_dsn,
         sentry::ClientOptions {
             release: Some(release.into()),
             send_default_pii: false,
+            before_send: Some(Arc::new(|event| Some(sanitize_sentry_event(event)))),
             ..Default::default()
         },
     )));
     Ok(())
+}
+
+fn parse_error_reporting_dsn(dsn: &str) -> Result<sentry::types::Dsn, String> {
+    dsn.parse::<sentry::types::Dsn>()
+        .map_err(|_| "Error reporting DSN is invalid".to_string())
+}
+
+fn sanitize_sentry_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> sentry::protocol::Event<'static> {
+    event.user = None;
+    event.request = None;
+    event.message = None;
+    event.logentry = None;
+    event.transaction = None;
+    event.culprit = None;
+    event.extra.clear();
+    event.contexts.clear();
+    event.tags.clear();
+    event.breadcrumbs.values.clear();
+
+    for exception in &mut event.exception {
+        exception.value = Some("[redacted]".to_string());
+        if let Some(stacktrace) = exception.stacktrace.as_mut() {
+            sanitize_sentry_stacktrace(stacktrace);
+        }
+        if let Some(stacktrace) = exception.raw_stacktrace.as_mut() {
+            sanitize_sentry_stacktrace(stacktrace);
+        }
+    }
+    if let Some(stacktrace) = event.stacktrace.as_mut() {
+        sanitize_sentry_stacktrace(stacktrace);
+    }
+    for thread in &mut event.threads {
+        if let Some(stacktrace) = thread.stacktrace.as_mut() {
+            sanitize_sentry_stacktrace(stacktrace);
+        }
+        if let Some(stacktrace) = thread.raw_stacktrace.as_mut() {
+            sanitize_sentry_stacktrace(stacktrace);
+        }
+    }
+
+    event
+}
+
+fn sanitize_sentry_stacktrace(stacktrace: &mut sentry::protocol::Stacktrace) {
+    for frame in &mut stacktrace.frames {
+        frame.abs_path = None;
+        frame.pre_context.clear();
+        frame.context_line = None;
+        frame.post_context.clear();
+        frame.vars.clear();
+    }
 }
 
 impl Default for TranscriptFormattingState {
@@ -355,6 +423,50 @@ impl Default for TranscriptFormattingState {
 #[derive(Default)]
 struct FocusContextState {
     is_editable_focused: Mutex<bool>,
+}
+
+struct EnhancePreferencesState {
+    enabled: Mutex<bool>,
+    model_name: Mutex<String>,
+    model_available: Mutex<bool>,
+}
+
+impl Default for EnhancePreferencesState {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(true),
+            model_name: Mutex::new(text_enhancement::DEFAULT_TEXT_ENHANCEMENT_MODEL.to_string()),
+            model_available: Mutex::new(false),
+        }
+    }
+}
+
+#[derive(Default)]
+struct FocusedInputSnapshotState {
+    latest: Mutex<Option<FocusedInputSnapshot>>,
+    presented: Mutex<Option<PresentedEnhanceOverlay>>,
+}
+
+#[derive(Clone)]
+struct FocusedInputSnapshot {
+    id: String,
+    app_name: Option<String>,
+    text: String,
+    frame: InputFrame,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct InputFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, PartialEq)]
+struct PresentedEnhanceOverlay {
+    snapshot_id: String,
+    position: (i32, i32),
 }
 
 #[derive(Default)]
@@ -436,7 +548,33 @@ struct DownloadProgress {
     total: u64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnhanceOverlayEvent {
+    visible: bool,
+    snapshot_id: Option<String>,
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnhanceOverlayStateEvent {
+    mode: &'static str,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnhanceResult {
+    original_length: usize,
+    enhanced_length: usize,
+    app_name: Option<String>,
+    replacement_method: &'static str,
+}
+
 type WhisperModelInfo = whisper::WhisperModelInfo;
+type TextEnhancementModelInfo = text_enhancement::TextEnhancementModelInfo;
 
 struct EventTapHandle {
     state: Arc<event_tap::TapState>,
@@ -858,6 +996,137 @@ async fn download_whisper_model(
 }
 
 #[tauri::command]
+fn text_enhancement_models(app: AppHandle) -> Result<Vec<TextEnhancementModelInfo>, String> {
+    let models_dir = text_enhancement_models_dir(&app)?;
+    Ok(text_enhancement::list_models(&models_dir))
+}
+
+#[tauri::command]
+async fn download_text_enhancement_model(
+    app: AppHandle,
+    model_name: String,
+) -> Result<TextEnhancementModelInfo, String> {
+    let models_dir = text_enhancement_models_dir(&app)?;
+    let app_progress = app.clone();
+    let progress_name = model_name.clone();
+    let model =
+        text_enhancement::download_model(&models_dir, &model_name, move |downloaded, total| {
+            let _ = app_progress.emit(
+                "vox-text-model-download-progress",
+                DownloadProgress {
+                    model_name: progress_name.clone(),
+                    downloaded,
+                    total,
+                },
+            );
+        })
+        .await?;
+    refresh_selected_enhancement_model_availability(&app);
+    Ok(model)
+}
+
+#[tauri::command]
+fn delete_text_enhancement_model(app: AppHandle, model_name: String) -> Result<(), String> {
+    let models_dir = text_enhancement_models_dir(&app)?;
+    text_enhancement::delete_model(&models_dir, &model_name)?;
+    refresh_selected_enhancement_model_availability(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_enhance_icon_enabled(
+    app: AppHandle,
+    state: State<'_, EnhancePreferencesState>,
+    enabled: bool,
+) -> Result<(), String> {
+    *state
+        .enabled
+        .lock()
+        .map_err(|_| "Enhance preferences unavailable".to_string())? = enabled;
+    if !enabled {
+        clear_focused_input_snapshot(&app);
+        hide_enhance_overlay(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_enhancement_model(
+    app: AppHandle,
+    state: State<'_, EnhancePreferencesState>,
+    model_name: String,
+) -> Result<(), String> {
+    *state
+        .model_name
+        .lock()
+        .map_err(|_| "Enhance preferences unavailable".to_string())? = model_name;
+    refresh_selected_enhancement_model_availability(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn enhance_focused_input(
+    app: AppHandle,
+    snapshot_id: String,
+) -> Result<EnhanceResult, String> {
+    let snapshot = app
+        .state::<FocusedInputSnapshotState>()
+        .latest
+        .lock()
+        .map_err(|_| "Focused input snapshot unavailable".to_string())?
+        .clone()
+        .filter(|snapshot| snapshot.id == snapshot_id)
+        .ok_or_else(|| "Focused input changed. Try again.".to_string())?;
+
+    let original = snapshot.text.trim().to_string();
+    if original.is_empty() {
+        return Err("Focused input is empty".to_string());
+    }
+
+    show_enhance_overlay_state(&app, "enhancing", "Enhancing...");
+    let model_name = app
+        .state::<EnhancePreferencesState>()
+        .model_name
+        .lock()
+        .map_err(|_| "Enhance preferences unavailable".to_string())?
+        .clone();
+    let models_dir = text_enhancement_models_dir(&app)?;
+    let inference_app = app.clone();
+    let inference_original = original.clone();
+    let enhanced = tauri::async_runtime::spawn_blocking(move || {
+        text_enhancement::enhance_text(
+            &inference_app.state::<text_enhancement::TextEnhancementEngineState>(),
+            &models_dir,
+            Some(&model_name),
+            &inference_original,
+        )
+    })
+    .await
+    .map_err(|error| format!("Enhancement task failed: {error}"))?
+    .inspect_err(|error| show_enhance_overlay_state(&app, "error", error))?;
+
+    let focus_is_unchanged = focused_input_snapshot()
+        .map(|current| current.id == snapshot.id)
+        .unwrap_or(false);
+    if !focus_is_unchanged {
+        let error = "Focused input changed before enhancement finished. Try again.";
+        show_enhance_overlay_state(&app, "error", error);
+        return Err(error.to_string());
+    }
+
+    let replacement_method = replace_focused_input_text(&enhanced)
+        .inspect_err(|error| show_enhance_overlay_state(&app, "error", error))?;
+    show_enhance_overlay_state(&app, "success", "Enhanced");
+
+    Ok(EnhanceResult {
+        original_length: original.chars().count(),
+        enhanced_length: enhanced.chars().count(),
+        app_name: snapshot.app_name,
+        replacement_method,
+    })
+}
+
+#[tauri::command]
 fn transcribe_recording(
     app: AppHandle,
     audio_path: String,
@@ -1180,9 +1449,14 @@ pub fn run() {
         .manage(WidgetPreferencesState {
             enabled: Mutex::new(true),
         })
+        .manage(EnhancePreferencesState::default())
+        .manage(FocusedInputSnapshotState::default())
+        .manage(text_enhancement::TextEnhancementEngineState::default())
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
         .setup(move |app| {
+            create_tray_menu(app)?;
+
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
 
@@ -1199,6 +1473,8 @@ pub fn run() {
 
             apply_startup_visibility(app.handle(), &cli_options);
             run_cli_commands(app.handle(), &cli_options);
+            refresh_selected_enhancement_model_availability(app.handle());
+            start_enhance_focus_watcher(app.handle().clone());
 
             Ok(())
         })
@@ -1211,6 +1487,12 @@ pub fn run() {
             whisper_models,
             download_whisper_model,
             delete_whisper_model,
+            text_enhancement_models,
+            download_text_enhancement_model,
+            delete_text_enhancement_model,
+            set_enhance_icon_enabled,
+            set_enhancement_model,
+            enhance_focused_input,
             delete_recording_file,
             cleanup_recordings,
             wipe_local_app_files,
@@ -1234,6 +1516,30 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Vox");
+}
+
+fn create_tray_menu(app: &App) -> tauri::Result<()> {
+    let open_app = MenuItem::with_id(app, TRAY_OPEN_APP_ID, "Open App", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, Some("CmdOrCtrl+Q"))?;
+    let menu = Menu::with_items(app, &[&open_app, &separator, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Vox")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_OPEN_APP_ID => show_main_window(app),
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone()).icon_as_template(true);
+    }
+
+    tray.build(app)?;
+    Ok(())
 }
 
 fn apply_startup_visibility(app: &AppHandle, options: &CliOptions) {
@@ -2809,6 +3115,264 @@ fn frontmost_window_title(_app_name: Option<&str>) -> Option<String> {
     None
 }
 
+#[cfg(target_os = "macos")]
+type AXUIElementRef = *const c_void;
+
+#[cfg(target_os = "macos")]
+type AXValueRef = *const c_void;
+
+#[cfg(target_os = "macos")]
+struct OwnedCfType(CFTypeRef);
+
+#[cfg(target_os = "macos")]
+impl OwnedCfType {
+    fn new(value: CFTypeRef) -> Option<Self> {
+        (!value.is_null()).then_some(Self(value))
+    }
+
+    fn as_ref(&self) -> CFTypeRef {
+        self.0
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for OwnedCfType {
+    fn drop(&mut self) {
+        unsafe { CFRelease(self.0) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct OwnedAxElement(AXUIElementRef);
+
+#[cfg(target_os = "macos")]
+impl OwnedAxElement {
+    fn new(value: AXUIElementRef) -> Option<Self> {
+        (!value.is_null()).then_some(Self(value))
+    }
+
+    fn as_ref(&self) -> AXUIElementRef {
+        self.0
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for OwnedAxElement {
+    fn drop(&mut self) {
+        unsafe { CFRelease(self.0 as CFTypeRef) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct AxPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct AxSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct AxRect {
+    origin: AxPoint,
+    size: AxSize,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    fn AXUIElementCopyAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: *mut CFTypeRef,
+    ) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> i32;
+    fn AXValueGetType(value: AXValueRef) -> i32;
+    fn AXValueGetValue(value: AXValueRef, type_: i32, value_ptr: *mut c_void) -> bool;
+}
+
+#[cfg(target_os = "macos")]
+fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
+    let system = OwnedAxElement::new(unsafe { AXUIElementCreateSystemWide() })?;
+    let focused = OwnedAxElement::new(
+        ax_copy_attribute(system.as_ref(), "AXFocusedUIElement")? as AXUIElementRef
+    )?;
+    let role = ax_string_attribute(focused.as_ref(), "AXRole");
+    let text = ax_string_attribute(focused.as_ref(), "AXValue")?;
+    let frame = ax_frame_attribute(focused.as_ref())?;
+
+    if !is_editable_ax_role(role.as_deref()) || text.trim().is_empty() {
+        return None;
+    }
+
+    let app_name = frontmost_app_name();
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    role.hash(&mut hasher);
+    app_name.hash(&mut hasher);
+    let content_hash = hasher.finish();
+    let id = format!(
+        "{}:{}:{}:{}:{content_hash:016x}",
+        frame.x.round() as i64,
+        frame.y.round() as i64,
+        frame.width.round() as i64,
+        frame.height.round() as i64,
+    );
+    Some(FocusedInputSnapshot {
+        id,
+        app_name,
+        text,
+        frame,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn replace_focused_input_text(text: &str) -> Result<&'static str, String> {
+    let Some(system) = OwnedAxElement::new(unsafe { AXUIElementCreateSystemWide() }) else {
+        return paste_text(text).map(|_| "typingFallback");
+    };
+
+    let Some(focused) = ax_copy_attribute(system.as_ref(), "AXFocusedUIElement")
+        .and_then(|value| OwnedAxElement::new(value as AXUIElementRef))
+    else {
+        return paste_text(text).map(|_| "typingFallback");
+    };
+    let value = CFString::new(text);
+    let value_result = unsafe {
+        AXUIElementSetAttributeValue(
+            focused.as_ref(),
+            CFString::new("AXValue").as_concrete_TypeRef(),
+            value.as_CFTypeRef(),
+        )
+    };
+
+    if value_result == 0 {
+        Ok("accessibilityValue")
+    } else {
+        paste_text(text).map(|_| "typingFallback")
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn replace_focused_input_text(text: &str) -> Result<&'static str, String> {
+    paste_text(text).map(|_| "typingFallback")
+}
+
+#[cfg(target_os = "macos")]
+fn ax_copy_attribute(element: AXUIElementRef, attribute: &str) -> Option<CFTypeRef> {
+    let mut value: CFTypeRef = std::ptr::null();
+    let status = unsafe {
+        AXUIElementCopyAttributeValue(
+            element,
+            CFString::new(attribute).as_concrete_TypeRef(),
+            &mut value,
+        )
+    };
+    if status == 0 && !value.is_null() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ax_string_attribute(element: AXUIElementRef, attribute: &str) -> Option<String> {
+    let value = ax_copy_attribute(element, attribute)?;
+    let type_id = unsafe { core_foundation::base::CFGetTypeID(value) };
+    if type_id != unsafe { core_foundation::string::CFStringGetTypeID() } {
+        unsafe { CFRelease(value) };
+        return None;
+    }
+
+    let string = unsafe { CFString::wrap_under_create_rule(value as CFStringRef) };
+    Some(string.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn ax_frame_attribute(element: AXUIElementRef) -> Option<InputFrame> {
+    if let Some(value) = ax_copy_attribute(element, "AXFrame").and_then(OwnedCfType::new) {
+        let frame = ax_value_rect(value.as_ref() as AXValueRef);
+        if frame.is_some() {
+            return frame;
+        }
+    }
+
+    let position_value = ax_copy_attribute(element, "AXPosition").and_then(OwnedCfType::new)?;
+    let size_value = ax_copy_attribute(element, "AXSize").and_then(OwnedCfType::new)?;
+    let position = ax_value_point(position_value.as_ref() as AXValueRef);
+    let size = ax_value_size(size_value.as_ref() as AXValueRef);
+
+    match (position, size) {
+        (Some(position), Some(size)) => Some(InputFrame {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ax_value_rect(value: AXValueRef) -> Option<InputFrame> {
+    if unsafe { AXValueGetType(value) } != 3 {
+        return None;
+    }
+    let mut rect = AxRect::default();
+    let ok = unsafe { AXValueGetValue(value, 3, &mut rect as *mut AxRect as *mut c_void) };
+    ok.then_some(InputFrame {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn ax_value_point(value: AXValueRef) -> Option<AxPoint> {
+    if unsafe { AXValueGetType(value) } != 1 {
+        return None;
+    }
+    let mut point = AxPoint::default();
+    let ok = unsafe { AXValueGetValue(value, 1, &mut point as *mut AxPoint as *mut c_void) };
+    ok.then_some(point)
+}
+
+#[cfg(target_os = "macos")]
+fn ax_value_size(value: AXValueRef) -> Option<AxSize> {
+    if unsafe { AXValueGetType(value) } != 2 {
+        return None;
+    }
+    let mut size = AxSize::default();
+    let ok = unsafe { AXValueGetValue(value, 2, &mut size as *mut AxSize as *mut c_void) };
+    ok.then_some(size)
+}
+
+fn is_editable_ax_role(role: Option<&str>) -> bool {
+    matches!(
+        role,
+        Some("AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField")
+    )
+}
+
 fn is_blank_transcription(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -2859,6 +3423,176 @@ fn is_widget_enabled(app: &AppHandle) -> bool {
     app.try_state::<WidgetPreferencesState>()
         .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
         .unwrap_or(true)
+}
+
+fn start_enhance_focus_watcher(app: AppHandle) {
+    thread::spawn(move || loop {
+        refresh_enhance_overlay(&app);
+        thread::sleep(Duration::from_millis(350));
+    });
+}
+
+fn refresh_enhance_overlay(app: &AppHandle) {
+    if !is_enhance_icon_enabled(app) || !is_selected_enhancement_model_available(app) {
+        clear_focused_input_snapshot(app);
+        hide_enhance_overlay(app);
+        return;
+    }
+
+    let Some(snapshot) = focused_input_snapshot() else {
+        clear_focused_input_snapshot(app);
+        hide_enhance_overlay(app);
+        return;
+    };
+
+    if snapshot.text.trim().is_empty() {
+        clear_focused_input_snapshot(app);
+        hide_enhance_overlay(app);
+        return;
+    }
+
+    if let Ok(mut latest) = app.state::<FocusedInputSnapshotState>().latest.lock() {
+        *latest = Some(snapshot.clone());
+    }
+    show_enhance_overlay(app, &snapshot);
+}
+
+fn is_enhance_icon_enabled(app: &AppHandle) -> bool {
+    app.try_state::<EnhancePreferencesState>()
+        .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
+        .unwrap_or(true)
+}
+
+fn is_selected_enhancement_model_available(app: &AppHandle) -> bool {
+    app.try_state::<EnhancePreferencesState>()
+        .and_then(|state| {
+            state
+                .model_available
+                .lock()
+                .ok()
+                .map(|available| *available)
+        })
+        .unwrap_or(false)
+}
+
+fn refresh_selected_enhancement_model_availability(app: &AppHandle) {
+    let Some(state) = app.try_state::<EnhancePreferencesState>() else {
+        return;
+    };
+    let Ok(model_name) = state.model_name.lock().map(|name| name.clone()) else {
+        return;
+    };
+    let available = text_enhancement_models_dir(app)
+        .ok()
+        .map(|models_dir| {
+            text_enhancement::list_models(&models_dir)
+                .iter()
+                .any(|model| model.name == model_name && model.downloaded)
+        })
+        .unwrap_or(false);
+    if let Ok(mut cached) = state.model_available.lock() {
+        *cached = available;
+    };
+}
+
+fn clear_focused_input_snapshot(app: &AppHandle) {
+    if let Some(state) = app.try_state::<FocusedInputSnapshotState>() {
+        if let Ok(mut latest) = state.latest.lock() {
+            *latest = None;
+        }
+    }
+}
+
+fn show_enhance_overlay(app: &AppHandle, snapshot: &FocusedInputSnapshot) {
+    let position = enhance_overlay_position(snapshot.frame);
+    let presentation = PresentedEnhanceOverlay {
+        snapshot_id: snapshot.id.clone(),
+        position,
+    };
+    let should_update = app
+        .try_state::<FocusedInputSnapshotState>()
+        .and_then(|state| {
+            state.presented.lock().ok().map(|mut presented| {
+                if presented.as_ref() == Some(&presentation) {
+                    false
+                } else {
+                    *presented = Some(presentation);
+                    true
+                }
+            })
+        })
+        .unwrap_or(true);
+    if !should_update {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("enhance") {
+        let (x, y) = position;
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+        let _ = window.show();
+        let _ = window.emit(
+            "vox-enhance-overlay",
+            EnhanceOverlayEvent {
+                visible: true,
+                snapshot_id: Some(snapshot.id.clone()),
+                x,
+                y,
+            },
+        );
+    }
+}
+
+fn hide_enhance_overlay(app: &AppHandle) {
+    let was_presented = app
+        .try_state::<FocusedInputSnapshotState>()
+        .and_then(|state| {
+            state.presented.lock().ok().map(|mut presented| {
+                let was_presented = presented.is_some();
+                *presented = None;
+                was_presented
+            })
+        })
+        .unwrap_or(true);
+    if !was_presented {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("enhance") {
+        let _ = window.emit(
+            "vox-enhance-overlay",
+            EnhanceOverlayEvent {
+                visible: false,
+                snapshot_id: None,
+                x: -9999,
+                y: -9999,
+            },
+        );
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(-9999, -9999)));
+        let _ = window.hide();
+    }
+}
+
+fn show_enhance_overlay_state(app: &AppHandle, mode: &'static str, message: &str) {
+    if let Some(window) = app.get_webview_window("enhance") {
+        let _ = window.show();
+        let _ = window.emit(
+            "vox-enhance-state",
+            EnhanceOverlayStateEvent {
+                mode,
+                message: message.to_string(),
+            },
+        );
+    }
+}
+
+fn enhance_overlay_position(frame: InputFrame) -> (i32, i32) {
+    let x = frame.x + frame.width - 24.0;
+    let y = if frame.height < 36.0 {
+        frame.y - ((36.0 - frame.height) / 2.0)
+    } else {
+        frame.y - 10.0
+    };
+    (x.round() as i32, y.max(0.0).round() as i32)
 }
 
 fn position_widget_bottom_right(window: &WebviewWindow) {
@@ -2981,6 +3715,13 @@ fn whisper_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(whisper::models_dir)
+        .map_err(|error| error.to_string())
+}
+
+fn text_enhancement_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(text_enhancement::models_dir)
         .map_err(|error| error.to_string())
 }
 
@@ -3155,5 +3896,60 @@ mod tests {
     #[test]
     fn keeps_real_transcription_text() {
         assert!(!is_blank_transcription("hello world"));
+    }
+
+    #[test]
+    fn rejects_invalid_error_reporting_dsn() {
+        assert!(parse_error_reporting_dsn("not-a-dsn").is_err());
+        assert!(parse_error_reporting_dsn("ftp://key@example.com/1").is_err());
+        assert!(parse_error_reporting_dsn("https://key@example.com/1").is_ok());
+    }
+
+    #[test]
+    fn strips_sensitive_data_from_sentry_events() {
+        let mut event = sentry::protocol::Event::default();
+        event.message = Some("dictated private text".to_string());
+        event.transaction = Some("/Users/person/private.wav".to_string());
+        event.extra.insert(
+            "transcript".to_string(),
+            serde_json::Value::String("private".to_string()),
+        );
+        event.breadcrumbs.values.push(sentry::Breadcrumb {
+            message: Some("private breadcrumb".to_string()),
+            ..Default::default()
+        });
+        event.exception.values.push(sentry::protocol::Exception {
+            ty: "TestError".to_string(),
+            value: Some("private exception value".to_string()),
+            stacktrace: Some(sentry::protocol::Stacktrace {
+                frames: vec![sentry::protocol::Frame {
+                    abs_path: Some("/Users/person/project/src/lib.rs".to_string()),
+                    context_line: Some("private source context".to_string()),
+                    vars: [(
+                        "transcript".to_string(),
+                        serde_json::Value::String("private".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let sanitized = sanitize_sentry_event(event);
+        let exception = &sanitized.exception[0];
+        let frame = &exception.stacktrace.as_ref().unwrap().frames[0];
+
+        assert!(sanitized.message.is_none());
+        assert!(sanitized.transaction.is_none());
+        assert!(sanitized.extra.is_empty());
+        assert!(sanitized.breadcrumbs.is_empty());
+        assert_eq!(exception.ty, "TestError");
+        assert_eq!(exception.value.as_deref(), Some("[redacted]"));
+        assert!(frame.abs_path.is_none());
+        assert!(frame.context_line.is_none());
+        assert!(frame.vars.is_empty());
     }
 }

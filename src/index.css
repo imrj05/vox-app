@@ -7,6 +7,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+    color-scheme: light;
     --background: oklch(1 0 0);
     --foreground: oklch(0.148 0.004 228.8);
     --card: oklch(1 0 0);
@@ -42,6 +43,7 @@
 }
 
 .dark {
+    color-scheme: dark;
     --background: oklch(0.25 0.004 240);
     --foreground: oklch(0.987 0.002 197.1);
     --card: oklch(0.29 0.004 240);
@@ -132,20 +134,74 @@
 
     body {
         @apply bg-background text-foreground;
+        -webkit-tap-highlight-color: transparent;
     }
 
     html {
         @apply font-sans;
     }
+
+    button,
+    a,
+    input,
+    textarea,
+    select {
+        @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    }
+
+    h1,
+    h2,
+    h3 {
+        text-wrap: balance;
+    }
 }
 
 @layer utilities {
     .surface-depth {
-        box-shadow: none;
+        box-shadow: 0 1px 2px oklch(0.15 0.01 220 / 5%), 0 12px 32px oklch(0.15 0.01 220 / 4%);
     }
 
     .surface-depth-soft {
-        box-shadow: none;
+        box-shadow: 0 1px 2px oklch(0.15 0.01 220 / 4%);
+    }
+
+    .page-shell {
+        @apply mx-auto flex min-h-full w-full max-w-6xl flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
+    }
+
+    .page-header {
+        @apply flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between;
+    }
+
+    .page-title {
+        @apply text-2xl font-semibold tracking-tight text-foreground sm:text-3xl;
+    }
+
+    .page-description {
+        @apply mt-1 max-w-2xl text-sm leading-6 text-muted-foreground;
+    }
+
+    .panel {
+        @apply rounded-xl border border-border bg-card;
+    }
+
+    .stat-strip {
+        @apply grid overflow-hidden rounded-xl border border-border bg-card;
+    }
+
+    .stat-cell {
+        @apply min-w-0 px-4 py-3.5;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
     }
 }
 

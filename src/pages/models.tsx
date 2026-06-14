@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Download, Mic, Square, Trash2, Wand2 } from "lucide-react";
+import { Check, Download, Mic, Square, Trash2, Wand2 } from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,7 +56,11 @@ function formatBytes(bytes: number) {
 }
 
 export function ModelsPage() {
-  const { selectedModel, setSelectedModel, dictionary } = useAppStore();
+  const {
+    selectedModel,
+    setSelectedModel,
+    dictionary,
+  } = useAppStore();
   const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -195,6 +199,11 @@ export function ModelsPage() {
   };
 
   const activeModel = models.find((model) => model.name === selectedModel);
+  const orderedModels = [...models].sort((a, b) => {
+    if (a.name === selectedModel) return -1;
+    if (b.name === selectedModel) return 1;
+    return 0;
+  });
   const downloadedModels = models.filter((model) => model.downloaded);
   const totalDownloadedSize = downloadedModels.reduce((sum, model) => sum + model.size, 0);
   const quickStatus = recordingStatus?.isRecording
@@ -208,22 +217,23 @@ export function ModelsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="page-shell max-w-5xl">
+          <header className="page-header">
             <div>
-              <h2 className="text-3xl font-semibold tracking-tight text-foreground">Local Whisper models</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <h1 className="page-title">Local Whisper Models</h1>
+              <p className="page-description">
                 Download, compare, and manage the local models used for dictation.
               </p>
             </div>
             <div className="flex justify-start lg:justify-end">
-              <span className="rounded-full border border-border bg-card px-3 py-2 text-xs font-medium text-muted-foreground">
+              <span className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <span className={`h-2 w-2 rounded-full ${nativeStatus ? "bg-emerald-500" : "bg-muted-foreground/35"}`} />
                 {nativeStatus ? "Engine ready" : "Engine not checked"}
               </span>
             </div>
-          </div>
+          </header>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="stat-strip divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
             <LibraryStat label="Downloaded" value={downloadedModels.length.toLocaleString()} />
             <LibraryStat label="Stored" value={formatBytes(totalDownloadedSize)} />
             <LibraryStat label="Active" value={activeModel?.displayName ?? selectedModel} />
@@ -235,7 +245,7 @@ export function ModelsPage() {
             </div>
           )}
 
-          <article className="rounded-2xl border border-border bg-card p-4">
+          <article className="surface-depth panel p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -250,11 +260,11 @@ export function ModelsPage() {
                 <p className="text-sm leading-6 text-foreground/90">
                   Test the active model instantly before changing downloads or defaults.
                 </p>
-                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                  <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                  <span className="font-mono">
                     {quickStatus}
                   </span>
-                  <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                  <span className="font-mono">
                     {selectedModel}
                   </span>
                 </div>
@@ -307,8 +317,8 @@ export function ModelsPage() {
               Loading Whisper models
             </div>
           ) : models.length > 0 ? (
-            <div className="grid gap-3">
-              {models.map((model) => {
+            <div className="panel divide-y divide-border overflow-hidden">
+              {orderedModels.map((model) => {
                 const isDownloading = downloading === model.name;
                 const isDeleting = deleting === model.name;
                 const isActive = selectedModel === model.name;
@@ -321,7 +331,7 @@ export function ModelsPage() {
                 const totalMB = progress ? Math.round(progress.total / 1024 / 1024) : 0;
 
                 return (
-                  <article key={model.name} className="rounded-2xl border border-border bg-card p-4">
+                  <article key={model.name} className="p-4 transition-colors hover:bg-muted/25">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
                         <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -335,28 +345,24 @@ export function ModelsPage() {
                               recommended
                             </Badge>
                           )}
-                          {isActive && (
-                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                              active
-                            </span>
-                          )}
+                          {isActive && <ActiveBadge />}
                         </div>
 
                         {meta?.description && (
                           <p className="text-sm leading-6 text-foreground/90">{meta.description}</p>
                         )}
 
-                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                          <span className="font-mono tabular-nums">
                             {formatBytes(model.size)}
                           </span>
-                          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono">
+                          <span className="font-mono">
                             {isActive ? "Active" : model.downloaded ? "Downloaded" : "Not downloaded"}
                           </span>
                           {meta?.badges?.map((badge) => (
                             <span
                               key={badge}
-                              className="rounded-full border border-border bg-background px-2.5 py-1 font-medium uppercase tracking-[0.08em]"
+                              className="font-medium uppercase tracking-[0.08em]"
                             >
                               {badge}
                             </span>
@@ -368,7 +374,7 @@ export function ModelsPage() {
                             <div className="h-1.5 overflow-hidden rounded-full bg-border">
                               {pct !== null ? (
                                 <div
-                                  className="h-full rounded-full bg-primary transition-all duration-150"
+                                  className="h-full rounded-full bg-primary transition-[width] duration-150"
                                   style={{ width: `${pct}%` }}
                                 />
                               ) : (
@@ -508,9 +514,18 @@ export function ModelsPage() {
 
 function LibraryStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-2xl font-semibold text-primary">{value}</p>
+    <div className="stat-cell">
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate font-mono text-xl font-semibold tabular-nums text-foreground" title={value}>{value}</p>
     </div>
+  );
+}
+
+function ActiveBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-600 dark:text-emerald-400">
+      <Check className="h-3 w-3" aria-hidden="true" />
+      active
+    </span>
   );
 }

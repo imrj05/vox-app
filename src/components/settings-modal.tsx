@@ -28,11 +28,12 @@ import {
   Moon,
   Plus,
   ShieldCheck,
+  Sparkles,
   Sun,
   Trash2,
   Volume2,
   XCircle,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -156,6 +157,8 @@ export function GeneralSection() {
     setTheme,
     widgetEnabled,
     setWidgetEnabled,
+    enhanceIconEnabled,
+    setEnhanceIconEnabled,
     transcriptFormattingMode,
     setTranscriptFormattingMode,
   } = useAppStore();
@@ -246,6 +249,7 @@ export function GeneralSection() {
           action={
             <Switch
               id="sound-cues"
+              aria-label="Sound cues"
               checked={soundEnabled}
               onCheckedChange={(checked) => void setSoundEnabled(checked)}
             />
@@ -259,8 +263,23 @@ export function GeneralSection() {
           action={
             <Switch
               id="floating-widget"
+              aria-label="Floating widget"
               checked={widgetEnabled}
               onCheckedChange={(checked) => void setWidgetEnabled(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Sparkles className="h-4 w-4" />}
+          title="Enhance icon"
+          description="Show a small local rewrite button near focused macOS text inputs."
+          action={
+            <Switch
+              id="enhance-icon"
+              aria-label="Enhance icon"
+              checked={enhanceIconEnabled}
+              onCheckedChange={(checked) => void setEnhanceIconEnabled(checked)}
             />
           }
         />
@@ -310,6 +329,7 @@ export function GeneralSection() {
           action={
             <Switch
               id="start-at-login"
+              aria-label="Start at login"
               checked={startAtLogin}
               disabled={startAtLoginLoading}
               onCheckedChange={(checked) => void handleStartAtLoginChange(checked)}

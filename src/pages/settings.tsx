@@ -36,27 +36,31 @@ export function SettingsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
-          <div className="flex flex-col gap-2">
-            <h2 className="text-3xl font-semibold tracking-tight text-foreground">Settings</h2>
-            <p className="text-sm text-muted-foreground">
+        <div className="page-shell max-w-5xl">
+          <header className="page-header">
+            <div>
+            <h1 className="page-title">Settings</h1>
+            <p className="page-description">
               Manage how Vox records, transcribes, stores data, and integrates with your desktop workflow.
             </p>
-          </div>
+            </div>
+          </header>
 
-          <div className="rounded-2xl border border-border bg-card p-2">
+          <nav aria-label="Settings sections" className="panel p-1.5">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
               {settingsPageSections.map((section) => {
                 const Icon = section.icon;
                 return (
                   <button
                     key={section.id}
+                    type="button"
                     onClick={() => setActiveSection(section.id)}
+                    aria-pressed={activeSection === section.id}
                     className={cn(
-                      "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-3 text-left text-sm transition-colors",
+                      "flex cursor-pointer touch-manipulation items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors",
                       activeSection === section.id
-                        ? "border-primary/30 bg-primary/10 font-medium text-foreground"
-                        : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/40 hover:text-foreground"
+                        ? "bg-primary/10 font-medium text-primary"
+                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
@@ -65,7 +69,7 @@ export function SettingsPage() {
                 );
               })}
             </div>
-          </div>
+          </nav>
 
           <main className="min-w-0 pb-8">
             {renderContent()}

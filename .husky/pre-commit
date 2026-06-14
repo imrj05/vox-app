@@ -1,1 +1,1 @@
-pnpm version:check
+node scripts/check-version-consistency.mjs

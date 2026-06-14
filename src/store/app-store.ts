@@ -13,7 +13,10 @@ export const THEME_KEY = "theme";
 export const WIDGET_ENABLED_KEY = "widget_enabled";
 export const TRANSCRIPT_FORMATTING_MODE_KEY = "transcript_formatting_mode";
 export const ERROR_REPORTING_ENABLED_KEY = "error_reporting_enabled";
+export const ENHANCE_ICON_ENABLED_KEY = "enhance_icon_enabled";
+export const ENHANCEMENT_MODEL_KEY = "enhancement_model";
 export const DEFAULT_SELECTED_MODEL = "base.en";
+export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
 export type TriggerMode = "toggle" | "pushToTalk";
 export type AppTheme = "system" | "light" | "dark";
@@ -44,6 +47,8 @@ interface AppState {
   dictionary: string;
   theme: AppTheme;
   widgetEnabled: boolean;
+  enhanceIconEnabled: boolean;
+  enhancementModel: string;
   transcriptFormattingMode: TranscriptFormattingMode;
   errorReportingEnabled: boolean;
   /** Load all persisted settings from SQLite. Call once on app mount. */
@@ -56,6 +61,8 @@ interface AppState {
   setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
   setWidgetEnabled: (value: boolean) => Promise<void>;
+  setEnhanceIconEnabled: (value: boolean) => Promise<void>;
+  setEnhancementModel: (value: string) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
   setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
@@ -78,8 +85,10 @@ const defaultAppState = {
   dictionary: "",
   theme: DEFAULT_THEME,
   widgetEnabled: true,
+  enhanceIconEnabled: true,
+  enhancementModel: DEFAULT_ENHANCEMENT_MODEL,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
-  errorReportingEnabled: true,
+  errorReportingEnabled: false,
   // Update
   updateInfo: null,
   updateStatus: "idle" as UpdateStatus,
@@ -142,6 +151,8 @@ export const useAppStore = create<AppState>((set) => ({
         dictionary,
         theme,
         widgetEnabled,
+        enhanceIconEnabled,
+        enhancementModel,
         transcriptFormattingMode,
         errorReportingEnabled,
       ] = await withTimeout(
@@ -154,6 +165,8 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
           getSetting(WIDGET_ENABLED_KEY),
+          getSetting(ENHANCE_ICON_ENABLED_KEY),
+          getSetting(ENHANCEMENT_MODEL_KEY),
           getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
           getSetting(ERROR_REPORTING_ENABLED_KEY),
         ]),
@@ -166,6 +179,7 @@ export const useAppStore = create<AppState>((set) => ({
         transcriptFormattingMode
       );
       const resolvedWidgetEnabled = parseBooleanSetting(widgetEnabled, true);
+      const resolvedEnhanceIconEnabled = parseBooleanSetting(enhanceIconEnabled, true);
       // Sync to localStorage so the widget window can read it without IPC
       localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
       localStorage.setItem(THEME_KEY, resolvedTheme);
@@ -179,6 +193,8 @@ export const useAppStore = create<AppState>((set) => ({
         dictionary: dictionary ?? "",
         theme: resolvedTheme,
         widgetEnabled: resolvedWidgetEnabled,
+        enhanceIconEnabled: resolvedEnhanceIconEnabled,
+        enhancementModel: enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
         errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
       });
@@ -225,6 +241,14 @@ export const useAppStore = create<AppState>((set) => ({
     await setSetting(WIDGET_ENABLED_KEY, String(value));
     localStorage.setItem(WIDGET_ENABLED_KEY, String(value));
     set({ widgetEnabled: value });
+  },
+  setEnhanceIconEnabled: async (value) => {
+    await setSetting(ENHANCE_ICON_ENABLED_KEY, String(value));
+    set({ enhanceIconEnabled: value });
+  },
+  setEnhancementModel: async (value) => {
+    await setSetting(ENHANCEMENT_MODEL_KEY, value);
+    set({ enhancementModel: value });
   },
   setTranscriptFormattingMode: async (value) => {
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);

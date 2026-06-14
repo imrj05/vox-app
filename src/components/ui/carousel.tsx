@@ -5,7 +5,7 @@ import useEmblaCarousel, {
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
+import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons"
 
 type CarouselApi = UseEmblaCarouselType[1]
 type UseCarouselParameters = Parameters<typeof useEmblaCarousel>
@@ -93,12 +93,19 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return
-    onSelect(api)
-    api.on("reInit", onSelect)
-    api.on("select", onSelect)
+    let active = true
+    const updateState = () => {
+      if (active) onSelect(api)
+    }
+
+    queueMicrotask(updateState)
+    api.on("reInit", updateState)
+    api.on("select", updateState)
 
     return () => {
-      api?.off("select", onSelect)
+      active = false
+      api.off("reInit", updateState)
+      api.off("select", updateState)
     }
   }, [api, onSelect])
 

@@ -1,4 +1,4 @@
-import { CircleHelp, Cpu, FileText, Home, Settings, Sparkles } from "lucide-react";
+import { CircleHelp, Cpu, FileText, Home, Settings, Sparkles } from "@/components/icons";
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -24,30 +24,24 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
   return (
     <ShadcnSidebar
       collapsible="none"
-      className="surface-depth-soft select-none border-r border-sidebar-border bg-sidebar/95"
+      className="select-none border-r border-sidebar-border bg-sidebar"
     >
       <SidebarHeader
-        className="shrink-0 px-4 pb-4 pt-[52px]"
+        className="shrink-0 px-4 pb-5 pt-[52px]"
         data-tauri-drag-region
       >
-        <div className="surface-depth-soft rounded-2xl border border-sidebar-border bg-background/65 p-3">
-          <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center">
-              <img src="/logo.png" alt="Vox" className="h-8 w-8 object-contain" />
-              <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-sidebar-primary ring-2 ring-background" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                Local Dictation
-              </p>
-            </div>
+        <div className="flex items-center gap-3 px-2">
+          <img src="/logo.svg" alt="" width="32" height="32" className="h-8 w-8 object-contain" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold tracking-tight text-sidebar-foreground">Vox</p>
+            <p className="text-[11px] text-muted-foreground">Private local dictation</p>
           </div>
         </div>
       </SidebarHeader>
 
       <SidebarContent className="px-3">
         <div className="space-y-1">
-          <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
             Workspace
           </p>
           {primaryNav.map((item) => {
@@ -56,28 +50,33 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
             return (
               <button
                 key={item.id}
+                type="button"
                 onClick={() => onNavChange(item.id)}
+                aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group relative flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-150",
+                  "group relative flex w-full cursor-pointer touch-manipulation items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
                   active
-                    ? "surface-depth-soft bg-background text-sidebar-foreground ring-1 ring-sidebar-border"
-                    : "text-muted-foreground hover:bg-background/55 hover:text-sidebar-foreground"
+                    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
                 )}
               >
                 <span
                   className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-colors",
+                    "absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary transition-opacity",
+                    active ? "opacity-100" : "opacity-0"
+                  )}
+                />
+                <span
+                  className={cn(
+                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
                     active
-                      ? "bg-primary/10 text-primary"
-                      : "bg-muted/70 text-muted-foreground group-hover:text-sidebar-foreground"
+                      ? "text-primary"
+                      : "text-muted-foreground group-hover:text-sidebar-foreground"
                   )}
                 >
                   <Icon className="h-4 w-4" />
                 </span>
-                <span className="font-medium">{item.label}</span>
-                {active && (
-                  <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />
-                )}
+                <span>{item.label}</span>
               </button>
             );
           })}
@@ -85,13 +84,13 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
       </SidebarContent>
 
       <SidebarFooter className="p-3">
-        <div className="surface-depth-soft rounded-2xl border border-sidebar-border bg-background/65 p-3">
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-sidebar-foreground">
+        <div className="border-t border-sidebar-border px-2 pt-3">
+          <div className="mb-1 flex items-center gap-2 text-xs font-medium text-sidebar-foreground">
             <Sparkles className="h-3.5 w-3.5 text-primary" />
             Private by default
           </div>
           <p className="text-[11px] leading-4 text-muted-foreground">
-            Local models, local audio, focused voice-to-text.
+            Audio and transcription stay on this device.
           </p>
         </div>
       </SidebarFooter>

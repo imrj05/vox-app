@@ -91,9 +91,11 @@ jobs:
           key: ${{ matrix.platform.name }}-desktop
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Stage text enhancement sidecar
+        run: pnpm build:text-enhance-sidecar
       - name: Run Rust check
         working-directory: src-tauri
-        run: cargo check
+        run: cargo check --workspace
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
       - name: Upload macOS artifacts

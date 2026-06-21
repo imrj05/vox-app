@@ -1,6 +1,10 @@
+[workspace]
+members = [".", "crates/vox-text-enhance"]
+resolver = "2"
+
 [package]
 name = "vox"
-version = "0.0.5"
+version = "0.0.6"
 description = "Vox desktop app"
 authors = ["Vox"]
 edition = "2021"
@@ -16,8 +20,6 @@ tauri-build = { version = "2", features = [] }
 cpal = "0.17.3"
 enigo = "0.2"
 hound = "3.5.1"
-encoding_rs = "0.8.35"
-llama-cpp-2 = { version = "0.1.146", features = ["sampler"] }
 reqwest = "0.13.3"
 tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }

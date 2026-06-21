@@ -1,15 +1,19 @@
 #![allow(unexpected_cfgs)]
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fs::{self, File},
-    hash::{Hash, Hasher},
     io::BufWriter,
     path::PathBuf,
     process::Command,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(target_os = "macos")]
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
 };
 
 #[cfg(target_os = "linux")]
@@ -1091,15 +1095,9 @@ async fn enhance_focused_input(
         .map_err(|_| "Enhance preferences unavailable".to_string())?
         .clone();
     let models_dir = text_enhancement_models_dir(&app)?;
-    let inference_app = app.clone();
     let inference_original = original.clone();
     let enhanced = tauri::async_runtime::spawn_blocking(move || {
-        text_enhancement::enhance_text(
-            &inference_app.state::<text_enhancement::TextEnhancementEngineState>(),
-            &models_dir,
-            Some(&model_name),
-            &inference_original,
-        )
+        text_enhancement::enhance_text(&models_dir, Some(&model_name), &inference_original)
     })
     .await
     .map_err(|error| format!("Enhancement task failed: {error}"))?
@@ -1451,7 +1449,6 @@ pub fn run() {
         })
         .manage(EnhancePreferencesState::default())
         .manage(FocusedInputSnapshotState::default())
-        .manage(text_enhancement::TextEnhancementEngineState::default())
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
         .setup(move |app| {
@@ -3366,6 +3363,7 @@ fn ax_value_size(value: AXValueRef) -> Option<AxSize> {
     ok.then_some(size)
 }
 
+#[cfg(target_os = "macos")]
 fn is_editable_ax_role(role: Option<&str>) -> bool {
     matches!(
         role,

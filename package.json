@@ -1,7 +1,7 @@
 {
     "name": "vox-app",
     "private": true,
-    "version": "0.0.5",
+    "version": "0.0.6",
     "type": "module",
     "scripts": {
         "dev": "vite",
@@ -11,8 +11,10 @@
         "preview": "vite preview",
         "prepare": "husky",
         "tauri": "tauri",
-        "desktop:dev": "tauri dev",
-        "desktop:build": "tauri build",
+        "build:text-enhance-sidecar": "node scripts/build-text-enhance-sidecar.mjs --release",
+        "build:text-enhance-sidecar:dev": "node scripts/build-text-enhance-sidecar.mjs",
+        "desktop:dev": "pnpm build:text-enhance-sidecar:dev && tauri dev",
+        "desktop:build": "pnpm build:text-enhance-sidecar && tauri build",
         "desktop:build:macos": "tauri build --bundles dmg",
         "desktop:build:windows": "tauri build --bundles nsis",
         "desktop:build:linux": "tauri build --bundles deb",

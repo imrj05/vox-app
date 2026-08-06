@@ -1,11 +1,11 @@
 use std::{
     fs,
-    num::NonZeroU32,
+    io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    process::{Command, Stdio},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt};
 
 pub const DEFAULT_TEXT_ENHANCEMENT_MODEL: &str = "qwen2.5-1.5b-instruct-q4-k-m";
@@ -29,16 +29,6 @@ const MODELS: &[TextEnhancementModelInfo] = &[TextEnhancementModelInfo {
     downloaded: false,
     recommended: true,
 }];
-
-#[derive(Default)]
-pub struct TextEnhancementEngineState {
-    engine: Mutex<Option<LoadedTextEnhancementEngine>>,
-}
-
-struct LoadedTextEnhancementEngine {
-    model_name: String,
-    model_path: PathBuf,
-}
 
 pub fn models_dir(app_data_dir: PathBuf) -> PathBuf {
     app_data_dir.join("text-models")
@@ -127,7 +117,6 @@ pub fn delete_model(models_dir: &Path, model_name: &str) -> Result<(), String> {
 }
 
 pub fn enhance_text(
-    state: &TextEnhancementEngineState,
     models_dir: &Path,
     model_name: Option<&str>,
     text: &str,
@@ -143,25 +132,7 @@ pub fn enhance_text(
     }
 
     let prompt = enhancement_prompt(text);
-    let mut guard = state
-        .engine
-        .lock()
-        .map_err(|_| "Text enhancement engine unavailable".to_string())?;
-    let reload = guard
-        .as_ref()
-        .map(|loaded| loaded.model_name != model.name || loaded.model_path != path)
-        .unwrap_or(true);
-    if reload {
-        *guard = Some(LoadedTextEnhancementEngine {
-            model_name: model.name.to_string(),
-            model_path: path.clone(),
-        });
-    }
-
-    let loaded = guard
-        .as_ref()
-        .ok_or_else(|| "Text enhancement engine unavailable".to_string())?;
-    generate_with_llama(&loaded.model_path, &prompt)
+    run_sidecar(&path, &prompt)
         .map(clean_model_output)
         .and_then(|output| {
             if output.trim().is_empty() {
@@ -200,84 +171,102 @@ fn clean_model_output(output: String) -> String {
         .to_string()
 }
 
-fn generate_with_llama(model_path: &Path, prompt: &str) -> Result<String, String> {
-    use encoding_rs::UTF_8;
-    use llama_cpp_2::{
-        context::params::LlamaContextParams,
-        llama_backend::LlamaBackend,
-        llama_batch::LlamaBatch,
-        model::{params::LlamaModelParams, AddBos, LlamaModel},
-        sampling::LlamaSampler,
+#[derive(Serialize)]
+struct SidecarRequest {
+    model_path: String,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
+struct SidecarResponse {
+    ok: bool,
+    text: Option<String>,
+    error: Option<String>,
+}
+
+fn sidecar_path() -> Result<PathBuf, String> {
+    if let Ok(current_exe) = tauri::utils::platform::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            if let Some(path) = find_sidecar_in_dir(dir) {
+                return Ok(path);
+            }
+        }
+    }
+
+    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin");
+    if let Some(path) = find_sidecar_in_dir(&dev_dir) {
+        return Ok(path);
+    }
+
+    Err(
+        "Text enhancement sidecar not found. Run `pnpm build:text-enhance-sidecar` and rebuild the app."
+            .to_string(),
+    )
+}
+
+fn find_sidecar_in_dir(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with("vox-text-enhance-") {
+            let path = entry.path();
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn run_sidecar(model_path: &Path, prompt: &str) -> Result<String, String> {
+    let sidecar = sidecar_path()?;
+    let request = SidecarRequest {
+        model_path: model_path.to_string_lossy().into_owned(),
+        prompt: prompt.to_string(),
     };
+    let input = serde_json::to_string(&request).map_err(|error| error.to_string())?;
 
-    let backend = LlamaBackend::init().map_err(|error| error.to_string())?;
-    let model = LlamaModel::load_from_file(&backend, model_path, &LlamaModelParams::default())
-        .map_err(|error| error.to_string())?;
-    let mut context = model
-        .new_context(
-            &backend,
-            LlamaContextParams::default().with_n_ctx(Some(
-                NonZeroU32::new(2048)
-                    .ok_or_else(|| "Invalid enhancement context size".to_string())?,
-            )),
-        )
-        .map_err(|error| error.to_string())?;
-    let tokens = model
-        .str_to_token(prompt, AddBos::Always)
-        .map_err(|error| error.to_string())?;
-    if tokens.is_empty() {
-        return Err("Enhancement prompt was empty".to_string());
+    let mut child = Command::new(&sidecar)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start text enhancement sidecar: {error}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|error| format!("Failed to write to text enhancement sidecar: {error}"))?;
     }
 
-    let max_tokens = (tokens.len() + 384).min(2048);
-    if tokens.len() >= max_tokens {
-        return Err("Input is too long to enhance with the local model".to_string());
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Failed to run text enhancement sidecar: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!(
+                "Text enhancement sidecar exited with status {}",
+                output.status
+            )
+        } else {
+            stderr
+        };
+        return Err(message);
     }
 
-    let mut batch = LlamaBatch::new(512, 1);
-    let last_index = tokens.len().saturating_sub(1) as i32;
-    for (index, token) in (0_i32..).zip(tokens.into_iter()) {
-        batch
-            .add(token, index, &[0], index == last_index)
-            .map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("Text enhancement sidecar returned invalid UTF-8: {error}"))?;
+    let response: SidecarResponse = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("Text enhancement sidecar returned invalid JSON: {error}"))?;
+    if response.ok {
+        response
+            .text
+            .ok_or_else(|| "Text enhancement sidecar returned no text".to_string())
+    } else {
+        Err(response
+            .error
+            .unwrap_or_else(|| "Text enhancement sidecar failed".to_string()))
     }
-    context
-        .decode(&mut batch)
-        .map_err(|error| error.to_string())?;
-
-    let mut decoder = UTF_8.new_decoder();
-    let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::temp(0.2),
-        LlamaSampler::top_p(0.85, 1),
-        LlamaSampler::greedy(),
-    ]);
-    let mut output = String::new();
-    let mut cursor = batch.n_tokens();
-
-    while (cursor as usize) <= max_tokens {
-        let token = sampler.sample(&context, batch.n_tokens() - 1);
-        sampler.accept(token);
-        if model.is_eog_token(token) {
-            break;
-        }
-
-        let piece = model
-            .token_to_piece(token, &mut decoder, true, None)
-            .map_err(|error| error.to_string())?;
-        output.push_str(&piece);
-        if output.contains("<|im_end|>") {
-            break;
-        }
-
-        batch.clear();
-        batch
-            .add(token, cursor, &[0], true)
-            .map_err(|error| error.to_string())?;
-        cursor += 1;
-        context
-            .decode(&mut batch)
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(output)
 }

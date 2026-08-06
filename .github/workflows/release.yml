@@ -279,6 +279,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Stage text enhancement sidecar
+        run: pnpm build:text-enhance-sidecar
+
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
 

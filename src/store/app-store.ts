@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting } from "@/lib/db";
+import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload } from "@/lib/native";
 export const HOTKEY_KEY = "hotkey";
 export const ONBOARDING_KEY = "onboarding_complete";
 export const TRIGGER_MODE_KEY = "trigger_mode";
@@ -18,6 +19,12 @@ export const ENHANCEMENT_MODEL_KEY = "enhancement_model";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
+
+export interface ModelDownloadProgress {
+  downloaded: number;
+  total: number;
+}
+
 export type TriggerMode = "toggle" | "pushToTalk";
 export type AppTheme = "system" | "light" | "dark";
 export type TranscriptFormattingMode = "auto" | "plain" | "developer";
@@ -66,6 +73,18 @@ interface AppState {
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
   setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
+  // Model downloads (global, so status survives screen changes)
+  downloadingModels: string[];
+  pausedModels: string[];
+  modelDownloadProgress: Record<string, ModelDownloadProgress>;
+  beginModelDownload: (name: string) => void;
+  setModelDownloadProgress: (name: string, downloaded: number, total: number) => void;
+  finishModelDownload: (name: string) => void;
+  /** Download a model if not already downloading; ignores re-downloads while in flight. */
+  downloadModel: (name: string) => Promise<void>;
+  pauseModel: (name: string) => Promise<void>;
+  resumeModel: (name: string) => Promise<void>;
+  cancelModel: (name: string) => Promise<void>;
   // Update
   updateInfo: Update | null;
   updateStatus: UpdateStatus;
@@ -89,6 +108,10 @@ const defaultAppState = {
   enhancementModel: DEFAULT_ENHANCEMENT_MODEL,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
   errorReportingEnabled: false,
+  // Model downloads
+  downloadingModels: [],
+  pausedModels: [],
+  modelDownloadProgress: {},
   // Update
   updateInfo: null,
   updateStatus: "idle" as UpdateStatus,
@@ -263,6 +286,55 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
     localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
     set({ ...defaultAppState, onboardingComplete: false });
+  },
+  beginModelDownload: (name) =>
+    set((state) =>
+      state.downloadingModels.includes(name)
+        ? state
+        : { downloadingModels: [...state.downloadingModels, name] }
+    ),
+  setModelDownloadProgress: (name, downloaded, total) =>
+    set((state) => ({
+      modelDownloadProgress: {
+        ...state.modelDownloadProgress,
+        [name]: { downloaded, total },
+      },
+    })),
+  finishModelDownload: (name) =>
+    set((state) => {
+      const modelDownloadProgress = { ...state.modelDownloadProgress };
+      delete modelDownloadProgress[name];
+      return {
+        downloadingModels: state.downloadingModels.filter((n) => n !== name),
+        pausedModels: state.pausedModels.filter((n) => n !== name),
+        modelDownloadProgress,
+      };
+    }),
+  downloadModel: async (name) => {
+    const state = useAppStore.getState();
+    if (state.downloadingModels.includes(name)) return;
+    state.beginModelDownload(name);
+    try {
+      await downloadWhisperModel(name);
+    } finally {
+      state.finishModelDownload(name);
+    }
+  },
+  pauseModel: async (name) => {
+    await pauseWhisperDownload(name);
+    set((state) =>
+      state.pausedModels.includes(name)
+        ? state
+        : { pausedModels: [...state.pausedModels, name] }
+    );
+  },
+  resumeModel: async (name) => {
+    await resumeWhisperDownload(name);
+    set((state) => ({ pausedModels: state.pausedModels.filter((n) => n !== name) }));
+  },
+  cancelModel: async (name) => {
+    await cancelWhisperDownload(name);
+    set((state) => ({ pausedModels: state.pausedModels.filter((n) => n !== name) }));
   },
   checkForUpdates: async () => {
     set({ updateStatus: "checking", updateMessage: null });

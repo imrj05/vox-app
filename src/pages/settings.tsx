@@ -9,6 +9,7 @@ import {
   DictionarySection,
   DataSection,
   GeneralSection,
+  ModelsSection,
   PermissionsSection,
   ShortcutsSection,
 } from "@/components/settings-modal";
@@ -22,6 +23,8 @@ export function SettingsPage() {
     switch (activeSection) {
       case "general":
         return <GeneralSection />;
+      case "models":
+        return <ModelsSection />;
       case "dictionary":
         return <DictionarySection />;
       case "data":
@@ -47,7 +50,7 @@ export function SettingsPage() {
           </header>
 
           <nav aria-label="Settings sections" className="panel p-1.5">
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
               {settingsPageSections.map((section) => {
                 const Icon = section.icon;
                 return (

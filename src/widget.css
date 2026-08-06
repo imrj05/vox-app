@@ -30,18 +30,19 @@ body,
     align-items: center;
     justify-content: center;
     padding: 9px 13px;
-    background: rgb(45 48 54 / 94%);
-    border: none;
-    border-radius: 999px;
+    background: #201d1d;
+    border: 1px solid rgba(253, 252, 252, 0.14);
+    border-radius: 4px;
     box-shadow: none;
-    color: white;
+    color: #fdfcfc;
     overflow: visible;
     transition: transform 160ms ease;
 }
 
 :root[data-theme="light"] .widget-capsule {
-    background: rgb(255 255 247 / 94%);
-    color: rgb(15 23 42);
+    background: #fdfcfc;
+    border-color: rgba(15, 0, 0, 0.12);
+    color: #201d1d;
 }
 
 .widget-visible {
@@ -72,14 +73,40 @@ body,
     padding: 0;
 }
 
+/* Theme-aware Vox logo. Default (dark) shows the light mark; light overrides. */
+.widget-logo {
+    position: relative;
+    z-index: 1;
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.widget-logo-dark {
+    display: none;
+}
+
+.widget-logo-light {
+    display: block;
+}
+
+:root[data-theme="light"] .widget-logo-dark {
+    display: block;
+}
+
+:root[data-theme="light"] .widget-logo-light {
+    display: none;
+}
+
 .widget-glow {
     position: absolute;
     left: 50%;
     top: 50%;
     width: 54px;
     height: 20px;
-    border-radius: 999px;
-    background: rgb(45 212 191 / 68%);
+    border-radius: 4px;
+    background: rgba(253, 252, 252, 0.12);
     filter: blur(10px);
     transform: translate(-50%, -50%);
     transition: opacity 90ms linear;
@@ -87,7 +114,7 @@ body,
 }
 
 :root[data-theme="light"] .widget-glow {
-    background: rgb(20 184 166 / 42%);
+    background: rgba(15, 0, 0, 0.1);
 }
 
 .widget-bars {
@@ -104,11 +131,9 @@ body,
     width: 4px;
     height: 7px;
     min-height: 7px;
-    border-radius: 999px;
-    background: linear-gradient(180deg, #f8fffd, #38f8df 55%, #0d9488);
-    box-shadow:
-        0 0 9px rgb(45 212 191 / 42%),
-        inset 0 1px 1px rgb(255 255 255 / 55%);
+    border-radius: 2px;
+    background: #fdfcfc;
+    box-shadow: none;
     transform-origin: center;
     transition:
         height 48ms linear,
@@ -116,10 +141,7 @@ body,
 }
 
 :root[data-theme="light"] .widget-bar {
-    background: linear-gradient(180deg, #134e4a, #14b8a6 58%, #0f766e);
-    box-shadow:
-        0 0 8px rgb(20 184 166 / 28%),
-        inset 0 1px 1px rgb(255 255 255 / 42%);
+    background: #201d1d;
 }
 
 .widget-transcribing-wrap {
@@ -133,23 +155,23 @@ body,
 }
 
 .widget-shimmer-text {
-    --shimmer-base: rgb(255 255 255 / 42%);
-    --shimmer-highlight: #ecfffb;
+    --shimmer-base: rgb(253 252 252 / 42%);
+    --shimmer-highlight: #fdfcfc;
     position: relative;
     display: inline-block;
     font-family: ui-monospace, monospace;
     font-size: 12px;
     line-height: 1;
-    letter-spacing: -0.035em;
-    color: rgb(255 255 255 / 62%);
-    text-shadow: 0 0 18px rgb(45 212 191 / 18%);
+    letter-spacing: 0;
+    color: rgb(253 252 252 / 62%);
+    text-shadow: none;
 }
 
 :root[data-theme="light"] .widget-shimmer-text {
-    --shimmer-base: rgb(15 23 42 / 42%);
-    --shimmer-highlight: #0f766e;
-    color: rgb(15 23 42 / 58%);
-    text-shadow: 0 0 18px rgb(20 184 166 / 14%);
+    --shimmer-base: rgb(32 29 29 / 42%);
+    --shimmer-highlight: #201d1d;
+    color: rgb(32 29 29 / 58%);
+    text-shadow: none;
 }
 
 .widget-shimmer-text::after {
@@ -161,7 +183,7 @@ body,
             transparent 0%,
             transparent 34%,
             var(--shimmer-highlight) 47%,
-            #38f8df 52%,
+            var(--shimmer-highlight) 52%,
             var(--shimmer-highlight) 57%,
             transparent 70%,
             transparent 100%);
@@ -187,11 +209,11 @@ body,
     font-family: ui-monospace, monospace;
     font-size: 11px;
     line-height: 1;
-    letter-spacing: -0.04em;
-    color: rgb(255 255 255 / 72%);
+    letter-spacing: 0;
+    color: rgb(253 252 252 / 72%);
     font-variant-numeric: tabular-nums;
 }
 
 :root[data-theme="light"] .widget-timer {
-    color: rgb(15 23 42 / 68%);
+    color: rgb(32 29 29 / 68%);
 }

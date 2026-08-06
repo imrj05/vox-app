@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
@@ -69,6 +70,26 @@ function App() {
   } = useAppStore();
   const [activeNav, setActiveNav] = useState("home");
   const hasCheckedForUpdates = useRef(false);
+  // Global model-download progress listener. Keeps progress + in-flight state in
+  // the store so it survives navigation and prevents duplicate re-downloads.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ modelName: string; downloaded: number; total: number }>(
+      "vox-download-progress",
+      (event) => {
+        const { modelName, downloaded, total } = event.payload;
+        if (!modelName) return;
+        const store = useAppStore.getState();
+        store.beginModelDownload(modelName);
+        store.setModelDownloadProgress(modelName, downloaded, total);
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
   // Hydrate store from SQLite on mount
   useEffect(() => {
     void hydrate();

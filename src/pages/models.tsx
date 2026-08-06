@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { Check, Download, Mic, Square, Trash2, Wand2 } from "@/components/icons";
 import {
   AlertDialog,
@@ -19,7 +18,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { saveTranscript } from "@/lib/db";
 import {
   deleteRecordingFile,
-  downloadWhisperModel,
   deleteWhisperModel,
   getNativeStatus,
   listWhisperModels,
@@ -33,12 +31,6 @@ import {
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 
-interface DownloadProgress {
-  modelName: string;
-  downloaded: number;
-  total: number;
-}
-
 const MODEL_META: Record<string, { description: string; version: string; badges: string[] }> = {
   "tiny.en":          { description: "Fastest, lowest quality. Good for quick tests and very constrained machines.", version: "v1.0", badges: ["fastest", "english", "low memory"] },
   "base.en":          { description: "Recommended default. Strong accuracy and real-time on Apple Silicon.", version: "v1.0", badges: ["recommended", "balanced", "english"] },
@@ -47,6 +39,8 @@ const MODEL_META: Record<string, { description: string; version: string; badges:
   "large-v3":         { description: "Best accuracy, all languages. ~8x slower than base; needs 16 GB+ RAM.", version: "v3.0", badges: ["best accuracy", "multilingual", "16 GB+"] },
   "distil-large-v3":  { description: "Recommended English upgrade: ~2x faster than large-v3 with near-identical accuracy. English-focused.", version: "v3.0", badges: ["premium", "fast large", "english"] },
   "large-v3-turbo":   { description: "Premium: near large-v3 accuracy at ~2x the speed. All languages. Needs 8 GB+ RAM.", version: "v3.0", badges: ["premium", "turbo", "multilingual"] },
+  "parakeet-tdt-0.6b-v2": { description: "NVIDIA Parakeet. Top English accuracy with automatic punctuation and capitalization.", version: "v2.0", badges: ["nvidia", "english", "punctuation"] },
+  "parakeet-tdt-0.6b-v3": { description: "NVIDIA Parakeet multilingual. Strong English plus 25 European languages.", version: "v3.0", badges: ["nvidia", "multilingual", "punctuation"] },
 };
 
 function formatBytes(bytes: number) {
@@ -60,12 +54,17 @@ export function ModelsPage() {
     selectedModel,
     setSelectedModel,
     dictionary,
+    downloadingModels,
+    pausedModels,
+    modelDownloadProgress,
+    downloadModel,
+    pauseModel,
+    resumeModel,
+    cancelModel,
   } = useAppStore();
   const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus | null>(null);
@@ -88,20 +87,10 @@ export function ModelsPage() {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<DownloadProgress>("vox-download-progress", (event) => {
-      setProgress(event.payload);
-    }).then((cleanup) => { unlisten = cleanup; });
-    return () => { unlisten?.(); };
-  }, []);
-
   const handleDownload = async (modelName: string) => {
-    setDownloading(modelName);
-    setProgress(null);
     setError(null);
     try {
-      await downloadWhisperModel(modelName);
+      await downloadModel(modelName);
       const updated = await listWhisperModels();
       setModels(updated);
       // Auto-set as active if nothing else is set
@@ -109,10 +98,10 @@ export function ModelsPage() {
         await setSelectedModel(modelName);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDownloading(null);
-      setProgress(null);
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.toLowerCase().includes("cancelled")) {
+        setError(message);
+      }
     }
   };
 
@@ -319,16 +308,18 @@ export function ModelsPage() {
           ) : models.length > 0 ? (
             <div className="panel divide-y divide-border overflow-hidden">
               {orderedModels.map((model) => {
-                const isDownloading = downloading === model.name;
+                const isDownloading = downloadingModels.includes(model.name);
+                const isPaused = pausedModels.includes(model.name);
                 const isDeleting = deleting === model.name;
                 const isActive = selectedModel === model.name;
                 const meta = MODEL_META[model.name];
+                const dl = modelDownloadProgress[model.name];
                 const pct =
-                  isDownloading && progress && progress.total > 0
-                    ? Math.round((progress.downloaded / progress.total) * 100)
+                  isDownloading && dl && dl.total > 0
+                    ? Math.round((dl.downloaded / dl.total) * 100)
                     : null;
-                const downloadedMB = progress ? Math.round(progress.downloaded / 1024 / 1024) : 0;
-                const totalMB = progress ? Math.round(progress.total / 1024 / 1024) : 0;
+                const downloadedMB = dl ? Math.round(dl.downloaded / 1024 / 1024) : 0;
+                const totalMB = dl ? Math.round(dl.total / 1024 / 1024) : 0;
 
                 return (
                   <article key={model.name} className="p-4 transition-colors hover:bg-muted/25">
@@ -409,7 +400,7 @@ export function ModelsPage() {
                                 <Button
                                   variant="destructive"
                                   size="sm"
-                                  disabled={isDeleting || downloading !== null}
+                                  disabled={isDeleting || downloadingModels.length > 0}
                                 >
                                   {isDeleting ? (
                                     "Removing…"
@@ -473,24 +464,40 @@ export function ModelsPage() {
                             </AlertDialog>
                           </>
                         ) : (
-                          <Button
-                            variant="default"
-                            size="sm"
-                            onClick={() => void handleDownload(model.name)}
-                            disabled={downloading !== null}
-                          >
+                          <div className="flex shrink-0 gap-2">
                             {isDownloading ? (
                               <>
-                                <Spinner className="size-3.5" />
-                                {pct !== null ? `${pct}%` : "Starting…"}
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    void (isPaused
+                                      ? resumeModel(model.name)
+                                      : pauseModel(model.name))
+                                  }
+                                >
+                                  {isPaused ? "Resume" : "Pause"}
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => void cancelModel(model.name)}
+                                >
+                                  Cancel
+                                </Button>
                               </>
                             ) : (
-                              <>
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={() => void handleDownload(model.name)}
+                                disabled={downloadingModels.length > 0}
+                              >
                                 <Download className="h-4 w-4" />
                                 Download
-                              </>
+                              </Button>
                             )}
-                          </Button>
+                          </div>
                         )}
                       </div>
                     </div>

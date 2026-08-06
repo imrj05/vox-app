@@ -19,7 +19,9 @@ import { cn } from "@/lib/utils";
 import {
   BookOpenText,
   CheckCircle2,
+  Cpu,
   Database,
+  Download,
   ExternalLink,
   Keyboard,
   LogIn,
@@ -53,7 +55,9 @@ import { ABOUT_LINKS } from "@/lib/about";
 import { openExternalLink } from "@/lib/external-link";
 import {
   cleanupRecordings,
+  deleteWhisperModel,
   formatShortcut,
+  listWhisperModels,
   setGlobalShortcut,
   checkAccessibilityPermission,
   checkMicrophonePermission,
@@ -375,6 +379,276 @@ const formattingModeOptions: Array<{
     description: "Always prefer code punctuation, structure, identifier formatting, and template snippets.",
   },
 ];
+
+function formatModelBytes(bytes: number) {
+  const gb = bytes / 1024 / 1024 / 1024;
+  if (gb >= 1) return `~${gb.toFixed(2).replace(/\.?0+$/, "")} GB`;
+  return `~${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+export function ModelsSection() {
+  const {
+    selectedModel,
+    setSelectedModel,
+    downloadingModels,
+    pausedModels,
+    modelDownloadProgress,
+    downloadModel,
+    pauseModel,
+    resumeModel,
+    cancelModel,
+  } = useAppStore();
+  const [models, setModels] = useState<Awaited<ReturnType<typeof listWhisperModels>>>([]);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listWhisperModels()
+      .then((m) => {
+        if (active) setModels(m);
+      })
+      .catch(() => {
+        if (active) {
+          setModels([]);
+          setError("Model management is only available in the Tauri desktop app.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const refresh = async () => {
+    setModels(await listWhisperModels());
+  };
+
+  const handleDownload = async (modelName: string) => {
+    setError(null);
+    try {
+      await downloadModel(modelName);
+      await refresh();
+      if (!selectedModel || selectedModel === "base.en") {
+        await setSelectedModel(modelName);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.toLowerCase().includes("cancelled")) {
+        setError(message);
+      }
+    }
+  };
+
+  const handleSetActive = async (modelName: string) => {
+    setError(null);
+    try {
+      await setSelectedModel(modelName);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleDelete = async (modelName: string) => {
+    setDeleting(modelName);
+    setError(null);
+    try {
+      await deleteWhisperModel(modelName);
+      await refresh();
+      if (selectedModel === modelName) {
+        await setSelectedModel("base.en");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const activeModel = models.find((model) => model.name === selectedModel);
+  const orderedModels = [...models].sort((a, b) => {
+    if (a.name === selectedModel) return -1;
+    if (b.name === selectedModel) return 1;
+    return 0;
+  });
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Models"
+        description="Download, compare, and manage the local speech-to-text models used for dictation."
+      />
+      <SettingsCard className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <Cpu className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">Active model</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {activeModel?.displayName ?? selectedModel}
+              </p>
+            </div>
+          </div>
+          <Badge variant="secondary" className="shrink-0">
+            {activeModel?.downloaded ? "Ready" : "Not downloaded"}
+          </Badge>
+        </div>
+        {error && (
+          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
+      </SettingsCard>
+
+      {loading ? (
+        <SettingsCard className="flex items-center gap-3 bg-muted/35 px-4 py-4">
+          <Spinner className="size-4" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Loading models</p>
+            <p className="text-xs text-muted-foreground">Checking local model availability.</p>
+          </div>
+        </SettingsCard>
+      ) : models.length > 0 ? (
+        <SettingsCard className="space-y-2">
+          {orderedModels.map((model) => {
+            const isDownloading = downloadingModels.includes(model.name);
+            const isPaused = pausedModels.includes(model.name);
+            const isDeleting = deleting === model.name;
+            const isActive = selectedModel === model.name;
+            const dl = modelDownloadProgress[model.name];
+            const pct =
+              isDownloading && dl && dl.total > 0
+                ? Math.round((dl.downloaded / dl.total) * 100)
+                : null;
+            return (
+              <div
+                key={model.name}
+                className="flex flex-col gap-3 rounded-xl border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-foreground">
+                      {model.displayName}
+                    </p>
+                    {isActive && (
+                      <Badge variant="secondary" className="h-5 bg-primary/10 text-primary">
+                        <CheckCircle2 className="h-3 w-3" />
+                        Active
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    <span className="font-mono tabular-nums">
+                      {formatModelBytes(model.size)}
+                    </span>
+                    <span className="font-mono">
+                      {model.downloaded ? "Downloaded" : "Not downloaded"}
+                    </span>
+                    {model.name.startsWith("parakeet") && (
+                      <span className="font-medium uppercase tracking-[0.08em]">Parakeet</span>
+                    )}
+                  </div>
+                  {isDownloading && (
+                    <div className="mt-2 space-y-1">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-border">
+                        {pct !== null ? (
+                          <div
+                            className="h-full rounded-full bg-primary transition-[width] duration-150"
+                            style={{ width: `${pct}%` }}
+                          />
+                        ) : (
+                          <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
+                        )}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        {pct !== null ? `${pct}% downloaded` : "Connecting…"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  {model.downloaded ? (
+                    <>
+                      {!isActive && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleSetActive(model.name)}
+                          disabled={isDeleting}
+                        >
+                          Set active
+                        </Button>
+                      )}
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => void handleDelete(model.name)}
+                        disabled={isDeleting || downloadingModels.length > 0}
+                      >
+                        {isDeleting ? (
+                          <Spinner className="size-3.5" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </>
+                  ) : (
+                    <div className="flex shrink-0 gap-2">
+                      {isDownloading ? (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              void (isPaused
+                                ? resumeModel(model.name)
+                                : pauseModel(model.name))
+                            }
+                          >
+                            {isPaused ? "Resume" : "Pause"}
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => void cancelModel(model.name)}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => void handleDownload(model.name)}
+                          disabled={downloadingModels.length > 0}
+                        >
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </SettingsCard>
+      ) : (
+        <SettingsCard className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-foreground">No models available</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Open the desktop app to load local model availability.
+          </p>
+        </SettingsCard>
+      )}
+    </div>
+  );
+}
 export function DictionarySection() {
   const { dictionary, setDictionary } = useAppStore();
   const [wordInput, setWordInput] = useState("");
@@ -1298,6 +1572,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     switch (activeSection) {
       case "general":
         return <GeneralSection />;
+      case "models":
+        return <ModelsSection />;
       case "dictionary":
         return <DictionarySection />;
       case "data":

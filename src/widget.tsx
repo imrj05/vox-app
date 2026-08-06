@@ -92,6 +92,9 @@ function VoiceDots({
 
   return (
     <div className="widget-voice-container">
+      {/* Theme-aware Vox logo (dark mark on light, light mark on dark) */}
+      <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
+      <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
       <div
         className="widget-glow"
         style={{ opacity: glowAlpha }}

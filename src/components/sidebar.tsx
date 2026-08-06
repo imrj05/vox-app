@@ -1,4 +1,5 @@
 import { CircleHelp, Cpu, FileText, Home, Settings, Sparkles } from "@/components/icons";
+import { Logo } from "@/components/logo";
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -31,7 +32,7 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
         data-tauri-drag-region
       >
         <div className="flex items-center gap-3 px-2">
-          <img src="/logo.svg" alt="" width="32" height="32" className="h-8 w-8 object-contain" />
+          <Logo className="h-8 w-8" />
           <div className="min-w-0">
             <p className="text-sm font-semibold tracking-tight text-sidebar-foreground">Vox</p>
             <p className="text-[11px] text-muted-foreground">Private local dictation</p>

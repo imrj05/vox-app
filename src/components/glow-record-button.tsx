@@ -18,34 +18,24 @@ export function GlowRecordButton({
       disabled={disabled}
       aria-label={isRecording ? "Stop recording" : "Start recording"}
       className={cn(
-        "relative flex h-20 w-20 items-center justify-center rounded-full transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40",
+        "relative flex h-20 w-20 shrink-0 items-center justify-center rounded-full transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50",
         isRecording
-          ? "bg-destructive focus-visible:ring-destructive"
-          : "bg-primary focus-visible:ring-primary"
+          ? "bg-destructive text-white focus-visible:ring-destructive"
+          : "bg-primary text-primary-foreground focus-visible:ring-primary"
       )}
     >
-      {/* Outer glow ring */}
+      {/* Subtle contained pulse ring (does not scale beyond the button) */}
       <span
+        aria-hidden="true"
         className={cn(
           "absolute inset-0 rounded-full",
-          isRecording
-            ? "animate-ping bg-destructive/40"
-            : "animate-pulse bg-primary/30"
-        )}
-      />
-      {/* Second ring for depth */}
-      <span
-        className={cn(
-          "absolute -inset-2 rounded-full opacity-20 blur-md",
-          isRecording
-            ? "bg-destructive"
-            : "bg-primary"
+          isRecording ? "animate-pulse bg-destructive/20" : "animate-pulse bg-primary/10"
         )}
       />
       {/* Icon */}
-      <span className="relative z-10 text-white">
+      <span className="relative z-10">
         {isRecording ? (
-          <Square className="h-8 w-8 fill-white" />
+          <Square className="h-8 w-8 fill-current" />
         ) : (
           <Mic className="h-8 w-8" />
         )}

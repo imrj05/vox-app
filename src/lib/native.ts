@@ -133,6 +133,18 @@ export async function downloadWhisperModel(modelName: string) {
   return invoke<WhisperModelInfo>("download_whisper_model", { modelName });
 }
 
+export async function pauseWhisperDownload(modelName: string) {
+  return invoke<void>("pause_whisper_download", { modelName });
+}
+
+export async function resumeWhisperDownload(modelName: string) {
+  return invoke<void>("resume_whisper_download", { modelName });
+}
+
+export async function cancelWhisperDownload(modelName: string) {
+  return invoke<void>("cancel_whisper_download", { modelName });
+}
+
 export async function deleteWhisperModel(modelName: string) {
   return invoke<void>("delete_whisper_model", { modelName });
 }

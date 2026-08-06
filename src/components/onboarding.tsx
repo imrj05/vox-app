@@ -13,7 +13,6 @@ import { cn } from "@/lib/utils";
 import {
   checkAccessibilityPermission,
   checkMicrophonePermission,
-  downloadWhisperModel,
   listWhisperModels,
   requestAccessibilityPermission,
   requestMicrophonePermission,
@@ -35,12 +34,25 @@ const ONBOARDING_MODELS = [
   { name: "large-v3",  displayName: "Whisper Large v3",        size: "~3.0 GB",  description: "Best accuracy, all languages. Needs 16 GB+ RAM.",            version: "v3.0" },
   { name: "distil-large-v3",  displayName: "Distil-Whisper Large v3", size: "~1.5 GB", description: "~2x faster than large-v3, near-identical accuracy.", version: "v3.0" },
   { name: "large-v3-turbo",   displayName: "Whisper Large v3 Turbo",  size: "~1.5 GB", description: "Near large-v3 accuracy at ~2x speed. Needs 8 GB+ RAM.", version: "v3.0" },
+  { name: "parakeet-tdt-0.6b-v2", displayName: "Parakeet TDT 0.6B v2", size: "~900 MB", description: "NVIDIA Parakeet. Top English accuracy with punctuation and capitalization.", version: "v2.0" },
+  { name: "parakeet-tdt-0.6b-v3", displayName: "Parakeet TDT 0.6B v3", size: "~940 MB", description: "NVIDIA Parakeet multilingual. Strong English plus 25 European languages.", version: "v3.0" },
 ];
 
 type Step = "accessibility" | "permission" | "model" | "hotkey";
 
 export function Onboarding() {
-  const { setOnboardingComplete, hotkey, setSelectedModel } = useAppStore();
+  const {
+    setOnboardingComplete,
+    hotkey,
+    setSelectedModel,
+    downloadingModels,
+    pausedModels,
+    modelDownloadProgress,
+    downloadModel: downloadModelFromStore,
+    pauseModel,
+    resumeModel,
+    cancelModel,
+  } = useAppStore();
   const [step, setStep] = useState<Step>("accessibility");
   const [accessibilityReady, setAccessibilityReady] = useState(false);
   const [permissionReady, setPermissionReady] = useState(false);
@@ -48,7 +60,6 @@ export function Onboarding() {
   const [hotkeyReady, setHotkeyReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [chosenModel, setChosenModel] = useState(DEFAULT_SELECTED_MODEL);
-  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [hotkeyMessage, setHotkeyMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,15 +110,7 @@ export function Onboarding() {
   }, [step, permissionReady]);
 
   // Listen for download progress events
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<DownloadProgress>("vox-download-progress", (event) => {
-      setDownloadProgress(event.payload);
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => { unlisten?.(); };
-  }, []);
+  // (handled globally in App.tsx and persisted to the store)
 
   // Detect the configured hotkey on the hotkey step
   useEffect(() => {
@@ -188,21 +191,22 @@ export function Onboarding() {
   const downloadModel = async () => {
     setBusy(true);
     setError(null);
-    setDownloadProgress(null);
     try {
       const models = await listWhisperModels();
       const already = models.find((m) => m.name === chosenModel);
       if (!already?.downloaded) {
-        await downloadWhisperModel(chosenModel);
+        await downloadModelFromStore(chosenModel);
       }
       await setSelectedModel(chosenModel);
       setModelReady(true);
       setStep("hotkey");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.toLowerCase().includes("cancelled")) {
+        setError(message);
+      }
     } finally {
       setBusy(false);
-      setDownloadProgress(null);
     }
   };
 
@@ -218,7 +222,11 @@ export function Onboarding() {
   ];
   const activeStepIndex = setupSteps.findIndex((item) => item.id === step);
   const completedCount = setupSteps.filter((item) => item.done).length;
-  const isDownloadingModel = busy && step === "model";
+  const downloadProgress = modelDownloadProgress[chosenModel]
+    ? { modelName: chosenModel, ...modelDownloadProgress[chosenModel] }
+    : null;
+  const isDownloadingModel =
+    (busy && step === "model") || downloadingModels.includes(chosenModel);
   const canFinish = accessibilityReady && permissionReady && modelReady && hotkeyReady;
 
   return (
@@ -308,13 +316,33 @@ export function Onboarding() {
             >
               {modelReady ? (
                 <StatusPill label="Cached" />
+              ) : isDownloadingModel ? (
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      void (pausedModels.includes(chosenModel)
+                        ? resumeModel(chosenModel)
+                        : pauseModel(chosenModel))
+                    }
+                    disabled={!permissionReady}
+                  >
+                    {pausedModels.includes(chosenModel) ? "Resume" : "Pause"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => void cancelModel(chosenModel)}
+                    disabled={!permissionReady}
+                  >
+                    Cancel
+                  </Button>
+                </div>
               ) : (
                 <Button size="sm" onClick={downloadModel} disabled={busy || !permissionReady}>
-                  {busy && step === "model"
-                    ? downloadProgress
-                      ? `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%`
-                      : "Downloading..."
-                    : "Download"}
+                  <Download className="h-4 w-4" />
+                  Download
                 </Button>
               )}
             </StepCard>

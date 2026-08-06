@@ -682,7 +682,7 @@ fn resolve_app_icon(app_name: String) -> Option<String> {
 fn native_status() -> NativeStatus {
     NativeStatus {
         platform: platform_label(),
-        engine: "Tauri command bridge + native WAV recorder + model-managed Whisper",
+        engine: "Tauri bridge + native recorder + whisper.cpp / transcribe.cpp (Parakeet)",
         recording_supported: true,
         transcription_supported: true,
     }
@@ -917,7 +917,7 @@ fn whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
 #[tauri::command]
 fn delete_whisper_model(app: AppHandle, model_name: String) -> Result<(), String> {
     let models_dir = whisper_models_dir(&app)?;
-    let path = models_dir.join(format!("{model_name}.bin"));
+    let path = whisper::model_path_for(&models_dir, &model_name);
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
@@ -981,22 +981,80 @@ fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn download_whisper_model(
     app: AppHandle,
+    registry: State<'_, whisper::DownloadRegistry>,
     model_name: String,
 ) -> Result<WhisperModelInfo, String> {
     let models_dir = whisper_models_dir(&app)?;
+    let control = std::sync::Arc::new(whisper::DownloadControl::default());
+    {
+        let mut registry = registry.lock().map_err(|error| error.to_string())?;
+        registry.insert(model_name.clone(), control.clone());
+    }
     let app_progress = app.clone();
     let progress_name = model_name.clone();
-    whisper::download_model(&models_dir, &model_name, move |downloaded, total| {
-        let _ = app_progress.emit(
-            "vox-download-progress",
-            DownloadProgress {
-                model_name: progress_name.clone(),
-                downloaded,
-                total,
-            },
-        );
-    })
-    .await
+    let result = whisper::download_model(
+        &models_dir,
+        &model_name,
+        &control,
+        move |downloaded, total| {
+            let _ = app_progress.emit(
+                "vox-download-progress",
+                DownloadProgress {
+                    model_name: progress_name.clone(),
+                    downloaded,
+                    total,
+                },
+            );
+        },
+    )
+    .await;
+    {
+        let mut registry = registry.lock().map_err(|error| error.to_string())?;
+        registry.remove(&model_name);
+    }
+    result
+}
+
+#[tauri::command]
+fn pause_whisper_download(
+    registry: State<'_, whisper::DownloadRegistry>,
+    model_name: String,
+) -> Result<(), String> {
+    let registry = registry.lock().map_err(|error| error.to_string())?;
+    if let Some(control) = registry.get(&model_name) {
+        control
+            .pause
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_whisper_download(
+    registry: State<'_, whisper::DownloadRegistry>,
+    model_name: String,
+) -> Result<(), String> {
+    let registry = registry.lock().map_err(|error| error.to_string())?;
+    if let Some(control) = registry.get(&model_name) {
+        control
+            .pause
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_whisper_download(
+    registry: State<'_, whisper::DownloadRegistry>,
+    model_name: String,
+) -> Result<(), String> {
+    let registry = registry.lock().map_err(|error| error.to_string())?;
+    if let Some(control) = registry.get(&model_name) {
+        control
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1451,6 +1509,7 @@ pub fn run() {
         .manage(FocusedInputSnapshotState::default())
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
+        .manage(whisper::DownloadRegistry::default())
         .setup(move |app| {
             create_tray_menu(app)?;
 
@@ -1483,6 +1542,9 @@ pub fn run() {
             stop_recording,
             whisper_models,
             download_whisper_model,
+            pause_whisper_download,
+            resume_whisper_download,
+            cancel_whisper_download,
             delete_whisper_model,
             text_enhancement_models,
             download_text_enhancement_model,

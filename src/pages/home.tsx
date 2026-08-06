@@ -671,7 +671,7 @@ function CommandCenterCard({
         : "Verify the native engine before recording.";
 
   return (
-    <section className="surface-depth overflow-hidden rounded-xl border border-primary/20 bg-[linear-gradient(135deg,var(--card),color-mix(in_oklab,var(--primary)_5%,var(--card)))] p-5">
+    <section className="surface-depth overflow-hidden rounded-xl border border-primary/20 bg-card p-5">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-4">
           <GlowRecordButton

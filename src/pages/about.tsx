@@ -1,4 +1,5 @@
-import { Code2, ExternalLink, Globe, Mail, MonitorSmartphone, Sparkles } from "@/components/icons"
+import { useEffect, useState } from "react"
+import { Code2, Cpu, Database, ExternalLink, Globe, Mail, MonitorSmartphone } from "@/components/icons"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import {
@@ -8,6 +9,13 @@ import {
   ABOUT_WEBSITE,
 } from "@/lib/about"
 import { openExternalLink } from "@/lib/external-link"
+import { Logo } from "@/components/logo"
+import {
+  getHotkeyDiagnostics,
+  getNativeStatus,
+  type HotkeyDiagnostics,
+  type NativeStatus,
+} from "@/lib/native"
 import { useAppStore } from "@/store/app-store"
 
 function formatBytes(bytes: number) {
@@ -18,6 +26,7 @@ function formatBytes(bytes: number) {
 
 export function AboutPage() {
   const {
+    selectedModel,
     updateInfo,
     updateStatus,
     updateProgress,
@@ -26,6 +35,19 @@ export function AboutPage() {
     installUpdate,
     setShowUpdateDialog,
   } = useAppStore()
+  const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null)
+  const [diagnostics, setDiagnostics] = useState<HotkeyDiagnostics | null>(null)
+
+  useEffect(() => {
+    void getNativeStatus().then(setNativeStatus).catch(() => {})
+    void getHotkeyDiagnostics().then(setDiagnostics).catch(() => {})
+  }, [])
+
+  const isParakeet = selectedModel.startsWith("parakeet")
+  const engineLabel = isParakeet
+    ? "transcribe.cpp (Parakeet)"
+    : "whisper.cpp (Whisper)"
+  const platform = nativeStatus?.platform || "Desktop"
 
   const progressPct =
     updateProgress.total && updateProgress.total > 0
@@ -38,41 +60,32 @@ export function AboutPage() {
 
       <ScrollArea className="h-full">
         <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
-          <section className="overflow-hidden rounded-[2rem] border border-border bg-card">
-            <div className="relative px-6 py-7 lg:px-8 lg:py-8">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.12),transparent_34%)]" />
-              <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-                <div className="max-w-2xl">
-                  <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground backdrop-blur">
-                    <Sparkles className="h-3.5 w-3.5 text-primary" />
-                    About Vox
+          <section className="rounded-2xl border border-border bg-card">
+            <div className="flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:justify-between lg:p-8">
+              <div className="min-w-0 max-w-2xl">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-background">
+                    <Logo className="h-7 w-7" alt="Vox logo" />
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-background">
-                      <img src="/logo.svg" alt="" width="36" height="36" className="h-9 w-9 object-contain" />
-                    </div>
-                    <div>
-                      <h1 className="text-3xl font-semibold tracking-tight text-foreground">Vox</h1>
-                      <p className="mt-1 text-sm text-muted-foreground">Private local dictation for a fast desktop workflow.</p>
-                    </div>
-                  </div>
-                  <p className="mt-5 max-w-xl text-sm leading-7 text-muted-foreground">
-                    Vox is designed for fast voice capture, local transcription, and a focused desktop experience without sending your audio to external services.
-                  </p>
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <span className="rounded-full border border-border bg-background/80 px-3 py-1.5 text-xs font-medium text-foreground">
-                      Version {ABOUT_VERSION}
-                    </span>
-                    <span className="rounded-full border border-border bg-background/80 px-3 py-1.5 text-xs font-medium text-muted-foreground">
-                      Local-first
-                    </span>
+                  <div className="min-w-0">
+                    <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Vox</h1>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      Private local dictation for a fast desktop workflow.
+                    </p>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2 lg:max-w-[320px] lg:justify-end">
-                  <AboutLinkButton icon={<Code2 className="h-4 w-4" />} href={ABOUT_REPOSITORY} label="GitHub" />
-                  <AboutLinkButton icon={<Globe className="h-4 w-4" />} href={ABOUT_WEBSITE} label="Website" />
-                  <AboutLinkButton icon={<Mail className="h-4 w-4" />} href={`mailto:${ABOUT_EMAIL}`} label="Email" />
+                <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
+                  Vox is designed for fast voice capture, local transcription, and a focused desktop experience without sending your audio to external services.
+                </p>
+                <div className="mt-5 flex flex-wrap gap-x-5 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                  <span>v{ABOUT_VERSION}</span>
+                  <span>local-first</span>
                 </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:max-w-[340px] lg:justify-end">
+                <AboutLinkButton icon={<Code2 className="h-4 w-4" />} href={ABOUT_REPOSITORY} label="GitHub" />
+                <AboutLinkButton icon={<Globe className="h-4 w-4" />} href={ABOUT_WEBSITE} label="Website" />
+                <AboutLinkButton icon={<Mail className="h-4 w-4" />} href={`mailto:${ABOUT_EMAIL}`} label="Email" />
               </div>
             </div>
           </section>
@@ -86,9 +99,33 @@ export function AboutPage() {
                 <p className="mt-4 text-base font-semibold text-foreground">Build details</p>
                 <div className="mt-4 space-y-3">
                   <AboutInfoRow label="Desktop shell" value="Tauri v2" />
-                  <AboutInfoRow label="Platform" value="macOS desktop" />
+                  <AboutInfoRow label="Platform" value={platform} />
                   <AboutInfoRow label="Minimum macOS" value="10.15" />
                   <AboutInfoRow label="Release channel" value="GitHub Releases" />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Cpu className="h-4 w-4" />
+                </div>
+                <p className="mt-4 text-base font-semibold text-foreground">Transcription engine</p>
+                <div className="mt-4 space-y-3">
+                  <AboutInfoRow label="Active model" value={selectedModel} />
+                  <AboutInfoRow label="Runtime" value={engineLabel} />
+                  <AboutInfoRow label="Engine status" value={nativeStatus?.engine ?? "Checking"} />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Database className="h-4 w-4" />
+                </div>
+                <p className="mt-4 text-base font-semibold text-foreground">Storage</p>
+                <div className="mt-4 space-y-3">
+                  <AboutInfoRow label="App data" value={shortenPath(diagnostics?.appDataDir)} />
+                  <AboutInfoRow label="Models" value={shortenPath(diagnostics?.modelsDir)} />
+                  <AboutInfoRow label="Recordings" value={shortenPath(diagnostics?.recordingsDir)} />
                 </div>
               </div>
             </div>
@@ -204,6 +241,11 @@ export function AboutPage() {
   )
 }
 
+function shortenPath(path: string | null | undefined): string {
+  if (!path) return "Checking"
+  return path.length > 44 ? `…${path.slice(-40)}` : path
+}
+
 function AboutLinkButton({ icon, href, label }: { icon: React.ReactNode; href: string; label: string }) {
   return (
     <a
@@ -214,11 +256,13 @@ function AboutLinkButton({ icon, href, label }: { icon: React.ReactNode; href: s
         event.preventDefault()
         openExternalLink(href)
       }}
-      className="inline-flex items-center gap-2 rounded-full border border-border bg-background/85 px-3.5 py-2 text-sm font-medium text-foreground backdrop-blur transition-colors hover:bg-muted"
+      className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
     >
       {icon}
       {label}
-      <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+      {href.startsWith("mailto:") ? null : (
+        <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+      )}
     </a>
   )
 }

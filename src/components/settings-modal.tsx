@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -17,17 +17,22 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  ArrowCounterClockwise,
   BookOpenText,
+  Check,
   CheckCircle2,
   Cpu,
   Database,
   Download,
   ExternalLink,
+  Globe,
   Keyboard,
+  ListBullet,
   LogIn,
   Mic,
   Monitor,
   Moon,
+  Pencil,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -77,11 +82,19 @@ import {
   type SettingsSection,
 } from "@/components/settings-sections";
 import { clearAppData, clearTranscripts } from "@/lib/db";
+import {
+  dedupeDictionaryEntries,
+  parseDictionaryEntries,
+  serializeDictionaryEntries,
+  type DictionaryEntry,
+} from "@/lib/dictionary";
 import { useAppStore } from "@/store/app-store";
 import type {
   AppTheme,
   CleanupLevel,
+  DictationLanguage,
   TranscriptFormattingMode,
+  TranscriptRetention,
   TriggerMode,
 } from "@/store/app-store";
 interface SettingsModalProps {
@@ -168,6 +181,12 @@ export function GeneralSection() {
     setTranscriptFormattingMode,
     cleanupLevel,
     setCleanupLevel,
+    language,
+    setLanguage,
+    voiceCommandsEnabled,
+    setVoiceCommandsEnabled,
+    whisperMode,
+    setWhisperMode,
   } = useAppStore();
   const [startAtLogin, setStartAtLoginState] = useState(false);
   const [startAtLoginLoading, setStartAtLoginLoading] = useState(true);
@@ -280,7 +299,7 @@ export function GeneralSection() {
         <SettingRow
           icon={<Sparkles className="h-4 w-4" />}
           title="Enhance icon"
-          description="Show a small local rewrite button near focused macOS text inputs."
+          description="Show the Enhance action in the dictation widget after you dictate, so you can rewrite the text you just typed."
           action={
             <Switch
               id="enhance-icon"
@@ -364,6 +383,67 @@ export function GeneralSection() {
           </div>
         </div>
         <div className="h-px bg-border" />
+        <div className="space-y-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <Globe className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">Dictation language</p>
+              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Choose the language Vox should transcribe. Auto detects the language from your speech. Hinglish (Hindi + English) works best with a multilingual model.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {languageOptions.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void setLanguage(option.value)}
+                className={cn(
+                  "rounded-xl border px-3 py-3 text-left transition-colors",
+                  language === option.value
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Sparkles className="h-4 w-4" />}
+          title="Voice commands"
+          description="Dictate instructions like &quot;make this professional&quot; or &quot;summarize this&quot; to transform the selected text instead of pasting the words."
+          action={
+            <Switch
+              id="voice-commands"
+              aria-label="Voice commands"
+              checked={voiceCommandsEnabled}
+              onCheckedChange={(checked) => void setVoiceCommandsEnabled(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Mic className="h-4 w-4" />}
+          title="Whisper mode"
+          description="Boost quiet or whispered speech so it transcribes reliably. Great for quiet environments."
+          action={
+            <Switch
+              id="whisper-mode"
+              aria-label="Whisper mode"
+              checked={whisperMode}
+              onCheckedChange={(checked) => void setWhisperMode(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
         <SettingRow
           icon={<LogIn className="h-4 w-4" />}
           title="Start at login"
@@ -431,17 +511,44 @@ const cleanupLevelOptions: Array<{
   {
     value: "light",
     label: "Light",
-    description: "Fix spelling, capitalization, punctuation, and remove clear filler words.",
+    description: "Instant rule-based cleanup: remove fillers and self-corrections, fix capitalization. No AI model needed.",
   },
   {
     value: "medium",
     label: "Medium",
-    description: "Remove filler words and self-corrections, fix grammar, and make sentences concise.",
+    description: "Rule-based cleanup plus AI: remove filler words and self-corrections, fix grammar, and make sentences concise.",
   },
   {
     value: "high",
     label: "High",
-    description: "Aggressive rewrite: rephrase for clarity and format into paragraphs and lists.",
+    description: "Rule-based cleanup plus AI rewrite: rephrase for clarity and format into paragraphs and lists.",
+  },
+];
+
+const languageOptions: Array<{
+  value: DictationLanguage;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "auto",
+    label: "Auto",
+    description: "Detect the language from your speech automatically.",
+  },
+  {
+    value: "en",
+    label: "English",
+    description: "Transcribe English. Works with all models.",
+  },
+  {
+    value: "hi",
+    label: "Hindi",
+    description: "Transcribe Hindi. Requires a multilingual model.",
+  },
+  {
+    value: "hinglish",
+    label: "Hinglish",
+    description: "Hindi + English mix. Requires a multilingual model.",
   },
 ];
 
@@ -849,6 +956,183 @@ export function DictionarySection() {
     </div>
   );
 }
+
+export function SnippetsSection() {
+  const { snippets, addSnippet, updateSnippet, removeSnippet } = useAppStore();
+  const [triggerInput, setTriggerInput] = useState("");
+  const [expansionInput, setExpansionInput] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editTrigger, setEditTrigger] = useState("");
+  const [editExpansion, setEditExpansion] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAdd = async () => {
+    const trigger = triggerInput.trim();
+    const expansion = expansionInput.trim();
+    if (!trigger || !expansion) return;
+    setError(null);
+    setMessage(null);
+    try {
+      await addSnippet(trigger, expansion);
+      setTriggerInput("");
+      setExpansionInput("");
+      setMessage(`Snippet "${trigger}" added.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const startEdit = (id: number, trigger: string, expansion: string) => {
+    setEditingId(id);
+    setEditTrigger(trigger);
+    setEditExpansion(expansion);
+  };
+
+  const saveEdit = async (id: number) => {
+    const trigger = editTrigger.trim();
+    const expansion = editExpansion.trim();
+    if (!trigger || !expansion) return;
+    setError(null);
+    try {
+      await updateSnippet(id, trigger, expansion);
+      setEditingId(null);
+      setMessage(`Snippet "${trigger}" updated.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRemove = async (id: number, trigger: string) => {
+    setError(null);
+    try {
+      await removeSnippet(id);
+      setMessage(`Snippet "${trigger}" removed.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Snippets"
+        description="Voice-triggered text expansion. Say the trigger while dictating and Vox replaces it with the expansion."
+      />
+      <SettingsCard className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <ListBullet className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">New snippet</p>
+              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Example: trigger &quot;my email&quot; expands to &quot;rajeshwar@example.com&quot; whenever you dictate it.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Input
+              aria-label="Trigger phrase"
+              placeholder="Trigger phrase (e.g. my email)"
+              value={triggerInput}
+              onChange={(event) => setTriggerInput(event.target.value)}
+            />
+            <Input
+              aria-label="Expansion text"
+              placeholder="Expansion text (e.g. rajeshwar@example.com)"
+              value={expansionInput}
+              onChange={(event) => setExpansionInput(event.target.value)}
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={() => void handleAdd()}
+            disabled={!triggerInput.trim() || !expansionInput.trim()}
+          >
+            <Plus className="h-4 w-4" />
+            Add snippet
+          </Button>
+        </div>
+        {message && (
+          <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">{message}</p>
+        )}
+        {error && (
+          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+        )}
+        <div className="h-px bg-border" />
+        {snippets.length > 0 ? (
+          <div className="space-y-2">
+            {snippets.map((snippet) => (
+              <div key={snippet.id} className="rounded-xl border border-border bg-background p-3">
+                {editingId === snippet.id ? (
+                  <div className="space-y-2">
+                    <Input
+                      aria-label="Trigger phrase"
+                      value={editTrigger}
+                      onChange={(event) => setEditTrigger(event.target.value)}
+                    />
+                    <Input
+                      aria-label="Expansion text"
+                      value={editExpansion}
+                      onChange={(event) => setEditExpansion(event.target.value)}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => void saveEdit(snippet.id)}
+                        disabled={!editTrigger.trim() || !editExpansion.trim()}
+                      >
+                        <Check className="h-4 w-4" />
+                        Save
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setEditingId(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">&quot;{snippet.trigger}&quot;</p>
+                      <p className="mt-0.5 break-words text-xs text-muted-foreground">{snippet.expansion}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => startEdit(snippet.id, snippet.trigger, snippet.expansion)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => void handleRemove(snippet.id, snippet.trigger)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="pt-1 text-xs text-muted-foreground">
+              {snippets.length} {snippets.length === 1 ? "snippet" : "snippets"} expanded in new transcriptions.
+            </p>
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-border bg-background px-3 py-4 text-center text-xs text-muted-foreground">
+            No snippets yet. Add one above to start expanding dictated phrases.
+          </p>
+        )}
+      </SettingsCard>
+    </div>
+  );
+}
 export function DataSection() {
   const {
     errorReportingEnabled,
@@ -1009,6 +1293,112 @@ export function DataSection() {
     </div>
   );
 }
+
+export function PrivacySection() {
+  const {
+    privacyMode,
+    setPrivacyMode,
+    transcriptRetention,
+    setTranscriptRetention,
+    errorReportingEnabled,
+    setErrorReportingEnabled,
+  } = useAppStore();
+
+  const retentionOptions: Array<{
+    value: TranscriptRetention;
+    label: string;
+    description: string;
+  }> = [
+    { value: "forever", label: "Forever", description: "Keep transcripts until you delete them." },
+    { value: "7", label: "7 days", description: "Auto-delete transcripts older than a week." },
+    { value: "30", label: "30 days", description: "Auto-delete transcripts older than a month." },
+    { value: "90", label: "90 days", description: "Auto-delete transcripts older than three months." },
+  ];
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Privacy"
+        description="Control what Vox keeps on this device. All processing is local — audio and transcripts never leave your machine."
+      />
+      <SettingsCard className="space-y-4">
+        <SettingRow
+          icon={<ShieldCheck className="h-4 w-4" />}
+          title="Privacy mode"
+          description="Disables error reporting and auto-deletes transcripts after 7 days. Raw audio is never stored."
+          action={
+            <Switch
+              id="privacy-mode"
+              aria-label="Privacy mode"
+              checked={privacyMode}
+              onCheckedChange={(checked) => void setPrivacyMode(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <div className="space-y-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <Database className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">Transcript retention</p>
+              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Automatically delete transcripts older than the selected period. Applied on app launch and when the library opens.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {retentionOptions.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void setTranscriptRetention(option.value)}
+                className={cn(
+                  "rounded-xl border px-3 py-3 text-left transition-colors",
+                  transcriptRetention === option.value
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<ShieldCheck className="h-4 w-4" />}
+          title="Error reporting"
+          description="Send anonymized crash reports to help fix bugs. Transcript text is never included."
+          action={
+            <Switch
+              id="error-reporting"
+              aria-label="Error reporting"
+              checked={errorReportingEnabled}
+              disabled={privacyMode}
+              onCheckedChange={(checked) => void setErrorReportingEnabled(checked)}
+            />
+          }
+        />
+        <div className="rounded-xl border border-border bg-background px-3 py-3 text-[11px] leading-5 text-muted-foreground">
+          <p className="font-medium text-foreground">What Vox stores</p>
+          <p className="mt-1">
+            • Raw audio is deleted immediately after transcription — it is never kept on disk.
+          </p>
+          <p className="mt-1">
+            • Transcripts are stored locally in SQLite and never leave this device.
+          </p>
+          <p className="mt-1">
+            • Whisper and AI cleanup models run fully on-device.
+          </p>
+        </div>
+      </SettingsCard>
+    </div>
+  );
+}
 function ConfirmDataAction({
   title,
   description,
@@ -1049,41 +1439,6 @@ function ConfirmDataAction({
       </AlertDialogContent>
     </AlertDialog>
   );
-}
-interface DictionaryEntry {
-  word: string;
-  hint: string;
-  category: string;
-}
-function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
-  return dictionary
-    .split("\n")
-    .flatMap((line) => {
-      const parts = line.split("|").map((part) => part.trim());
-      if (parts.length > 1) {
-        return [{ word: parts[0], hint: parts[1] ?? "", category: parts[2] || "General" }];
-      }
-      return line
-        .split(",")
-        .map((word) => word.trim())
-        .filter(Boolean)
-        .map((word) => ({ word, hint: "", category: "General" }));
-    })
-    .filter((entry) => entry.word);
-}
-function serializeDictionaryEntries(entries: DictionaryEntry[]) {
-  return entries
-    .map((entry) => [entry.word, entry.hint, entry.category].join(" | "))
-    .join("\n");
-}
-function dedupeDictionaryEntries(entries: DictionaryEntry[]) {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    const key = entry.word.toLocaleLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 function dictionaryEntryKey(entry: DictionaryEntry) {
   return `${entry.word}|${entry.hint}|${entry.category}`;
@@ -1320,6 +1675,10 @@ export function ShortcutsSection() {
   const { hotkey, setHotkey, triggerMode, setTriggerMode } = useAppStore();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [justRefreshed, setJustRefreshed] = useState(false);
+  const [livePulse, setLivePulse] = useState(false);
+  const refreshingRef = useRef(false);
   const [toast, setToast] = useState<{
     title: string;
     detail?: string;
@@ -1333,26 +1692,45 @@ export function ShortcutsSection() {
     const timeout = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-  const refreshDiagnostics = async () => {
+  const refreshDiagnostics = useCallback(async (opts?: { silent?: boolean }) => {
+    if (refreshingRef.current) return;
+    if (!opts?.silent) {
+      refreshingRef.current = true;
+      setRefreshing(true);
+      setJustRefreshed(false);
+    }
     try {
       const next = await getHotkeyDiagnostics();
       setDiagnostics(next);
+      if (opts?.silent) {
+        // Auto-refresh: a brief pulse so the user sees the data update.
+        setLivePulse(true);
+        window.setTimeout(() => setLivePulse(false), 500);
+      } else {
+        setJustRefreshed(true);
+        window.setTimeout(() => setJustRefreshed(false), 1400);
+      }
     } catch (err) {
       setHotkeyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!opts?.silent) {
+        refreshingRef.current = false;
+        setRefreshing(false);
+      }
     }
-  };
+  }, []);
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      void refreshDiagnostics();
+      void refreshDiagnostics({ silent: true });
     }, 0);
     const interval = window.setInterval(() => {
-      void refreshDiagnostics();
+      void refreshDiagnostics({ silent: true });
     }, 3000);
     return () => {
       window.clearTimeout(timeout);
       window.clearInterval(interval);
     };
-  }, []);
+  }, [refreshDiagnostics]);
   const handleSaveHotkey = async (shortcut: string) => {
     try {
       await setGlobalShortcut(shortcut);
@@ -1406,7 +1784,9 @@ export function ShortcutsSection() {
           detail:
             diagnostics.triggerMode === "pushToTalk"
               ? "Hold to record, release to transcribe"
-              : "Press once to start, press again to stop",
+              : diagnostics.triggerMode === "handsFree"
+                ? "Continuous dictation — text appears as you speak"
+                : "Press once to start, press again to stop",
         },
         {
           label: "Text insertion",
@@ -1467,11 +1847,11 @@ export function ShortcutsSection() {
               Trigger mode
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Choose whether the hotkey toggles recording or works while held.
+              Choose how the hotkey controls dictation.
             </p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {(["toggle", "pushToTalk"] as TriggerMode[]).map((mode) => (
+          <div className="grid gap-2 sm:grid-cols-3">
+            {(["toggle", "pushToTalk", "handsFree"] as TriggerMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => void handleTriggerModeChange(mode)}
@@ -1483,12 +1863,18 @@ export function ShortcutsSection() {
                 )}
               >
                 <span className="block text-sm font-medium">
-                  {mode === "toggle" ? "Toggle" : "Push to talk"}
+                  {mode === "toggle"
+                    ? "Toggle"
+                    : mode === "pushToTalk"
+                      ? "Push to talk"
+                      : "Hands-free"}
                 </span>
                 <span className="mt-1 block leading-4 text-muted-foreground">
                   {mode === "toggle"
                     ? "Press once to start, press again to stop."
-                    : "Hold to record, release to transcribe."}
+                    : mode === "pushToTalk"
+                      ? "Hold to record, release to transcribe."
+                      : "Press once to start; text is inserted as you speak."}
                 </span>
               </button>
             ))}
@@ -1509,20 +1895,56 @@ export function ShortcutsSection() {
       </SettingsCard>
       <SettingsCard className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-foreground">
-              Hotkey diagnostics
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Shows why the global shortcut may not start listening.
-            </p>
+          <div className="flex min-w-0 items-center gap-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Hotkey diagnostics
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Shows why the global shortcut may not start listening.
+              </p>
+            </div>
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-opacity",
+                livePulse && "opacity-60"
+              )}
+              title="Diagnostics refresh automatically every 3 seconds"
+            >
+              <span
+                className={cn(
+                  "size-1.5 rounded-full bg-primary",
+                  livePulse && "animate-pulse"
+                )}
+              />
+              Live
+            </span>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void refreshDiagnostics()}>
-            Refresh
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshDiagnostics()}
+            disabled={refreshing}
+            aria-live="polite"
+            className="min-w-[104px] justify-center"
+          >
+            {refreshing ? (
+              <Spinner className="size-3.5" />
+            ) : justRefreshed ? (
+              <Check className="size-3.5" />
+            ) : (
+              <ArrowCounterClockwise className="size-3.5" />
+            )}
+            {refreshing ? "Refreshing…" : justRefreshed ? "Updated" : "Refresh"}
           </Button>
         </div>
         {diagnostics ? (
-          <div className="space-y-2">
+          <div
+            className={cn(
+              "space-y-2 transition-opacity duration-300",
+              livePulse && "opacity-60"
+            )}
+          >
             {diagnosticsRows.map((row) => (
               <div
                 key={row.label}
@@ -1641,8 +2063,12 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         return <ModelsSection />;
       case "dictionary":
         return <DictionarySection />;
+      case "snippets":
+        return <SnippetsSection />;
       case "data":
         return <DataSection />;
+      case "privacy":
+        return <PrivacySection />;
       case "permissions":
         return <PermissionsSection />;
       case "shortcuts":

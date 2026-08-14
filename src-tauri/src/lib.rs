@@ -5,7 +5,10 @@ use std::{
     io::BufWriter,
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -62,6 +65,7 @@ extern "C" {}
 #[cfg(target_os = "macos")]
 mod event_tap;
 mod text_enhancement;
+mod custom_models;
 
 #[cfg(not(target_os = "macos"))]
 mod event_tap {
@@ -471,7 +475,6 @@ struct FocusedInputSnapshot {
     id: String,
     app_name: Option<String>,
     text: String,
-    frame: InputFrame,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -489,9 +492,59 @@ struct PresentedEnhanceOverlay {
 }
 
 #[derive(Default)]
+struct LanguageState {
+    /// User's preferred dictation language: "auto", "en", "hi", "hinglish", …
+    language: Mutex<String>,
+}
+
+/// A voice-triggered text expansion: when the trigger phrase appears in a
+/// transcript, it is replaced with the expansion.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Snippet {
+    trigger: String,
+    expansion: String,
+}
+
+#[derive(Default)]
+struct SnippetsState {
+    snippets: Mutex<Vec<Snippet>>,
+}
+
+#[derive(Default)]
 struct RecorderState {
     session: Mutex<Option<RecordingSession>>,
     audio_bars: Arc<Mutex<[f32; 7]>>,
+    /// Voice-activity state updated by the audio callback; used by hands-free
+    /// mode to detect utterance boundaries.
+    vad: Arc<VadState>,
+    /// Serializes hands-free segment transcription so concurrent Whisper
+    /// invocations never compete for CPU/GPU or spike memory.
+    segment_transcribe_lock: Mutex<()>,
+    /// Whisper mode: boosts quiet/whispered speech in the recording path.
+    whisper_mode: Arc<AtomicBool>,
+    /// Rolling window of normalized samples used to compute the widget's audio
+    /// bars. A window (~200 ms) gives the 7 bars real temporal variation from
+    /// speech, instead of near-identical values from a single short buffer.
+    bar_window: Arc<Mutex<Vec<f32>>>,
+}
+
+/// Voice-activity detection state shared between the audio callback (writer)
+/// and the hands-free monitor thread (reader).
+struct VadState {
+    /// When sound was last heard above the speech threshold.
+    last_sound_at: Mutex<Instant>,
+    /// Whether any speech has been detected in the current segment.
+    has_speech: AtomicBool,
+}
+
+impl Default for VadState {
+    fn default() -> Self {
+        Self {
+            last_sound_at: Mutex::new(Instant::now()),
+            has_speech: AtomicBool::new(false),
+        }
+    }
 }
 
 struct RecordingSession {
@@ -501,6 +554,10 @@ struct RecordingSession {
     started_at: Instant,
     stream: cpal::Stream,
     writer: SharedWriter,
+    /// WAV format captured at session start; reused when hands-free mode
+    /// rotates segment files.
+    channels: u16,
+    sample_rate: u32,
 }
 
 #[derive(Serialize)]
@@ -539,6 +596,8 @@ struct TranscriptionResult {
     duration_seconds: Option<u64>,
     /// Raw transcription before AI cleanup, when cleanup was applied.
     raw_text: Option<String>,
+    /// Language actually used for transcription (auto-detected or pinned).
+    language: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -547,6 +606,12 @@ struct WidgetEvent {
     mode: &'static str,
     message: String,
     elapsed_seconds: Option<u64>,
+    /// When true, the widget shows an Enhance action + close button (done state).
+    show_enhance: bool,
+    /// Active app + window title captured at recording start, so the widget can
+    /// show the user what context Vox detected ("In Visual Studio Code · file.ts").
+    app_name: Option<String>,
+    window_title: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -635,6 +700,7 @@ struct TextInsertionDiagnostics {
 pub enum TriggerMode {
     Toggle,
     PushToTalk,
+    HandsFree,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -650,6 +716,7 @@ impl From<TriggerMode> for event_tap::TriggerMode {
         match m {
             TriggerMode::Toggle => event_tap::TriggerMode::Toggle,
             TriggerMode::PushToTalk => event_tap::TriggerMode::PushToTalk,
+            TriggerMode::HandsFree => event_tap::TriggerMode::HandsFree,
         }
     }
 }
@@ -659,6 +726,7 @@ impl From<event_tap::TriggerMode> for TriggerMode {
         match m {
             event_tap::TriggerMode::Toggle => TriggerMode::Toggle,
             event_tap::TriggerMode::PushToTalk => TriggerMode::PushToTalk,
+            event_tap::TriggerMode::HandsFree => TriggerMode::HandsFree,
         }
     }
 }
@@ -793,13 +861,15 @@ fn recording_status(state: State<'_, RecorderState>) -> Result<RecordingStatus, 
 fn start_recording(
     app: AppHandle,
     state: State<'_, RecorderState>,
+    hands_free: Option<bool>,
 ) -> Result<RecordingStatus, String> {
-    start_recording_inner(&app, &state)
+    start_recording_inner(&app, &state, hands_free.unwrap_or(false))
 }
 
 fn start_recording_inner(
     app: &AppHandle,
     state: &RecorderState,
+    hands_free: bool,
 ) -> Result<RecordingStatus, String> {
     let mut session = state
         .session
@@ -844,12 +914,18 @@ fn start_recording_inner(
     if let Ok(mut bars) = state.audio_bars.lock() {
         *bars = [0.0; 7];
     }
+    if let Ok(mut window) = state.bar_window.lock() {
+        window.clear();
+    }
 
     let stream = build_input_stream(
         &device,
         &config,
         Arc::clone(&writer),
         Arc::clone(&state.audio_bars),
+        Arc::clone(&state.vad),
+        Arc::clone(&state.whisper_mode),
+        Arc::clone(&state.bar_window),
     )?;
     stream.play().map_err(|error| error.to_string())?;
 
@@ -866,7 +942,16 @@ fn start_recording_inner(
         started_at,
         stream,
         writer,
+        channels: spec.channels,
+        sample_rate: spec.sample_rate,
     });
+
+    if hands_free {
+        // Reset VAD so the first segment starts clean.
+        state.vad.has_speech.store(false, Ordering::Relaxed);
+        *state.vad.last_sound_at.lock().unwrap() = Instant::now();
+        spawn_hands_free_monitor(app.clone());
+    }
 
     Ok(RecordingStatus {
         is_recording: true,
@@ -1147,6 +1232,30 @@ fn set_enhancement_model(
 }
 
 #[tauri::command]
+fn list_custom_models(app: AppHandle) -> Vec<custom_models::CustomModel> {
+    let mut models = custom_models::load_registry(&app);
+    for model in &mut models {
+        let path = custom_models::model_file_path(&app, &model.name, model.kind);
+        model.downloaded = path.map(|path| path.exists()).unwrap_or(false);
+    }
+    models
+}
+
+#[tauri::command]
+async fn add_custom_model(
+    app: AppHandle,
+    url: String,
+    kind: Option<custom_models::CustomModelKind>,
+) -> Result<custom_models::CustomModel, String> {
+    custom_models::add_custom_model(&app, &url, kind).await
+}
+
+#[tauri::command]
+fn delete_custom_model(app: AppHandle, name: String) -> Result<(), String> {
+    custom_models::delete_custom_model(&app, &name)
+}
+
+#[tauri::command]
 async fn enhance_focused_input(
     app: AppHandle,
     snapshot_id: String,
@@ -1159,47 +1268,81 @@ async fn enhance_focused_input(
         .clone()
         .filter(|snapshot| snapshot.id == snapshot_id)
         .ok_or_else(|| "Focused input changed. Try again.".to_string())?;
+    enhance_snapshot(&app, &snapshot).await
+}
 
+/// Enhance the currently focused text field, capturing it fresh. Used by the
+/// widget's Enhance action so it works even when the focus watcher is idle.
+#[tauri::command]
+async fn enhance_focused_input_now(app: AppHandle) -> Result<EnhanceResult, String> {
+    let snapshot = focused_input_snapshot().ok_or_else(|| {
+        "No text field focused. Focus the text you want to enhance and try again.".to_string()
+    })?;
+    enhance_snapshot(&app, &snapshot).await
+}
+
+/// Core enhance flow shared by the focused-input overlay and the widget action.
+async fn enhance_snapshot(
+    app: &AppHandle,
+    snapshot: &FocusedInputSnapshot,
+) -> Result<EnhanceResult, String> {
     let original = snapshot.text.trim().to_string();
     if original.is_empty() {
         return Err("Focused input is empty".to_string());
     }
 
-    show_enhance_overlay_state(&app, "enhancing", "Enhancing...");
+    show_enhance_overlay_state(app, "enhancing", "Enhancing...");
     let model_name = app
         .state::<EnhancePreferencesState>()
         .model_name
         .lock()
         .map_err(|_| "Enhance preferences unavailable".to_string())?
         .clone();
-    let models_dir = text_enhancement_models_dir(&app)?;
+    let models_dir = text_enhancement_models_dir(app)?;
     let inference_original = original.clone();
     let enhanced = tauri::async_runtime::spawn_blocking(move || {
         text_enhancement::enhance_text(&models_dir, Some(&model_name), &inference_original)
     })
     .await
     .map_err(|error| format!("Enhancement task failed: {error}"))?
-    .inspect_err(|error| show_enhance_overlay_state(&app, "error", error))?;
+    .inspect_err(|error| show_enhance_overlay_state(app, "error", error))?;
 
-    let focus_is_unchanged = focused_input_snapshot()
-        .map(|current| current.id == snapshot.id)
-        .unwrap_or(false);
+    // Only fail if the user moved to a DIFFERENT editable field with text.
+    // If no editable field is focused now (e.g. the enhance overlay took focus
+    // while the model ran), proceed with the captured snapshot.
+    let focus_is_unchanged = match focused_input_snapshot() {
+        Some(current) => current.id == snapshot.id,
+        None => true,
+    };
     if !focus_is_unchanged {
         let error = "Focused input changed before enhancement finished. Try again.";
-        show_enhance_overlay_state(&app, "error", error);
+        show_enhance_overlay_state(app, "error", error);
         return Err(error.to_string());
     }
 
+    // Hide the enhance overlay so focus returns to the target app before the
+    // replacement reads the focused element (the overlay window can steal
+    // focus while the model runs).
+    hide_enhance_overlay(app);
+    thread::sleep(Duration::from_millis(80));
+
     let replacement_method = replace_focused_input_text(&enhanced)
-        .inspect_err(|error| show_enhance_overlay_state(&app, "error", error))?;
-    show_enhance_overlay_state(&app, "success", "Enhanced");
+        .inspect_err(|error| show_enhance_overlay_state(app, "error", error))?;
+    show_enhance_overlay_state(app, "success", "Enhanced");
 
     Ok(EnhanceResult {
         original_length: original.chars().count(),
         enhanced_length: enhanced.chars().count(),
-        app_name: snapshot.app_name,
+        app_name: snapshot.app_name.clone(),
         replacement_method,
     })
+}
+
+/// Dismiss the floating widget (close button on the Enhance action).
+#[tauri::command]
+fn hide_widget(app: AppHandle) -> Result<(), String> {
+    hide_widget_after_delay(app, 0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1234,6 +1377,18 @@ async fn apply_transform(
     preset: Option<text_enhancement::TransformPreset>,
     custom_instruction: Option<String>,
 ) -> Result<(), String> {
+    run_transform_and_paste(&app, text, preset, custom_instruction).await
+}
+
+/// Run the local enhancement model on `text` and paste the result at the cursor,
+/// restoring the original clipboard afterwards. Shared by the AI Transform
+/// overlay and voice commands.
+async fn run_transform_and_paste(
+    app: &AppHandle,
+    text: String,
+    preset: Option<text_enhancement::TransformPreset>,
+    custom_instruction: Option<String>,
+) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("No text to transform".to_string());
     }
@@ -1244,7 +1399,7 @@ async fn apply_transform(
         .lock()
         .map_err(|_| "Enhance preferences unavailable".to_string())?
         .clone();
-    let models_dir = text_enhancement_models_dir(&app)?;
+    let models_dir = text_enhancement_models_dir(app)?;
     let inference_text = text.clone();
     let inference_custom = custom_instruction.clone();
 
@@ -1266,7 +1421,7 @@ async fn apply_transform(
         .set_text(&transformed)
         .map_err(|error| format!("Could not write transformed text to clipboard: {error}"))?;
 
-    hide_main_window(&app);
+    hide_main_window(app);
     thread::sleep(Duration::from_millis(150));
     simulate_paste_shortcut()?;
     thread::sleep(Duration::from_millis(150));
@@ -1281,6 +1436,204 @@ async fn apply_transform(
     }
 
     Ok(())
+}
+
+// ── Voice commands ────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct VoiceCommandsState {
+    enabled: Mutex<bool>,
+}
+
+#[tauri::command]
+fn set_whisper_mode(enabled: bool, state: State<'_, RecorderState>) -> Result<(), String> {
+    state.whisper_mode.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_voice_commands_enabled(
+    enabled: bool,
+    state: State<'_, VoiceCommandsState>,
+) -> Result<(), String> {
+    *state
+        .enabled
+        .lock()
+        .map_err(|_| "Voice commands state unavailable".to_string())? = enabled;
+    Ok(())
+}
+
+/// A dictated instruction that should act on the selected text instead of being
+/// pasted as a transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoiceCommand {
+    Transform(text_enhancement::TransformPreset),
+    Custom(&'static str),
+}
+
+/// Detect whether a dictated utterance is a voice command. Commands are short
+/// (≤ 10 words) and match a known instruction pattern; anything longer is
+/// treated as normal dictation.
+fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
+    let lower = text
+        .trim()
+        .trim_end_matches(['.', '!', '?', ',', ';', ':'])
+        .to_ascii_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.is_empty() || words.len() > 10 {
+        return None;
+    }
+    let joined = words.join(" ");
+
+    if contains_any(
+        &joined,
+        &[
+            "make this professional",
+            "make it professional",
+            "make this more professional",
+            "make it more professional",
+            "more professional",
+            "professional tone",
+            "professional",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "make this casual",
+            "make it casual",
+            "make this friendly",
+            "make it friendly",
+            "more casual",
+            "casual tone",
+            "friendly tone",
+            "casual",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Casual));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "make this shorter",
+            "make it shorter",
+            "make this concise",
+            "make it concise",
+            "make this more concise",
+            "make it more concise",
+            "shorten this",
+            "shorten it",
+            "shorter",
+            "concise",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Concise));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "summarize this",
+            "summarize it",
+            "summarize",
+            "give me a summary",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "fix the grammar",
+            "fix grammar",
+            "fix this grammar",
+            "fix the grammar of this",
+            "correct the grammar",
+            "fix grammar of this",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::FixGrammar));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "polish this",
+            "polish it",
+            "make this better",
+            "make it better",
+            "improve this",
+            "improve it",
+            "clean this up",
+            "clean up this text",
+            "polish",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Polish));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "translate to hindi",
+            "translate this to hindi",
+            "translate it to hindi",
+            "hindi translation",
+        ],
+    ) {
+        return Some(VoiceCommand::Custom(
+            "Translate the text to Hindi. Preserve the original meaning and language. Return only the translated text.",
+        ));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "translate to english",
+            "translate this to english",
+            "translate it to english",
+        ],
+    ) {
+        return Some(VoiceCommand::Custom(
+            "Translate the text to English. Preserve the original meaning and language. Return only the translated text.",
+        ));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "turn this into bullet points",
+            "make this bullet points",
+            "as bullet points",
+            "bullet points",
+        ],
+    ) {
+        return Some(VoiceCommand::Custom(
+            "Rewrite the text as a bullet list of key points. Preserve the original language. Return only the bullet list.",
+        ));
+    }
+    if contains_any(
+        &joined,
+        &[
+            "make this an ai prompt",
+            "make this a prompt",
+            "prompt engineer",
+            "turn this into a prompt",
+            "as an ai prompt",
+        ],
+    ) {
+        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::PromptEngine));
+    }
+    None
+}
+
+/// Execute a voice command: capture the selected text, run the matching
+/// transform, and paste the result. The command utterance itself is never
+/// inserted.
+async fn execute_voice_command(app: AppHandle, command: VoiceCommand) -> Result<(), String> {
+    let selected = capture_selected_text(app.clone()).await?;
+    let (preset, custom) = match command {
+        VoiceCommand::Transform(preset) => (Some(preset), None),
+        VoiceCommand::Custom(instruction) => (None, Some(instruction.to_string())),
+    };
+    run_transform_and_paste(&app, selected, preset, custom).await
 }
 
 fn simulate_copy_shortcut() -> Result<(), String> {
@@ -1366,12 +1719,17 @@ fn transcribe_recording_inner(
     );
     let context_prompt =
         build_context_prompt(context_app_name.as_deref(), context_window_title.as_deref());
-    let text = whisper::transcribe(
+    let language = app
+        .try_state::<LanguageState>()
+        .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
+        .unwrap_or_else(|| "auto".to_string());
+    let (text, detected_language) = whisper::transcribe(
         &models_dir,
         &audio_path,
         model_name.as_deref(),
         context_dictionary.as_deref(),
         context_prompt.as_deref(),
+        Some(&language),
     )?;
     let formatting_mode = app
         .try_state::<TranscriptFormattingState>()
@@ -1398,27 +1756,96 @@ fn transcribe_recording_inner(
             .try_state::<CleanupLevelState>()
             .and_then(|state| state.level.lock().ok().map(|level| *level))
             .unwrap_or(text_enhancement::CleanupLevel::None);
-        if cleanup_level.is_enabled() && is_selected_enhancement_model_available(&app) {
-            let enhance_model = app
-                .try_state::<EnhancePreferencesState>()
-                .and_then(|state| state.model_name.lock().ok().map(|name| name.clone()))
-                .unwrap_or_default();
-            let enhance_models_dir = text_enhancement_models_dir(&app).ok();
-            if let Some(models_dir) = enhance_models_dir {
-                show_widget(&app, "transcribing", "Cleaning up…");
-                match text_enhancement::enhance_text_with_level(
-                    &models_dir,
-                    Some(&enhance_model),
-                    &final_text,
-                    cleanup_level,
-                ) {
-                    Ok(cleaned) if cleaned != final_text => {
-                        raw_text = Some(final_text);
-                        final_text = cleaned;
+        if cleanup_level.is_enabled() {
+            // Rule-based fast path: filler removal, self-correction collapse,
+            // repeated-word fixes, and capitalization — instant, no LLM.
+            let fast_cleaned = fast_cleanup(&final_text);
+            if fast_cleaned != final_text {
+                raw_text = Some(final_text);
+                final_text = fast_cleaned;
+            }
+
+            // Drop meta-commentary asides ("there is lots of noise and some
+            // other text that should not be there") so they never reach the
+            // output, regardless of model size.
+            let without_meta = remove_meta_commentary(&final_text);
+            if without_meta != final_text {
+                if raw_text.is_none() {
+                    raw_text = Some(final_text);
+                }
+                final_text = without_meta;
+            }
+
+            // LLM pass only for Medium/High. Light is fully rule-based so it
+            // feels instant; the model stays for grammar/concision/rewrites.
+            if cleanup_level != text_enhancement::CleanupLevel::Light
+                && is_selected_enhancement_model_available(&app)
+            {
+                let enhance_model = app
+                    .try_state::<EnhancePreferencesState>()
+                    .and_then(|state| state.model_name.lock().ok().map(|name| name.clone()))
+                    .unwrap_or_default();
+                let enhance_models_dir = text_enhancement_models_dir(&app).ok();
+                if let Some(models_dir) = enhance_models_dir {
+                    // App-context writing style (Gmail → professional email, Slack →
+                    // casual, Notion → structured document) steers the cleanup model.
+                    let mut style: Option<String> = app_style_instruction(
+                        context_app_name.as_deref(),
+                        context_window_title.as_deref(),
+                    )
+                    .map(str::to_string);
+                    // File Awareness: tell the model which file the user is
+                    // working on so prompts can reference it.
+                    if let Some(file) = current_file_from_title(context_window_title.as_deref()) {
+                        style = Some(
+                            style.unwrap_or_default()
+                                + &format!(" The user is working on the file {file}."),
+                        );
                     }
-                    _ => {}
+                    // Whisper mode: tell the model the source was whispered so it
+                    // transcribes faithfully instead of "fixing" quiet fragments.
+                    if app
+                        .try_state::<RecorderState>()
+                        .map(|state| state.whisper_mode.load(Ordering::Relaxed))
+                        .unwrap_or(false)
+                    {
+                        style = Some(
+                            style.unwrap_or_default()
+                                + " The speaker is whispering; transcribe faithfully without adding or rephrasing words.",
+                        );
+                    }
+                    show_widget(&app, "transcribing", "Cleaning up…");
+                    match text_enhancement::enhance_text_with_level(
+                        &models_dir,
+                        Some(&enhance_model),
+                        &final_text,
+                        cleanup_level,
+                        style.as_deref(),
+                    ) {
+                        Ok(cleaned) if cleaned != final_text => {
+                            raw_text = Some(final_text);
+                            final_text = cleaned;
+                        }
+                        _ => {}
+                    }
                 }
             }
+        }
+    }
+
+    // Voice-triggered snippets: replace trigger phrases ("my email") with
+    // their expansions ("rajeshwar@example.com") in the final text.
+    let snippets = app
+        .try_state::<SnippetsState>()
+        .and_then(|state| state.snippets.lock().ok().map(|snippets| snippets.clone()))
+        .unwrap_or_default();
+    if !snippets.is_empty() {
+        let expanded = expand_snippets(&final_text, &snippets);
+        if expanded != final_text {
+            if raw_text.is_none() {
+                raw_text = Some(final_text);
+            }
+            final_text = expanded;
         }
     }
 
@@ -1428,7 +1855,65 @@ fn transcribe_recording_inner(
         app_name: context_app_name,
         duration_seconds: None,
         raw_text,
+        language: detected_language,
     })
+}
+
+/// Replace snippet trigger phrases in `text` with their expansions.
+/// Case-insensitive, word-boundary-aware ("my email" in "send it to my email"
+/// matches, but "my email" inside "my emailaddress" does not).
+fn expand_snippets(text: &str, snippets: &[Snippet]) -> String {
+    let mut result = text.to_string();
+    for snippet in snippets {
+        let trigger = snippet.trigger.trim();
+        if trigger.is_empty() {
+            continue;
+        }
+        result = replace_phrase(&result, trigger, &snippet.expansion);
+    }
+    result
+}
+
+fn replace_phrase(text: &str, trigger: &str, expansion: &str) -> String {
+    let lower_text = text.to_lowercase();
+    let lower_trigger = trigger.to_lowercase();
+    let mut result = String::with_capacity(text.len() + expansion.len());
+    let mut search_from = 0;
+
+    while let Some(relative) = lower_text[search_from..].find(&lower_trigger) {
+        let abs = search_from + relative;
+        let before_ok = abs == 0
+            || !text[..abs]
+                .chars()
+                .next_back()
+                .map(|ch| ch.is_alphanumeric())
+                .unwrap_or(false);
+        let after = abs + trigger.len();
+        let after_ok = after >= text.len()
+            || !text[after..]
+                .chars()
+                .next()
+                .map(|ch| ch.is_alphanumeric())
+                .unwrap_or(false);
+
+        if before_ok && after_ok {
+            result.push_str(&text[search_from..abs]);
+            result.push_str(expansion);
+            search_from = after;
+        } else {
+            // Not a word-boundary match: copy the char at the match start and
+            // advance one char so no text is dropped.
+            let next = text[abs..]
+                .chars()
+                .next()
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(1);
+            result.push_str(&text[search_from..abs + next]);
+            search_from = abs + next;
+        }
+    }
+    result.push_str(&text[search_from..]);
+    result
 }
 
 #[tauri::command]
@@ -1498,6 +1983,28 @@ fn set_dictionary(dictionary: String, state: State<'_, DictionaryState>) -> Resu
         .content
         .lock()
         .map_err(|_| "Dictionary state unavailable".to_string())? = dictionary;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_language(language: String, state: State<'_, LanguageState>) -> Result<(), String> {
+    let language = language.trim().to_ascii_lowercase();
+    if language.is_empty() {
+        return Err("Language cannot be empty".to_string());
+    }
+    *state
+        .language
+        .lock()
+        .map_err(|_| "Language state unavailable".to_string())? = language;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_snippets(snippets: Vec<Snippet>, state: State<'_, SnippetsState>) -> Result<(), String> {
+    *state
+        .snippets
+        .lock()
+        .map_err(|_| "Snippets state unavailable".to_string())? = snippets;
     Ok(())
 }
 
@@ -1708,6 +2215,9 @@ pub fn run() {
             current: Mutex::new(DEFAULT_SHORTCUT.to_string()),
         })
         .manage(DictionaryState::default())
+        .manage(LanguageState::default())
+        .manage(SnippetsState::default())
+        .manage(VoiceCommandsState::default())
         .manage(TranscriptFormattingState::default())
         .manage(CleanupLevelState::default())
         .manage(WidgetPreferencesState {
@@ -1750,8 +2260,6 @@ pub fn run() {
                 configure_floating_window(&enhance);
             }
 
-            start_enhance_focus_watcher(app.handle().clone());
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1790,6 +2298,15 @@ pub fn run() {
             get_trigger_mode,
             set_trigger_mode,
             set_dictionary,
+            set_language,
+            set_snippets,
+            set_whisper_mode,
+            set_voice_commands_enabled,
+            list_custom_models,
+            add_custom_model,
+            delete_custom_model,
+            enhance_focused_input_now,
+            hide_widget,
             set_transcript_formatting_mode,
             get_cleanup_level,
             set_cleanup_level,
@@ -1973,8 +2490,8 @@ fn handle_hotkey_press(app: AppHandle) {
             .unwrap_or(false);
 
         match mode {
-            TriggerMode::Toggle => {
-                // Toggle: press once to start, press again to stop + transcribe
+            TriggerMode::Toggle | TriggerMode::HandsFree => {
+                // Toggle / Hands-free: press once to start, press again to stop + transcribe
                 if is_recording {
                     stop_and_transcribe(app.clone());
                 } else {
@@ -2053,8 +2570,20 @@ fn start_recording_flow(app: AppHandle) {
     // device warms up in the background.
     show_widget(&app, "recording", "Listening…");
 
-    match start_recording_inner(&app, &recorder_state) {
+    let hands_free = app
+        .try_state::<EventTapHandle>()
+        .map(|handle| {
+            let mode: TriggerMode = (*handle.state.mode.lock().unwrap()).into();
+            mode == TriggerMode::HandsFree
+        })
+        .unwrap_or(false);
+
+    match start_recording_inner(&app, &recorder_state, hands_free) {
         Ok(_) => {
+            // Re-emit the widget state now that the session carries the active
+            // app context, so the "In <app> · <file>" line appears instantly
+            // instead of waiting for the first timer tick.
+            show_widget_with_elapsed(&app, "recording", "Listening…", None);
             start_recording_timer(app.clone());
             refresh_tray_menu(&app);
         }
@@ -2080,6 +2609,7 @@ fn stop_and_transcribe(app: AppHandle) {
             );
             show_widget(&app, "transcribing", "Transcribing…");
 
+            let audio_path = status.path.clone();
             if let Some(path) = status.path {
                 // Yield briefly so the webview can render "transcribing" before
                 // the heavy Whisper work blocks the event loop.
@@ -2109,6 +2639,37 @@ fn stop_and_transcribe(app: AppHandle) {
                             return;
                         }
 
+                        // Voice commands: a short instruction ("make this
+                        // professional", "summarize this", …) acts on the
+                        // selected text instead of being pasted as a transcript.
+                        let voice_commands_enabled = app
+                            .try_state::<VoiceCommandsState>()
+                            .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
+                            .unwrap_or(true);
+                        if voice_commands_enabled {
+                            if let Some(command) = detect_voice_command(&result.text) {
+                                eprintln!("[vox] stop_and_transcribe: voice command detected");
+                                show_widget(&app, "transcribing", "Applying command…");
+                                let app_clone = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    match execute_voice_command(app_clone.clone(), command).await {
+                                        Ok(()) => {
+                                            show_widget(&app_clone, "done", "Command applied");
+                                            hide_widget_after_delay(app_clone.clone(), 1200);
+                                            refresh_tray_menu(&app_clone);
+                                        }
+                                        Err(error) => {
+                                            eprintln!("[vox] voice command error: {error}");
+                                            show_widget(&app_clone, "error", &error);
+                                            hide_widget_after_delay(app_clone.clone(), 4000);
+                                            refresh_tray_menu(&app_clone);
+                                        }
+                                    }
+                                });
+                                return;
+                            }
+                        }
+
                         let text = result.text.clone();
                         show_widget(&app, "done", "Pasting transcript…");
                         let _ = app.emit("vox-transcription-complete", result);
@@ -2121,11 +2682,29 @@ fn stop_and_transcribe(app: AppHandle) {
                             eprintln!("[vox] stop_and_transcribe: pasted transcript");
                         }
 
-                        hide_widget_after_delay(app.clone(), 1200);
+                        // Offer the Enhance action in the widget only when the
+                        // Enhance icon setting is on AND the model is available;
+                        // otherwise dismiss after a short delay.
+                        if is_enhance_icon_enabled(&app) && is_selected_enhancement_model_available(&app) {
+                            show_widget_done_with_enhance(&app, "Enhanced?");
+                        } else {
+                            hide_widget_after_delay(app.clone(), 1200);
+                        }
                         refresh_tray_menu(&app);
                     }
                     Err(error) => {
                         eprintln!("[vox] stop_and_transcribe: transcription error: {error}");
+                        // Keep the recording file and surface the error with its
+                        // path so the main window can offer a Retry action.
+                        let _ = app.emit(
+                            "vox-transcription-error",
+                            serde_json::json!({
+                                "path": audio_path,
+                                "error": error,
+                                "appName": status.app_name,
+                                "windowTitle": status.window_title,
+                            }),
+                        );
                         show_widget(&app, "error", &error);
                         hide_widget_after_delay(app.clone(), 4000);
                         refresh_tray_menu(&app);
@@ -2164,6 +2743,132 @@ fn cancel_recording(app: AppHandle) {
         Err(error) => {
             show_widget(&app, "error", &error);
             hide_widget_after_delay(app.clone(), 4000);
+        }
+    }
+}
+
+// ── Hands-free mode ───────────────────────────────────────────────────────────
+
+/// How long the user must stay silent before the current utterance is
+/// considered complete and transcribed.
+const HANDS_FREE_SILENCE_TIMEOUT: Duration = Duration::from_millis(1400);
+
+/// Spawns a monitor that watches voice activity and rotates recording segments
+/// on silence. Each finalized segment is transcribed on its own thread and
+/// inserted progressively. The loop exits when the recording session ends.
+fn spawn_hands_free_monitor(app: AppHandle) {
+    thread::spawn(move || {
+        let recorder_state = app.state::<RecorderState>();
+        loop {
+            let session_active = recorder_state
+                .session
+                .lock()
+                .map(|session| session.is_some())
+                .unwrap_or(false);
+            if !session_active {
+                break;
+            }
+
+            let (silence_elapsed, has_speech) = {
+                let silence = recorder_state.vad.last_sound_at.lock().unwrap().elapsed();
+                let has_speech = recorder_state.vad.has_speech.load(Ordering::Relaxed);
+                (silence, has_speech)
+            };
+
+            if has_speech && silence_elapsed >= HANDS_FREE_SILENCE_TIMEOUT {
+                if let Some(segment_path) = finalize_hands_free_segment(&recorder_state) {
+                    recorder_state.vad.has_speech.store(false, Ordering::Relaxed);
+                    *recorder_state.vad.last_sound_at.lock().unwrap() = Instant::now();
+                    let app_clone = app.clone();
+                    thread::spawn(move || {
+                        transcribe_hands_free_segment(app_clone, segment_path);
+                    });
+                }
+            }
+
+            thread::sleep(Duration::from_millis(200));
+        }
+    });
+}
+
+/// Finalize the current hands-free segment WAV and start a fresh one. Returns
+/// the path of the finalized segment.
+fn finalize_hands_free_segment(state: &RecorderState) -> Option<PathBuf> {
+    let mut session_guard = state.session.lock().ok()?;
+    let session = session_guard.as_mut()?;
+
+    let writer = session.writer.lock().ok()?.take();
+    if let Some(writer) = writer {
+        writer.finalize().ok()?;
+    }
+    let finalized_path = session.path.clone();
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let new_path = session
+        .path
+        .with_file_name(format!("vox-recording-{timestamp}.wav"));
+    let spec = WavSpec {
+        channels: session.channels,
+        sample_rate: session.sample_rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let new_writer = WavWriter::create(&new_path, spec).ok()?;
+    *session.writer.lock().ok()? = Some(new_writer);
+    session.path = new_path;
+
+    Some(finalized_path)
+}
+
+/// Transcribe a hands-free segment, insert it into the active app, and emit an
+/// event so the main window can save it to history. Runs on its own thread and
+/// serializes against other segment transcriptions.
+fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
+    let recorder_state = app.state::<RecorderState>();
+    let _guard = recorder_state
+        .segment_transcribe_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    let dictionary = app
+        .try_state::<DictionaryState>()
+        .and_then(|state| state.content.lock().ok().map(|content| content.clone()))
+        .filter(|content| !content.trim().is_empty());
+
+    let (app_name, window_title) = {
+        let session = recorder_state.session.lock().ok();
+        match session.as_ref().and_then(|session| session.as_ref()) {
+            Some(session) => (session.app_name.clone(), session.window_title.clone()),
+            None => (None, None),
+        }
+    };
+
+    let path_str = path.to_string_lossy().to_string();
+    match transcribe_recording_inner(&app, path_str, None, dictionary, app_name, window_title) {
+        Ok(result) => {
+            if !is_blank_transcription(&result.text) {
+                let text = result.text.clone();
+                let _ = app.emit(
+                    "vox-hands-free-segment",
+                    serde_json::json!({
+                        "text": result.text,
+                        "rawText": result.raw_text,
+                        "appName": result.app_name,
+                        "language": result.language,
+                    }),
+                );
+                if let Err(error) = paste_text(&text) {
+                    eprintln!("[vox] hands-free paste error: {error}");
+                }
+            }
+            let _ = fs::remove_file(&path);
+        }
+        Err(error) => {
+            eprintln!("[vox] hands-free segment transcription error: {error}");
+            let _ = fs::remove_file(&path);
         }
     }
 }
@@ -2342,15 +3047,40 @@ fn build_context_prompt(app_name: Option<&str>, window_title: Option<&str>) -> O
     let window_title = window_title
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let current_file = current_file_from_title(window_title);
+
+    let file_suffix = current_file
+        .map(|file| format!(" The user is working on the file {file}."))
+        .unwrap_or_default();
 
     match (app_name, window_title) {
         (Some(app), Some(title)) => Some(format!(
-            "The user is dictating in {app}, window title \"{title}\"."
+            "The user is dictating in {app}, window title \"{title}\".{file_suffix}"
         )),
-        (Some(app), None) => Some(format!("The user is dictating in {app}.")),
-        (None, Some(title)) => Some(format!("The active window title is \"{title}\".")),
+        (Some(app), None) => Some(format!("The user is dictating in {app}.{file_suffix}")),
+        (None, Some(title)) => Some(format!(
+            "The active window title is \"{title}\".{file_suffix}"
+        )),
         (None, None) => None,
     }
+}
+
+/// Extract the current file name from an editor window title like
+/// "user.service.ts — my-project — Visual Studio Code" (File Awareness).
+/// Returns `None` when the leading segment doesn't look like a file.
+fn current_file_from_title(window_title: Option<&str>) -> Option<String> {
+    let title = window_title?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let first = title
+        .split(" — ")
+        .next()
+        .and_then(|part| part.split(" - ").next())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())?;
+    let looks_like_file = first.contains('.') || first.contains('/') || first.contains('\\');
+    looks_like_file.then(|| first.to_string())
 }
 
 fn build_context_dictionary(
@@ -2380,6 +3110,12 @@ fn developer_context_entries(app_name: Option<&str>, window_title: Option<&str>)
     .to_lowercase();
 
     let mut entries = Vec::new();
+
+    // File Awareness: bias the ASR model toward the file currently open in the
+    // editor ("user.service.ts — my-project — Visual Studio Code").
+    if let Some(file) = current_file_from_title(window_title) {
+        entries.push(format!("{file} | | File"));
+    }
 
     // Git / source-control context (editors, terminals, GitHub, etc.)
     if contains_any(
@@ -2727,10 +3463,562 @@ fn format_transcript_for_context(
     };
 
     if !should_format_for_developer {
-        return (trimmed.to_string(), false);
+        return (format_general_transcript(trimmed), false);
     }
 
     (format_developer_transcript(trimmed), true)
+}
+
+// ── General (non-developer) smart formatting ─────────────────────────────────
+
+/// Rule-based smart formatting for non-developer dictation: numbered lists,
+/// bullet lists, and headings. Runs before AI cleanup so the model sees a
+/// pre-structured transcript, and also when cleanup is disabled. Falls back to
+/// the normalized input when no pattern is detected.
+fn format_general_transcript(text: &str) -> String {
+    let normalized = text
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if let Some(formatted) = format_numbered_list(&normalized) {
+        return formatted;
+    }
+    if let Some(formatted) = format_bullet_list(&normalized) {
+        return formatted;
+    }
+    if let Some(formatted) = format_heading(&normalized) {
+        return formatted;
+    }
+    normalized
+}
+
+/// Ordinal markers that reliably signal a dictated numbered list.
+const NUMBERED_LIST_MARKERS: &[&str] = &[
+    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth",
+    "fourthly", "fifth", "fifthly", "sixth", "seventh", "eighth", "ninth",
+    "tenth", "lastly", "finally", "one", "two", "three", "four", "five",
+    "six", "seven", "eight", "nine", "ten",
+];
+
+/// "first install dependencies second run migration third start the server" →
+/// "1. Install dependencies\n2. Run migration\n3. Start the server".
+fn format_numbered_list(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split(' ').collect();
+    let mut markers: Vec<usize> = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let lower = word
+            .trim_end_matches(['.', ',', ':', ';'])
+            .to_ascii_lowercase();
+        if NUMBERED_LIST_MARKERS.contains(&lower.as_str()) {
+            markers.push(index);
+        }
+    }
+    if markers.len() < 2 {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    for (index, &marker_pos) in markers.iter().enumerate() {
+        let start = marker_pos + 1;
+        let end = markers.get(index + 1).copied().unwrap_or(words.len());
+        let item = words[start..end].join(" ").trim().to_string();
+        if item.is_empty() {
+            continue;
+        }
+        lines.push(format!("• {}", capitalize_first(&item)));
+    }
+    if lines.len() < 2 {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+/// Phrases that introduce a dictated bullet list.
+const BULLET_LIST_INTENTS: &[&str] = &[
+    "things i need",
+    "things to do",
+    "my list",
+    "to do list",
+    "to do",
+    "todo",
+    "shopping list",
+    "remember",
+    "reminders",
+    "key points",
+    "bullet points",
+    "my goals",
+    "my plan",
+    "my priorities",
+    "my tasks",
+    "what i need",
+    "here's what",
+    "here is what",
+    "agenda items",
+    "items",
+    "ideas",
+    "topics",
+    "notes",
+];
+
+/// "things I need milk eggs bread" → "• Milk\n• Eggs\n• Bread".
+fn format_bullet_list(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let intent = BULLET_LIST_INTENTS
+        .iter()
+        .find(|phrase| lower.starts_with(*phrase))?;
+    let rest = text[intent.len()..].trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    // Prefer comma/semicolon separation; fall back to " and " for spoken lists.
+    let mut items: Vec<String> = rest
+        .split(|ch| ch == ',' || ch == ';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    if items.len() < 2 {
+        items = rest
+            .split(" and ")
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    if items.len() < 2 {
+        return None;
+    }
+
+    let lines = items
+        .iter()
+        .map(|item| format!("• {}", capitalize_first(item)))
+        .collect::<Vec<_>>();
+    Some(lines.join("\n"))
+}
+
+/// Explicit heading commands and well-known short heading phrases.
+const HEADING_COMMANDS: &[&str] = &["title", "heading"];
+const HEADING_PHRASES: &[&str] = &[
+    "project requirements",
+    "meeting notes",
+    "meeting summary",
+    "agenda",
+    "action items",
+    "next steps",
+    "key takeaways",
+    "release notes",
+    "weekly report",
+    "daily standup",
+    "readme",
+    "changelog",
+    "summary",
+    "overview",
+    "introduction",
+    "conclusion",
+    "decisions",
+    "follow-ups",
+    "todo",
+    "to do list",
+    "my notes",
+    "project plan",
+    "roadmap",
+    "goals",
+    "objectives",
+    "requirements",
+    "proposal",
+];
+
+/// "title project requirements" → "## Project Requirements".
+fn format_heading(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+
+    // Explicit command: "title X" / "heading X" → "## Title Case X".
+    for command in HEADING_COMMANDS {
+        if let Some(rest) = lower.strip_prefix(command) {
+            let rest = rest.trim();
+            if !rest.is_empty() && rest.split_whitespace().count() <= 8 {
+                return Some(format!("## {}", title_case(rest)));
+            }
+        }
+    }
+
+    // Known heading phrase when the utterance is short (a heading, not prose).
+    if text.split_whitespace().count() <= 6 {
+        for phrase in HEADING_PHRASES {
+            if lower == *phrase {
+                return Some(format!("## {}", title_case(text)));
+            }
+        }
+    }
+    None
+}
+
+fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn title_case(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(capitalize_first)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ── Rule-based fast cleanup ───────────────────────────────────────────────────
+
+/// Deterministic, instant cleanup that runs without the LLM: removes filler
+/// words, collapses self-corrections, fixes stutters, and normalizes
+/// capitalization. Operates line-by-line so list/paragraph structure survives.
+fn fast_cleanup(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = collapse_self_corrections(line);
+            let line = remove_fillers(&line);
+            let line = fix_repeated_words(&line);
+            normalize_capitalization(&line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Sentences that describe the dictation/writing process itself rather than
+/// actual content. These are spoken as asides while dictating ("there is lots
+/// of noise and some other text that should not be there", "I want to write an
+/// essay about my life") and should not appear in the final output.
+const META_COMMENTARY_PATTERNS: &[&str] = &[
+    "should not be there",
+    "that should not be there",
+    "lots of noise",
+    "lots of ease",
+    "some other text",
+    "i want to write an essay",
+    "i want to write the essay",
+    "i want to write a essay",
+    "i am dictating",
+    "i'm dictating",
+    "ignore that",
+    "ignore this",
+    "remove that",
+    "remove this",
+    "delete that",
+    "delete this",
+    "scratch that",
+    "forget that",
+    "forget it",
+    "never mind",
+    "that was wrong",
+    "i said that wrong",
+    "let me start over",
+    "let me redo",
+    "let me try again",
+];
+
+/// Drop sentences that are meta-commentary about the dictation itself, so
+/// asides like "there is lots of noise and some other text that should not be
+/// there" never end up in the transcript. Conservative: only removes whole
+/// sentences that clearly match a known meta pattern.
+fn remove_meta_commentary(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for sentence in split_sentences(text) {
+        let lower = sentence.to_lowercase();
+        let is_meta = META_COMMENTARY_PATTERNS
+            .iter()
+            .any(|pattern| lower.contains(pattern));
+        if !is_meta {
+            kept.push(sentence);
+        }
+    }
+    kept.join(" ")
+}
+
+/// Split text into sentences on `.`, `!`, or `?` followed by whitespace or
+/// end-of-input. Keeps the punctuation attached to each sentence.
+fn split_sentences(text: &str) -> Vec<&str> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    for (index, ch) in text.char_indices() {
+        if !matches!(ch, '.' | '!' | '?') {
+            continue;
+        }
+        let after = index + ch.len_utf8();
+        let ends_sentence = after >= bytes.len()
+            || text[after..]
+                .chars()
+                .next()
+                .map(|next| next.is_whitespace())
+                .unwrap_or(true);
+        if ends_sentence {
+            let sentence = text[start..after].trim();
+            if !sentence.is_empty() {
+                sentences.push(sentence);
+            }
+            start = after;
+        }
+    }
+    let tail = text[start..].trim();
+    if !tail.is_empty() {
+        sentences.push(tail);
+    }
+    sentences
+}
+
+/// Filler words that are never meaningful and can be removed anywhere.
+const SAFE_FILLERS: &[&str] = &["um", "uh", "er", "erm", "hmm", "ah", "uhh", "uhm", "mm"];
+
+/// Filler phrases removed only when they sit between commas ("I was, like,
+/// going") so legitimate uses ("I like this") survive.
+const COMMA_FILLERS: &[&str] = &["like", "you know", "i mean", "sort of", "kind of", "basically", "literally"];
+
+fn remove_fillers(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        let lower = word
+            .trim_matches(|ch: char| !ch.is_alphanumeric())
+            .to_ascii_lowercase();
+
+        let mut is_filler = false;
+        // Multi-word comma fillers: "you know", "i mean", "sort of", …
+        if index + 1 < words.len() {
+            let next = words[index + 1]
+                .trim_matches(|ch: char| !ch.is_alphanumeric())
+                .to_ascii_lowercase();
+            let pair = format!("{lower} {next}");
+            if COMMA_FILLERS.contains(&pair.as_str()) && is_between_commas(&words, index) {
+                is_filler = true;
+                index += 2;
+            }
+        }
+        if !is_filler && SAFE_FILLERS.contains(&lower.as_str()) {
+            is_filler = true;
+            index += 1;
+        }
+        if !is_filler && COMMA_FILLERS.contains(&lower.as_str()) && is_between_commas(&words, index) {
+            is_filler = true;
+            index += 1;
+        }
+
+        if is_filler {
+            // Drop a dangling comma left on the previous word ("was, like," → "was").
+            if let Some(prev) = out.last_mut() {
+                if prev.ends_with(',') {
+                    prev.pop();
+                }
+            }
+            continue;
+        }
+
+        out.push(word.to_string());
+        index += 1;
+    }
+    out.join(" ")
+}
+
+/// True when the word at `index` is flanked by commas (or a comma before and
+/// sentence end after), e.g. "I was, like, going".
+fn is_between_commas(words: &[&str], index: usize) -> bool {
+    let before = words
+        .get(index.wrapping_sub(1))
+        .map(|word| word.ends_with(','))
+        .unwrap_or(false);
+    let after = words
+        .get(index + 1)
+        .map(|word| word.starts_with(','))
+        .unwrap_or(false);
+    before || after
+}
+
+/// Markers that signal a spoken self-correction. Only honored when preceded by
+/// an ellipsis ("...") so ordinary uses ("I actually think…") survive.
+const CORRECTION_MARKERS: &[&str] = &[
+    "actually", "wait", "sorry", "no wait", "i mean", "correction", "scratch that",
+    "no, actually", "no actually", "never mind", "forget it",
+];
+
+/// "Let's meet at 2 PM... actually 3 PM." → "Let's meet at 3 PM."
+/// Keeps the text before the last ellipsis-preceded correction marker, drops
+/// the phrase the correction replaces (matched by word count), and appends the
+/// correction.
+fn collapse_self_corrections(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut best: Option<(usize, usize)> = None; // (prefix_end, marker_end)
+
+    for marker in CORRECTION_MARKERS {
+        let mut search_from = 0;
+        while let Some(relative) = lower[search_from..].find(marker) {
+            let abs = search_from + relative;
+            let before = text[..abs].trim_end();
+            let ellipsis_len = if before.ends_with("...") {
+                Some(3)
+            } else if before.ends_with('…') {
+                Some(1)
+            } else {
+                None
+            };
+            if let Some(len) = ellipsis_len {
+                best = Some((before.len() - len, abs + marker.len()));
+            }
+            search_from = abs + marker.len();
+        }
+    }
+
+    match best {
+        Some((prefix_end, marker_end)) => {
+            let prefix = text[..prefix_end].trim_end();
+            let correction = text[marker_end..]
+                .trim()
+                .trim_start_matches(|ch: char| ch == ',' || ch == ' ' || ch == '.')
+                .trim();
+            if correction.is_empty() {
+                return text.to_string();
+            }
+
+            // The correction replaces the last N words of the prefix, where N is
+            // the correction's own word count ("2 PM" → "3 PM").
+            let correction_words = correction.split_whitespace().count();
+            let prefix_words: Vec<&str> = prefix.split_whitespace().collect();
+            let keep_count = prefix_words.len().saturating_sub(correction_words);
+            let mut result = prefix_words[..keep_count].join(" ");
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(correction);
+            capitalize_first(&result)
+        }
+        None => text.to_string(),
+    }
+}
+
+/// Remove adjacent repeated words (stutters): "I I want" → "I want".
+fn fix_repeated_words(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(words.len());
+    for word in words {
+        if let Some(last) = out.last() {
+            if last.eq_ignore_ascii_case(word) {
+                continue;
+            }
+        }
+        out.push(word);
+    }
+    out.join(" ")
+}
+
+/// Capitalize the first letter of the text and after sentence-ending
+/// punctuation (". ", "! ", "? ").
+fn normalize_capitalization(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut result = String::with_capacity(text.len());
+    let mut capitalize_next = true;
+
+    while let Some(ch) = chars.next() {
+        if capitalize_next && ch.is_alphabetic() {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+
+        if matches!(ch, '.' | '!' | '?') {
+            // Only treat as sentence end when followed by whitespace/end.
+            if let Some(&next) = chars.peek() {
+                if next.is_whitespace() {
+                    capitalize_next = true;
+                }
+            } else {
+                capitalize_next = false;
+            }
+        }
+    }
+    result
+}
+
+// ── App-context writing styles ────────────────────────────────────────────────
+
+/// Map the active application to a writing-style instruction used by AI cleanup
+/// (Context Awareness). Returns `None` for developer contexts and unknown apps.
+fn app_style_instruction(app_name: Option<&str>, window_title: Option<&str>) -> Option<&'static str> {
+    let context = format!(
+        "{} {}",
+        app_name.unwrap_or_default(),
+        window_title.unwrap_or_default()
+    )
+    .to_lowercase();
+
+    // Developer apps are handled by developer mode; don't apply prose styles.
+    if is_developer_app_context(app_name, window_title, true) {
+        return None;
+    }
+
+    if contains_any(
+        &context,
+        &[
+            "gmail",
+            "apple mail",
+            "mail",
+            "outlook",
+            "spark",
+            "superhuman",
+            "thunderbird",
+            "yahoo mail",
+            "proton mail",
+            "fastmail",
+        ],
+    ) {
+        return Some(
+            "Write in a professional email style: polite, clear, well-structured, with complete sentences and standard email conventions.",
+        );
+    }
+    if contains_any(
+        &context,
+        &[
+            "slack",
+            "discord",
+            "teams",
+            "messages",
+            "whatsapp",
+            "telegram",
+            "signal",
+            "imessage",
+            "messenger",
+        ],
+    ) {
+        return Some(
+            "Write in a casual conversational style: friendly, concise, natural, with short sentences and a relaxed tone.",
+        );
+    }
+    if contains_any(
+        &context,
+        &[
+            "notion",
+            "obsidian",
+            "google docs",
+            "docs",
+            "word",
+            "pages",
+            "bear",
+            "craft",
+            "evernote",
+            "apple notes",
+            "notes",
+        ],
+    ) {
+        return Some(
+            "Write in a structured document style: clear organization, well-structured paragraphs, and content suitable for a document.",
+        );
+    }
+    None
 }
 
 fn is_developer_app_context(
@@ -2749,6 +4037,10 @@ fn is_developer_app_context(
         return is_editable_focused;
     }
 
+    // Browsers are only treated as developer contexts when the window title
+    // carries a developer signal (localhost, GitHub, StackBlitz, file paths,
+    // etc.). Dictating into Gmail/Slack/Notion in a browser should get prose
+    // formatting and app-aware styles instead of developer formatting.
     contains_any(
         &context,
         &[
@@ -2759,13 +4051,6 @@ fn is_developer_app_context(
             "terminal",
             "iterm",
             "warp",
-            "google chrome",
-            "chrome",
-            "chromium",
-            "arc",
-            "safari",
-            "firefox",
-            "brave",
             "github",
             "gitlab",
             "codesandbox",
@@ -3606,7 +4891,6 @@ fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
         id,
         app_name,
         text,
-        frame,
     })
 }
 
@@ -3618,13 +4902,13 @@ fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
 #[cfg(target_os = "macos")]
 fn replace_focused_input_text(text: &str) -> Result<&'static str, String> {
     let Some(system) = OwnedAxElement::new(unsafe { AXUIElementCreateSystemWide() }) else {
-        return paste_text(text).map(|_| "typingFallback");
+        return replace_focused_input_text_fallback(text);
     };
 
     let Some(focused) = ax_copy_attribute(system.as_ref(), "AXFocusedUIElement")
         .and_then(|value| OwnedAxElement::new(value as AXUIElementRef))
     else {
-        return paste_text(text).map(|_| "typingFallback");
+        return replace_focused_input_text_fallback(text);
     };
     let value = CFString::new(text);
     let value_result = unsafe {
@@ -3638,13 +4922,42 @@ fn replace_focused_input_text(text: &str) -> Result<&'static str, String> {
     if value_result == 0 {
         Ok("accessibilityValue")
     } else {
-        paste_text(text).map(|_| "typingFallback")
+        replace_focused_input_text_fallback(text)
     }
+}
+
+/// Fallback replacement: select all in the focused field, then type the new
+/// text. Typing over a selection replaces it, so the original text is not
+/// duplicated (unlike a bare paste at the cursor).
+fn replace_focused_input_text_fallback(text: &str) -> Result<&'static str, String> {
+    simulate_select_all_shortcut()?;
+    // Give the app a moment to register the selection before typing.
+    thread::sleep(Duration::from_millis(60));
+    paste_text(text).map(|_| "typingFallback")
+}
+
+fn simulate_select_all_shortcut() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let modifier = if cfg!(target_os = "macos") {
+        Key::Meta
+    } else {
+        Key::Control
+    };
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Unicode('a'), Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
 fn replace_focused_input_text(text: &str) -> Result<&'static str, String> {
-    paste_text(text).map(|_| "typingFallback")
+    replace_focused_input_text_fallback(text)
 }
 
 #[cfg(target_os = "macos")]
@@ -3774,6 +5087,19 @@ fn show_widget_with_elapsed(
         return;
     }
 
+    // Attach the active app context (frontmost app + window title) captured at
+    // recording start so the widget can show what the user is doing right now.
+    let (app_name, window_title) = match app.try_state::<RecorderState>() {
+        Some(state) => {
+            let session = state.session.lock().ok();
+            match session.as_ref().and_then(|session| session.as_ref()) {
+                Some(session) => (session.app_name.clone(), session.window_title.clone()),
+                None => (None, None),
+            }
+        }
+        None => (None, None),
+    };
+
     if let Some(window) = app.get_webview_window("widget") {
         position_widget_bottom_right(&window);
         // Ensure the window is visible even if macOS hid it (e.g. after a focus change).
@@ -3788,10 +5114,80 @@ fn show_widget_with_elapsed(
                 mode,
                 message: message.to_string(),
                 elapsed_seconds,
+                show_enhance: false,
+                app_name,
+                window_title,
             },
         );
         // Do NOT steal focus — we need the previous app to keep focus for paste
     }
+}
+
+/// Show the widget in a "done" state with an Enhance action and a close button.
+/// Unlike the transient done state, this stays visible until dismissed or a new
+/// recording starts.
+fn show_widget_done_with_enhance(app: &AppHandle, message: &str) {
+    if !is_widget_enabled(app) {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("widget") {
+        position_widget_bottom_right(&window);
+        let _ = window.show();
+        order_overlay_front(app, "widget");
+        let _ = window.emit(
+            "vox-widget-state",
+            WidgetEvent {
+                mode: "done",
+                message: message.to_string(),
+                elapsed_seconds: None,
+                show_enhance: true,
+                app_name: None,
+                window_title: None,
+            },
+        );
+    }
+
+    // Dismissal monitor: hide the widget when the user types, presses Enter,
+    // moves focus, or after 10 seconds of inactivity.
+    let baseline = focused_input_snapshot();
+    let app_clone = app.clone();
+    thread::spawn(move || {
+        let start = Instant::now();
+        loop {
+            // A new recording replaces the widget; stop monitoring.
+            let is_recording = app_clone
+                .state::<RecorderState>()
+                .session
+                .lock()
+                .map(|session| session.is_some())
+                .unwrap_or(false);
+            if is_recording {
+                return;
+            }
+
+            // Auto-hide after 10 seconds if nothing was clicked.
+            if start.elapsed() >= Duration::from_secs(10) {
+                hide_widget_after_delay(app_clone.clone(), 0);
+                return;
+            }
+
+            // Dismiss when the user interacts with the target app: the focused
+            // input's text changed (typed / Enter) or focus moved elsewhere.
+            let current = focused_input_snapshot();
+            let changed = match (&baseline, &current) {
+                (Some(before), Some(after)) => before.id != after.id || before.text != after.text,
+                (Some(_), None) => true, // focus moved to a non-editable element
+                (None, Some(_)) => true, // a field became focused
+                (None, None) => false,   // still no editable field
+            };
+            if changed {
+                hide_widget_after_delay(app_clone.clone(), 0);
+                return;
+            }
+
+            thread::sleep(Duration::from_millis(300));
+        }
+    });
 }
 
 fn is_widget_enabled(app: &AppHandle) -> bool {
@@ -3879,38 +5275,6 @@ fn order_overlay_front(app: &AppHandle, label: &str) {
 #[cfg(not(target_os = "macos"))]
 fn order_overlay_front(_app: &AppHandle, _label: &str) {}
 
-fn start_enhance_focus_watcher(app: AppHandle) {
-    thread::spawn(move || loop {
-        refresh_enhance_overlay(&app);
-        thread::sleep(Duration::from_millis(350));
-    });
-}
-
-fn refresh_enhance_overlay(app: &AppHandle) {
-    if !is_enhance_icon_enabled(app) || !is_selected_enhancement_model_available(app) {
-        clear_focused_input_snapshot(app);
-        hide_enhance_overlay(app);
-        return;
-    }
-
-    let Some(snapshot) = focused_input_snapshot() else {
-        clear_focused_input_snapshot(app);
-        hide_enhance_overlay(app);
-        return;
-    };
-
-    if snapshot.text.trim().is_empty() {
-        clear_focused_input_snapshot(app);
-        hide_enhance_overlay(app);
-        return;
-    }
-
-    if let Ok(mut latest) = app.state::<FocusedInputSnapshotState>().latest.lock() {
-        *latest = Some(snapshot.clone());
-    }
-    show_enhance_overlay(app, &snapshot);
-}
-
 fn is_enhance_icon_enabled(app: &AppHandle) -> bool {
     app.try_state::<EnhancePreferencesState>()
         .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
@@ -3957,48 +5321,6 @@ fn clear_focused_input_snapshot(app: &AppHandle) {
     }
 }
 
-fn show_enhance_overlay(app: &AppHandle, snapshot: &FocusedInputSnapshot) {
-    let position = enhance_overlay_position(snapshot.frame);
-    let presentation = PresentedEnhanceOverlay {
-        snapshot_id: snapshot.id.clone(),
-        position,
-    };
-    let should_update = app
-        .try_state::<FocusedInputSnapshotState>()
-        .and_then(|state| {
-            state.presented.lock().ok().map(|mut presented| {
-                if presented.as_ref() == Some(&presentation) {
-                    false
-                } else {
-                    *presented = Some(presentation);
-                    true
-                }
-            })
-        })
-        .unwrap_or(true);
-    if !should_update {
-        return;
-    }
-
-    if let Some(window) = app.get_webview_window("enhance") {
-        let (x, y) = position;
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
-        let _ = window.show();
-        // Order the panel front even over full-screen apps (orderFrontRegardless,
-        // dispatched to the main thread).
-        order_overlay_front(app, "enhance");
-        let _ = window.emit(
-            "vox-enhance-overlay",
-            EnhanceOverlayEvent {
-                visible: true,
-                snapshot_id: Some(snapshot.id.clone()),
-                x,
-                y,
-            },
-        );
-    }
-}
-
 fn hide_enhance_overlay(app: &AppHandle) {
     let was_presented = app
         .try_state::<FocusedInputSnapshotState>()
@@ -4042,16 +5364,6 @@ fn show_enhance_overlay_state(app: &AppHandle, mode: &'static str, message: &str
     }
 }
 
-fn enhance_overlay_position(frame: InputFrame) -> (i32, i32) {
-    let x = frame.x + frame.width - 24.0;
-    let y = if frame.height < 36.0 {
-        frame.y - ((36.0 - frame.height) / 2.0)
-    } else {
-        frame.y - 10.0
-    };
-    (x.round() as i32, y.max(0.0).round() as i32)
-}
-
 fn position_widget_bottom_right(window: &WebviewWindow) {
     const MARGIN: i32 = 24;
 
@@ -4080,11 +5392,25 @@ fn position_widget_bottom_right(window: &WebviewWindow) {
     let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
 }
 
+/// Warn the user once a recording passes this length (seconds).
+const LONG_RECORDING_WARN_SECS: u64 = 600; // 10 minutes
+/// Hard cap: auto-stop and transcribe recordings longer than this (seconds) so
+/// a forgotten session can't run forever or balloon transcription memory.
+const MAX_RECORDING_SECS: u64 = 1800; // 30 minutes
+
 /// Spawn a background thread that emits audio levels (50 ms) and ticks the
 /// widget timer (once per second) while recording.
 fn start_recording_timer(app: AppHandle) {
     thread::spawn(move || {
         let mut ticks: u64 = 0;
+        let mut long_warned = false;
+        let hands_free = app
+            .try_state::<EventTapHandle>()
+            .map(|handle| {
+                let mode: TriggerMode = (*handle.state.mode.lock().unwrap()).into();
+                mode == TriggerMode::HandsFree
+            })
+            .unwrap_or(false);
         loop {
             thread::sleep(Duration::from_millis(50));
             ticks += 1;
@@ -4120,7 +5446,22 @@ fn start_recording_timer(app: AppHandle) {
             // Elapsed counter (every ~1 s)
             if ticks % 20 == 0 {
                 let elapsed = ticks / 20;
-                show_widget_with_elapsed(&app, "recording", "Listening…", Some(elapsed));
+                let message = if elapsed >= LONG_RECORDING_WARN_SECS && !long_warned {
+                    long_warned = true;
+                    "Long recording — transcription may take a while"
+                } else if hands_free {
+                    "Hands-free…"
+                } else {
+                    "Listening…"
+                };
+                show_widget_with_elapsed(&app, "recording", message, Some(elapsed));
+
+                // Hard cap: auto-stop very long sessions so a forgotten
+                // recording can't run forever.
+                if elapsed >= MAX_RECORDING_SECS {
+                    stop_and_transcribe(app.clone());
+                    break;
+                }
             }
         }
     });
@@ -4149,6 +5490,9 @@ fn hide_widget_after_delay(app: AppHandle, delay_ms: u64) {
                     mode: "idle",
                     message: String::new(),
                     elapsed_seconds: None,
+                    show_enhance: false,
+                    app_name: None,
+                    window_title: None,
                 },
             );
             thread::sleep(Duration::from_millis(450)); // wait for CSS fade (400ms)
@@ -4187,6 +5531,9 @@ fn build_input_stream(
     config: &cpal::SupportedStreamConfig,
     writer: SharedWriter,
     audio_bars: Arc<Mutex<[f32; 7]>>,
+    vad: Arc<VadState>,
+    whisper_mode: Arc<AtomicBool>,
+    bar_window: Arc<Mutex<Vec<f32>>>,
 ) -> Result<cpal::Stream, String> {
     let stream_config = config.clone().into();
     let on_error = |error| eprintln!("audio input stream error: {error}");
@@ -4194,12 +5541,16 @@ fn build_input_stream(
     match config.sample_format() {
         cpal::SampleFormat::F32 => {
             let bars = Arc::clone(&audio_bars);
+            let vad = Arc::clone(&vad);
+            let whisper_mode = Arc::clone(&whisper_mode);
+            let bar_window = Arc::clone(&bar_window);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[f32], _| {
-                        write_f32_samples(data, &writer);
-                        update_audio_bars(&bars, compute_bar_levels_f32(data));
+                        write_f32_samples(data, &writer, &whisper_mode);
+                        update_audio_bars(&bars, compute_bar_levels_f32_windowed(&bar_window, data));
+                        update_vad_f32(&vad, data);
                     },
                     on_error,
                     None,
@@ -4208,12 +5559,16 @@ fn build_input_stream(
         }
         cpal::SampleFormat::I16 => {
             let bars = Arc::clone(&audio_bars);
+            let vad = Arc::clone(&vad);
+            let whisper_mode = Arc::clone(&whisper_mode);
+            let bar_window = Arc::clone(&bar_window);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[i16], _| {
-                        write_i16_samples(data, &writer);
-                        update_audio_bars(&bars, compute_bar_levels_i16(data));
+                        write_i16_samples(data, &writer, &whisper_mode);
+                        update_audio_bars(&bars, compute_bar_levels_i16_windowed(&bar_window, data));
+                        update_vad_i16(&vad, data);
                     },
                     on_error,
                     None,
@@ -4222,12 +5577,16 @@ fn build_input_stream(
         }
         cpal::SampleFormat::U16 => {
             let bars = Arc::clone(&audio_bars);
+            let vad = Arc::clone(&vad);
+            let whisper_mode = Arc::clone(&whisper_mode);
+            let bar_window = Arc::clone(&bar_window);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[u16], _| {
-                        write_u16_samples(data, &writer);
-                        update_audio_bars(&bars, compute_bar_levels_u16(data));
+                        write_u16_samples(data, &writer, &whisper_mode);
+                        update_audio_bars(&bars, compute_bar_levels_u16_windowed(&bar_window, data));
+                        update_vad_u16(&vad, data);
                     },
                     on_error,
                     None,
@@ -4240,32 +5599,112 @@ fn build_input_stream(
     }
 }
 
-fn write_f32_samples(samples: &[f32], writer: &SharedWriter) {
+/// Speech threshold for VAD, expressed as RMS of normalized samples.
+/// Typical speech RMS is 0.02–0.1; quiet room noise is usually below 0.005.
+const VAD_SPEECH_RMS: f32 = 0.008;
+
+fn update_vad_f32(vad: &Arc<VadState>, samples: &[f32]) {
+    update_vad(vad, rms_f32(samples));
+}
+
+fn update_vad_i16(vad: &Arc<VadState>, samples: &[i16]) {
+    if samples.is_empty() {
+        return;
+    }
+    let sum = samples
+        .iter()
+        .map(|sample| {
+            let normalized = *sample as f32 / i16::MAX as f32;
+            normalized * normalized
+        })
+        .sum::<f32>();
+    update_vad(vad, (sum / samples.len() as f32).sqrt());
+}
+
+fn update_vad_u16(vad: &Arc<VadState>, samples: &[u16]) {
+    if samples.is_empty() {
+        return;
+    }
+    let sum = samples
+        .iter()
+        .map(|sample| {
+            let normalized = (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32;
+            normalized * normalized
+        })
+        .sum::<f32>();
+    update_vad(vad, (sum / samples.len() as f32).sqrt());
+}
+
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum = samples
+        .iter()
+        .map(|sample| {
+            let normalized = sample.clamp(-1.0, 1.0);
+            normalized * normalized
+        })
+        .sum::<f32>();
+    (sum / samples.len() as f32).sqrt()
+}
+
+fn update_vad(vad: &Arc<VadState>, rms: f32) {
+    if rms >= VAD_SPEECH_RMS {
+        if let Ok(mut last_sound_at) = vad.last_sound_at.lock() {
+            *last_sound_at = Instant::now();
+        }
+        vad.has_speech.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Whisper mode gain multiplier applied to recorded samples so quiet speech is
+/// captured above the ASR noise floor.
+const WHISPER_MODE_GAIN: f32 = 2.5;
+
+fn write_f32_samples(samples: &[f32], writer: &SharedWriter, whisper_mode: &AtomicBool) {
+    let boost = if whisper_mode.load(Ordering::Relaxed) {
+        WHISPER_MODE_GAIN
+    } else {
+        1.0
+    };
     if let Ok(mut writer) = writer.lock() {
         if let Some(writer) = writer.as_mut() {
             for sample in samples {
-                let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                let sample = (sample.clamp(-1.0, 1.0) * boost).clamp(-1.0, 1.0) * i16::MAX as f32;
+                let _ = writer.write_sample(sample as i16);
+            }
+        }
+    }
+}
+
+fn write_i16_samples(samples: &[i16], writer: &SharedWriter, whisper_mode: &AtomicBool) {
+    let boost = if whisper_mode.load(Ordering::Relaxed) {
+        WHISPER_MODE_GAIN
+    } else {
+        1.0
+    };
+    if let Ok(mut writer) = writer.lock() {
+        if let Some(writer) = writer.as_mut() {
+            for sample in samples {
+                let sample = (*sample as f32 * boost).clamp(-32768.0, 32767.0) as i16;
                 let _ = writer.write_sample(sample);
             }
         }
     }
 }
 
-fn write_i16_samples(samples: &[i16], writer: &SharedWriter) {
+fn write_u16_samples(samples: &[u16], writer: &SharedWriter, whisper_mode: &AtomicBool) {
+    let boost = if whisper_mode.load(Ordering::Relaxed) {
+        WHISPER_MODE_GAIN
+    } else {
+        1.0
+    };
     if let Ok(mut writer) = writer.lock() {
         if let Some(writer) = writer.as_mut() {
             for sample in samples {
-                let _ = writer.write_sample(*sample);
-            }
-        }
-    }
-}
-
-fn write_u16_samples(samples: &[u16], writer: &SharedWriter) {
-    if let Ok(mut writer) = writer.lock() {
-        if let Some(writer) = writer.as_mut() {
-            for sample in samples {
-                let sample = (*sample as i32 - i16::MAX as i32 - 1) as i16;
+                let sample = ((*sample as i32 - i16::MAX as i32 - 1) as f32 * boost)
+                    .clamp(-32768.0, 32767.0) as i16;
                 let _ = writer.write_sample(sample);
             }
         }
@@ -4290,19 +5729,63 @@ fn normalize_bar_level(measured: f32) -> f32 {
     }
 }
 
-fn compute_bar_levels_f32(samples: &[f32]) -> [f32; 7] {
-    compute_bar_levels(samples, |sample| sample.clamp(-1.0, 1.0))
+/// Rolling window length in samples (~200 ms at 48 kHz; longer at lower rates).
+const BAR_WINDOW_SAMPLES: usize = 9600;
+
+fn push_bar_window_f32(window: &Arc<Mutex<Vec<f32>>>, samples: &[f32]) {
+    if let Ok(mut window) = window.lock() {
+        window.extend_from_slice(samples);
+        if window.len() > BAR_WINDOW_SAMPLES {
+            let excess = window.len() - BAR_WINDOW_SAMPLES;
+            window.drain(0..excess);
+        }
+    }
 }
 
-fn compute_bar_levels_i16(samples: &[i16]) -> [f32; 7] {
-    compute_bar_levels(samples, |sample| *sample as f32 / i16::MAX as f32)
+fn push_bar_window_i16(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) {
+    if let Ok(mut window) = window.lock() {
+        window.extend(samples.iter().map(|sample| *sample as f32 / i16::MAX as f32));
+        if window.len() > BAR_WINDOW_SAMPLES {
+            let excess = window.len() - BAR_WINDOW_SAMPLES;
+            window.drain(0..excess);
+        }
+    }
 }
 
-fn compute_bar_levels_u16(samples: &[u16]) -> [f32; 7] {
-    compute_bar_levels(samples, |sample| {
-        (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32
-    })
+fn push_bar_window_u16(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16]) {
+    if let Ok(mut window) = window.lock() {
+        window.extend(samples.iter().map(|sample| {
+            (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32
+        }));
+        if window.len() > BAR_WINDOW_SAMPLES {
+            let excess = window.len() - BAR_WINDOW_SAMPLES;
+            window.drain(0..excess);
+        }
+    }
 }
+
+/// Compute the 7 bars from a rolling window of recent audio so the bars carry
+/// real temporal variation from speech (syllables, consonants, pauses) instead
+/// of near-identical values from a single short buffer.
+fn compute_bar_levels_f32_windowed(window: &Arc<Mutex<Vec<f32>>>, samples: &[f32]) -> [f32; 7] {
+    push_bar_window_f32(window, samples);
+    let guard = window.lock().unwrap();
+    compute_bar_levels(&guard, |sample| sample.clamp(-1.0, 1.0))
+}
+
+fn compute_bar_levels_i16_windowed(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) -> [f32; 7] {
+    push_bar_window_i16(window, samples);
+    let guard = window.lock().unwrap();
+    compute_bar_levels(&guard, |sample| sample.clamp(-1.0, 1.0))
+}
+
+fn compute_bar_levels_u16_windowed(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16]) -> [f32; 7] {
+    push_bar_window_u16(window, samples);
+    let guard = window.lock().unwrap();
+    compute_bar_levels(&guard, |sample| sample.clamp(-1.0, 1.0))
+}
+
+
 
 fn compute_bar_levels<T>(samples: &[T], normalize: impl Fn(&T) -> f32) -> [f32; 7] {
     let mut bars = [0.0; 7];
@@ -4408,5 +5891,284 @@ mod tests {
         assert!(frame.abs_path.is_none());
         assert!(frame.context_line.is_none());
         assert!(frame.vars.is_empty());
+    }
+
+    #[test]
+    fn formats_numbered_lists_from_ordinals() {
+        let text = "first install dependencies second run the database migration third start the development server";
+        assert_eq!(
+            format_general_transcript(text),
+            "• Install dependencies\n• Run the database migration\n• Start the development server"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_prose_unchanged() {
+        let text = "I wanted to ask if we can move the meeting to tomorrow";
+        assert_eq!(format_general_transcript(text), text);
+    }
+
+    #[test]
+    fn formats_bullet_lists_from_intent() {
+        let text = "things I need milk and eggs and bread";
+        assert_eq!(
+            format_general_transcript(text),
+            "• Milk\n• Eggs\n• Bread"
+        );
+        let comma_text = "my list apples, bananas, oranges";
+        assert_eq!(
+            format_general_transcript(comma_text),
+            "• Apples\n• Bananas\n• Oranges"
+        );
+    }
+
+    #[test]
+    fn formats_explicit_heading_command() {
+        assert_eq!(
+            format_general_transcript("title project requirements"),
+            "## Project Requirements"
+        );
+    }
+
+    #[test]
+    fn formats_known_heading_phrase() {
+        assert_eq!(format_general_transcript("meeting notes"), "## Meeting Notes");
+    }
+
+    #[test]
+    fn does_not_trigger_heading_on_prose() {
+        let text = "I took meeting notes during the call";
+        assert_eq!(format_general_transcript(text), text);
+    }
+
+    #[test]
+    fn maps_email_apps_to_professional_style() {
+        assert!(app_style_instruction(Some("Gmail"), None)
+            .unwrap()
+            .contains("professional email"));
+        assert!(app_style_instruction(Some("Slack"), None)
+            .unwrap()
+            .contains("casual"));
+        assert!(app_style_instruction(Some("Notion"), None)
+            .unwrap()
+            .contains("structured document"));
+    }
+
+    #[test]
+    fn browser_gmail_is_not_developer_context() {
+        assert!(!is_developer_app_context(Some("Google Chrome"), Some("Inbox - Gmail"), true));
+        assert!(is_developer_app_context(Some("Google Chrome"), Some("localhost:3000"), true));
+    }
+
+    #[test]
+    fn detects_english_only_models() {
+        assert!(whisper::is_english_only_model("/models/ggml-base.en.bin"));
+        assert!(whisper::is_english_only_model("ggml-small.en.bin"));
+        assert!(!whisper::is_english_only_model("ggml-large-v3.bin"));
+        assert!(!whisper::is_english_only_model("parakeet-tdt-0.6b-v3-Q8_0.gguf"));
+    }
+
+    #[test]
+    fn fast_cleanup_removes_fillers() {
+        assert_eq!(
+            fast_cleanup("um so I wanted to uh ask you something"),
+            "So I wanted to ask you something"
+        );
+    }
+
+    #[test]
+    fn fast_cleanup_collapses_self_corrections() {
+        assert_eq!(
+            fast_cleanup("Let's meet at 2 PM... actually 3 PM."),
+            "Let's meet at 3 PM."
+        );
+        assert_eq!(
+            fast_cleanup("Deploy it to production... wait, staging."),
+            "Deploy it to staging."
+        );
+        assert_eq!(fast_cleanup("Monday... sorry, Tuesday."), "Tuesday.");
+    }
+
+    #[test]
+    fn fast_cleanup_keeps_ordinary_actually() {
+        assert_eq!(
+            fast_cleanup("I actually think we should go"),
+            "I actually think we should go"
+        );
+    }
+
+    #[test]
+    fn fast_cleanup_fixes_stutters() {
+        assert_eq!(fast_cleanup("I I want to go now"), "I want to go now");
+    }
+
+    #[test]
+    fn fast_cleanup_preserves_newlines() {
+        assert_eq!(
+            fast_cleanup("1. Um install dependencies\n2. Uh run migration"),
+            "1. Install dependencies\n2. Run migration"
+        );
+    }
+
+    #[test]
+    fn fast_cleanup_removes_comma_fillers_only_between_commas() {
+        assert_eq!(fast_cleanup("I was, like, going home"), "I was going home");
+        assert_eq!(fast_cleanup("I like this idea"), "I like this idea");
+    }
+
+    #[test]
+    fn removes_meta_commentary_sentences() {
+        assert_eq!(
+            remove_meta_commentary(
+                "I am a software developer. There is lots of noise and some other text that should not be there. I work at hyphen.com."
+            ),
+            "I am a software developer. I work at hyphen.com."
+        );
+        assert_eq!(
+            remove_meta_commentary(
+                "I am a PSP developer. I want to write an essay about my life. I am currently working in the workshop."
+            ),
+            "I am a PSP developer. I am currently working in the workshop."
+        );
+    }
+
+    #[test]
+    fn keeps_ordinary_sentences() {
+        assert_eq!(
+            remove_meta_commentary("I am a software developer at hyphen.com."),
+            "I am a software developer at hyphen.com."
+        );
+        assert_eq!(
+            remove_meta_commentary("I am currently working in the workshop."),
+            "I am currently working in the workshop."
+        );
+    }
+
+    #[test]
+    fn split_sentences_handles_punctuation() {
+        assert_eq!(
+            split_sentences("One. Two! Three? Four"),
+            vec!["One.", "Two!", "Three?", "Four"]
+        );
+        assert_eq!(split_sentences("No punctuation here"), vec!["No punctuation here"]);
+    }
+
+    #[test]
+    fn detects_voice_commands() {
+        assert!(matches!(
+            detect_voice_command("make this professional"),
+            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional))
+        ));
+        assert!(matches!(
+            detect_voice_command("summarize this"),
+            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize))
+        ));
+        assert!(matches!(
+            detect_voice_command("translate this to Hindi"),
+            Some(VoiceCommand::Custom(_))
+        ));
+        assert!(matches!(
+            detect_voice_command("turn this into bullet points"),
+            Some(VoiceCommand::Custom(_))
+        ));
+    }
+
+    #[test]
+    fn does_not_detect_commands_in_long_dictation() {
+        assert_eq!(
+            detect_voice_command("I want to make this professional report look better for the client meeting tomorrow"),
+            None
+        );
+        assert_eq!(detect_voice_command("The summary of this quarter is strong"), None);
+    }
+
+    #[test]
+    fn expands_snippet_triggers() {
+        let snippets = vec![
+            Snippet {
+                trigger: "my email".to_string(),
+                expansion: "rajeshwar@example.com".to_string(),
+            },
+            Snippet {
+                trigger: "my github".to_string(),
+                expansion: "github.com/imrj05".to_string(),
+            },
+        ];
+        assert_eq!(
+            expand_snippets("Please send it to my email", &snippets),
+            "Please send it to rajeshwar@example.com"
+        );
+        assert_eq!(
+            expand_snippets("Check my github and my email", &snippets),
+            "Check github.com/imrj05 and rajeshwar@example.com"
+        );
+    }
+
+    #[test]
+    fn snippet_expansion_respects_word_boundaries() {
+        let snippets = vec![Snippet {
+            trigger: "my email".to_string(),
+            expansion: "x@y.com".to_string(),
+        }];
+        // "my emailaddress" must not match "my email".
+        assert_eq!(
+            expand_snippets("my emailaddress is long", &snippets),
+            "my emailaddress is long"
+        );
+        // Case-insensitive match.
+        assert_eq!(
+            expand_snippets("Send to MY EMAIL now", &snippets),
+            "Send to x@y.com now"
+        );
+    }
+
+    #[test]
+    fn extracts_current_file_from_editor_title() {
+        assert_eq!(
+            current_file_from_title(Some("user.service.ts — my-project — Visual Studio Code")),
+            Some("user.service.ts".to_string())
+        );
+        assert_eq!(
+            current_file_from_title(Some("README.md - docs - Cursor")),
+            Some("README.md".to_string())
+        );
+        // Non-file titles (browser pages, plain windows) are ignored.
+        assert_eq!(current_file_from_title(Some("Inbox - Gmail")), None);
+        assert_eq!(current_file_from_title(None), None);
+    }
+
+    #[test]
+    fn context_prompt_includes_current_file() {
+        let prompt = build_context_prompt(
+            Some("Cursor"),
+            Some("user.service.ts — my-project — Cursor"),
+        )
+        .unwrap();
+        assert!(prompt.contains("user.service.ts"));
+        assert!(prompt.contains("working on the file"));
+    }
+
+    #[test]
+    fn detects_custom_model_capability() {
+        use custom_models::{detect_model_kind, CustomModelKind};
+        // whisper.cpp GGML → STT
+        assert_eq!(
+            detect_model_kind("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin").unwrap(),
+            CustomModelKind::Stt
+        );
+        // Parakeet GGUF → STT
+        assert_eq!(
+            detect_model_kind("https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/main/parakeet-tdt-0.6b-v3-Q8_0.gguf").unwrap(),
+            CustomModelKind::Stt
+        );
+        // LLM GGUF → Enhance
+        assert_eq!(
+            detect_model_kind("https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf").unwrap(),
+            CustomModelKind::Enhance
+        );
+        // Ambiguous GGUF → error
+        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/mystery.gguf").is_err());
+        // Unsupported extension → error
+        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/model.safetensors").is_err());
     }
 }

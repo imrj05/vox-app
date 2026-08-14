@@ -19,6 +19,7 @@ const PRESETS: { id: TransformPreset; label: string; icon: React.ReactNode }[] =
   { id: "casual", label: "Casual", icon: <MessageCircle className="h-4 w-4" /> },
   { id: "summarize", label: "Summarize", icon: <ListBullet className="h-4 w-4" /> },
   { id: "fixGrammar", label: "Fix grammar", icon: <Wand2 className="h-4 w-4" /> },
+  { id: "promptEngine", label: "AI prompt", icon: <Sparkles className="h-4 w-4" /> },
 ];
 
 export function TransformOverlay({ open, onClose, initialText = "", initialError = null }: TransformOverlayProps) {

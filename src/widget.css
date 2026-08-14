@@ -300,6 +300,140 @@ body,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Done-state actions (Enhance + close)                              */
+/* ------------------------------------------------------------------ */
+
+.widget-done-wrap {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    animation: widget-content-in 200ms ease both;
+}
+
+.widget-done-divider {
+    width: 1px;
+    height: 16px;
+    flex-shrink: 0;
+    background: rgb(255 255 255 / 12%);
+}
+
+:root[data-theme="light"] .widget-done-divider {
+    background: rgb(15 0 0 / 10%);
+}
+
+.widget-enhance-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 11px;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 7%);
+    color: rgb(247 237 232 / 92%);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    transition: background 160ms ease, border-color 160ms ease, transform 120ms ease;
+}
+
+.widget-enhance-btn:hover:not(:disabled) {
+    background: rgb(255 255 255 / 14%);
+    border-color: rgb(255 255 255 / 26%);
+}
+
+.widget-enhance-btn:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.widget-enhance-btn:disabled {
+    opacity: 0.65;
+    cursor: default;
+}
+
+.widget-enhance-btn:focus-visible,
+.widget-close-btn:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 45%);
+    outline-offset: 2px;
+}
+
+.widget-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 5%);
+    color: rgb(247 237 232 / 60%);
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.widget-close-btn:hover {
+    background: rgb(255 255 255 / 12%);
+    color: rgb(247 237 232 / 92%);
+}
+
+.widget-close-btn:active {
+    transform: translateY(1px);
+}
+
+.widget-action-icon {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.widget-spin {
+    animation: widget-spin 900ms linear infinite;
+}
+
+@keyframes widget-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+:root[data-theme="light"] .widget-enhance-btn {
+    border-color: rgb(15 0 0 / 12%);
+    background: rgb(15 0 0 / 4%);
+    color: rgb(24 20 20 / 88%);
+    box-shadow: 0 1px 4px rgba(15, 0, 0, 0.12);
+}
+
+:root[data-theme="light"] .widget-enhance-btn:hover:not(:disabled) {
+    background: rgb(15 0 0 / 9%);
+    border-color: rgb(15 0 0 / 20%);
+}
+
+:root[data-theme="light"] .widget-close-btn {
+    border-color: rgb(15 0 0 / 10%);
+    background: rgb(15 0 0 / 3%);
+    color: rgb(24 20 20 / 50%);
+}
+
+:root[data-theme="light"] .widget-close-btn:hover {
+    background: rgb(15 0 0 / 8%);
+    color: rgb(24 20 20 / 88%);
+}
+
+:root[data-theme="light"] .widget-enhance-btn:focus-visible,
+:root[data-theme="light"] .widget-close-btn:focus-visible {
+    outline-color: rgb(15 0 0 / 45%);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Timer                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -321,6 +455,95 @@ body,
 :root[data-theme="light"] .widget-timer {
     color: rgb(24 20 20 / 66%);
     text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mode label (hands-free, long-recording notice)                    */
+/* ------------------------------------------------------------------ */
+
+.widget-mode-label {
+    position: relative;
+    z-index: 1;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.03em;
+    color: rgb(247 237 232 / 55%);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+    animation: widget-content-in 200ms ease both;
+}
+
+:root[data-theme="light"] .widget-mode-label {
+    color: rgb(24 20 20 / 50%);
+    text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Live app-context line ("In Visual Studio Code · file.ts")         */
+/* ------------------------------------------------------------------ */
+
+.widget-capsule.widget-has-context {
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px 9px;
+    border-radius: 18px;
+    max-width: 340px;
+}
+
+.widget-context {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 300px;
+    min-width: 0;
+    animation: widget-content-in 200ms ease both;
+}
+
+.widget-context-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.85);
+    flex-shrink: 0;
+    animation: widget-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.widget-context-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+    color: rgb(247 237 232 / 62%);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="light"] .widget-context-text {
+    color: rgb(24 20 20 / 55%);
+    text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
+
+@keyframes widget-dot-pulse {
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.45;
+        transform: scale(0.8);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,7 +571,9 @@ body,
     .widget-status,
     .widget-bars,
     .widget-timer,
-    .widget-transcribing-wrap {
+    .widget-transcribing-wrap,
+    .widget-context,
+    .widget-context-dot {
         transition: none !important;
         animation: none !important;
     }

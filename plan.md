@@ -6,78 +6,89 @@ Here is a comprehensive feature checklist based on Wispr Flow's current function
 - 🟡 **Partial** — basic/foundational version exists but incomplete
 - ❌ **Remaining** — not yet implemented
 
-## Implementation Summary (as of audit)
+## Implementation Summary (as of latest review)
 
 | # | Feature area | Status |
 |---|---|---|
-| 1 | Core Dictation | 🟡 Partial |
+| 1 | Core Dictation | ✅ Done |
 | 2 | AI Auto Cleanup | ✅ Done |
 | 3 | Self-Correction / Backtracking | ✅ Done |
-| 4 | Context Awareness | 🟡 Partial |
-| 5 | AI Rewrite / Transform | ❌ Remaining |
+| 4 | Context Awareness | ✅ Done |
+| 5 | AI Rewrite / Transform | ✅ Done |
 | 6 | Personal Dictionary | ✅ Done |
-| 7 | Snippets / Text Expansion | ❌ Remaining |
-| 8 | Writing Styles | ❌ Remaining |
+| 7 | Snippets / Text Expansion | ✅ Done |
+| 8 | Writing Styles | 🟡 Partial |
 | 9 | Developer Mode | ✅ Done |
-| 10 | AI Prompt Mode | ❌ Remaining |
-| 11 | File Awareness | ❌ Remaining |
-| 12 | Smart Formatting | 🟡 Partial |
-| 13 | Multilingual | ❌ Remaining |
-| 14 | Whisper Mode | ❌ Remaining |
-| 15 | Notes / Scratchpad | ❌ Remaining |
-| 16 | AI Commands | ❌ Remaining |
-| 17 | History | 🟡 Partial |
-| 18 | Undo AI Changes | 🟡 Partial |
+| 10 | AI Prompt Mode | ✅ Done |
+| 11 | File Awareness | ✅ Done |
+| 12 | Smart Formatting | ✅ Done |
+| 13 | Multilingual | ✅ Done |
+| 14 | Whisper Mode | ✅ Done |
+| 15 | Notes / Scratchpad | ✅ Done |
+| 16 | AI Commands | ✅ Done |
+| 17 | History | ✅ Done |
+| 18 | Undo AI Changes | ✅ Done |
 | 19 | Statistics | ✅ Done |
-| 20 | Cross-Device Sync | ❌ Remaining |
-| 21 | App-Specific Routing | ❌ Remaining |
-| 22 | Meeting / Voice Intelligence | ❌ Remaining |
-| 23 | Privacy / Security | 🟡 Partial |
-| 24 | Team Features | ❌ Remaining |
+| 20 | Cross-Device Sync | ❌ Deferred |
+| 21 | App-Specific Routing | ❌ Deferred |
+| 22 | Meeting / Voice Intelligence | ❌ Out of scope |
+| 23 | Privacy / Security | ✅ Done |
+| 24 | Team Features | ❌ Deferred |
 
 ### Remaining work (prioritized)
 
-1. **Undo AI Changes UI** (#18) — raw transcript is now stored; build the history row action to view/restore it
-2. **AI Rewrite / Transform + AI Commands** (#5, #16) — "make professional", "summarize", "translate", custom prompts (reuse the enhancement model + cleanup prompt infrastructure)
-3. **Multilingual / Hinglish** (#13) — remove hardcoded `en` in `whisper.rs`, add auto language detection
-4. **Snippets / Text Expansion** (#7)
-5. **Writing Styles** (#8)
-6. **Notes / Scratchpad** (#15)
-7. **Whisper Mode** (#14)
-8. **File Awareness** (#11) and **AI Prompt Mode** (#10)
-9. **Cross-Device Sync** (#20), **App-Specific Routing** (#21), **Meeting Intelligence** (#22), **Team Features** (#24) — later phases
+1. **Cross-Device Sync** (#20), **App-Specific Routing** (#21), **Team Features** (#24) — need accounts/backend/SaaS; defer. **Meeting Intelligence** (#22) is a separate product (diarization + live transcription) — explicitly out of scope for now.
 
 ### What's already done
 
-- Whisper.cpp + NVIDIA Parakeet transcription, global hotkey (CGEventTap + tauri global shortcut), toggle & push-to-talk modes, customizable hotkey picker, automatic text insertion via Accessibility `AXValue` with paste fallback, audio bars widget, dictation history (SQLite), search/copy/delete transcripts.
+- Whisper.cpp + NVIDIA Parakeet transcription, global hotkey (CGEventTap + tauri global shortcut), toggle / push-to-talk / **hands-free** modes, customizable hotkey picker, automatic text insertion via Accessibility `AXValue` with paste fallback, audio bars widget, dictation history (SQLite), search/copy/delete transcripts.
+- **Hands-free mode**: VAD-based auto-segmentation on silence (~1.4s), each utterance transcribed and inserted progressively while the session stays live; segments saved to history.
+- **Retry failed transcription**: recording files are kept on failure and a Retry action is offered (both in-app and background hotkey flows).
+- **Long-session handling**: widget warning at 10 minutes, auto-stop + transcribe cap at 30 minutes.
 - **AI Auto Cleanup** with None/Light/Medium/High levels, auto-applied to plain transcripts after transcription, self-correction collapsing, filler/grammar/punctuation fixes; disabled in developer mode to protect code.
+- **Context Awareness**: app-specific writing styles injected into AI cleanup (Gmail → professional email, Slack → casual, Notion → structured document); browsers only count as developer contexts when the window title carries a dev signal.
+- **Smart Formatting**: rule-based numbered lists, bullet lists, and headings for non-developer dictation (`format_general_transcript`), running before AI cleanup.
 - Personal dictionary (passed to Whisper as context dictionary).
 - Developer Mode: auto-detect developer app context, developer transcript formatting (identifiers, git/npm/docker phrases, code symbols), context prompt.
 - Text Enhancement: local Qwen2.5 GGUF model, on-demand "Enhance" icon on focused input with overlay.
+- **AI Transform**: ⌘⇧V global shortcut captures selected text and opens a transform overlay with 6 presets (Polish, Make concise, Professional, Casual, Summarize, Fix grammar) + custom prompt, run through the local enhancement sidecar.
+- **Undo AI edit**: transcripts store `raw_text`; the history page can restore it.
+- **History**: inline edit, language badge, report action, word count, duration, app badges.
+- **Privacy**: dedicated settings section with privacy mode (no error reporting + 7-day retention), configurable transcript retention (7/30/90 days/forever) enforced on launch and library open, and a "What Vox stores" explainer.
+- **Multilingual**: Dictation language setting (Auto/English/Hindi/Hinglish), whisper.cpp auto-detection, detected language stored per transcript, English-only model guard.
+- **Custom models**: add any Hugging Face model URL from the Models page — capability auto-detected by extension + model family (.bin/.ggml → STT, Parakeet → STT, LLM GGUFs → text enhancement), with an explicit override. Custom STT and LLM models resolve in both pipelines. Added multilingual Whisper variants (tiny/base/small/medium) and Qwen2.5 0.5B/3B as built-ins.
+- **Rule-based fast cleanup**: `fast_cleanup` removes fillers, collapses self-corrections ("2 PM... actually 3 PM" → "3 PM"), fixes stutters, and normalizes capitalization — instant, no LLM. Light cleanup is now fully rule-based; Medium/High pre-clean then run the model.
+- **AI Commands**: dictated instructions ("make this professional", "summarize this", "translate to Hindi", "turn this into bullet points", "make this an AI prompt") transform the selected text instead of being pasted; toggle in Settings → General.
+- **Snippets**: voice-triggered text expansion ("my email" → rajeshwar@example.com) with a Snippets settings section; case-insensitive, word-boundary-aware replacement in the transcription pipeline.
+- **Notes / Scratchpad**: searchable note list, autosaving editor, markdown preview, copy/delete, and dictate-to-note recording.
+- **Whisper Mode**: 2.5× gain boost on recorded audio plus a whisper-aware cleanup prompt, for quiet environments.
+- **AI Prompt Mode**: PromptEngine transform preset (⌘⇧V overlay + voice command) restructures text into a structured AI prompt.
+- **File Awareness**: current file extracted from editor window titles feeds the ASR context, developer dictionary, and AI cleanup style.
+- **Dictionary auto-learning**: editing a transcript adds corrected words to the personal dictionary ("Learned" category), filtered against common stopwords.
 - Statistics: rich analytics dashboard (sessions, words, hourly activity, top apps, usage trends).
 - Privacy basics: fully local processing, opt-in error reporting (Sentry, PII redacted), delete all data / wipe local files, recording cleanup.
 - Updater, autostart, single-instance, theming, onboarding.
 
-## 1. Core Dictation — 🟡 Partial
+## 1. Core Dictation — ✅ Done
 
-> **Status:** Most core dictation is built (Whisper.cpp + Parakeet, global hotkey, toggle/Push-to-Talk, hotkey picker, auto text insertion with paste fallback, history, search, copy, delete). **Remaining:** true hands-free/continuous mode, retry-failed-transcription action, and tighter long-session handling.
+> **Status:** Implemented. Whisper.cpp + Parakeet transcription, global hotkey (CGEventTap + tauri global shortcut), toggle / push-to-talk / **hands-free** trigger modes, hotkey picker, auto text insertion with paste fallback, history, search, copy, delete, **retry failed transcription** (recording file is kept on failure and a Retry action is offered), and **long-session handling** (10-minute warning in the widget, 30-minute auto-stop cap). Hands-free mode auto-segments speech on silence (VAD, ~1.4s) and inserts each utterance progressively while the session stays live.
 
 * 🎙️ Voice → text ✅
-* Global dictation — works in any text field
-* Push-to-talk
-* Hands-free mode
-* Global keyboard shortcut
-* Customizable keyboard shortcuts
-* Fast transcription
-* Long dictation sessions
-* Background microphone capture
-* Automatic text insertion
-* Clipboard fallback
-* Dictation history
-* Retry failed transcription
-* Copy transcription
-* Delete transcription
-* Search transcription history
+* Global dictation — works in any text field ✅
+* Push-to-talk ✅
+* Hands-free mode ✅ (VAD-segmented continuous dictation)
+* Global keyboard shortcut ✅
+* Customizable keyboard shortcuts ✅
+* Fast transcription ✅
+* Long dictation sessions ✅ (warning at 10 min, auto-stop at 30 min)
+* Background microphone capture ✅
+* Automatic text insertion ✅
+* Clipboard fallback ✅
+* Dictation history ✅
+* Retry failed transcription ✅
+* Copy transcription ✅
+* Delete transcription ✅
+* Search transcription history ✅
 
 ## 2. AI Auto Cleanup — ✅ Done (levels + auto-apply)
 
@@ -160,9 +171,9 @@ Other examples:
 
 ---
 
-# 4. Context Awareness — 🟡 Partial
+# 4. Context Awareness — ✅ Done
 
-> **Status:** Active app + window title detection exists and feeds a context prompt and developer context dictionary. Auto-developer-mode formatting works. **Remaining:** app-specific *style* adaptation (Gmail → professional email, Slack → casual, Notion → structured) — currently only developer vs. plain.
+> **Status:** Active app + window title detection feeds a context prompt, developer context dictionary, and auto-developer-mode formatting. **App-specific writing styles** are now applied via AI cleanup: Gmail/Mail/Outlook → professional email, Slack/Discord/Teams → casual conversational, Notion/Obsidian/Docs → structured document (`app_style_instruction` in `lib.rs`, injected into the cleanup prompt). Browsers are no longer unconditionally treated as developer contexts — Chrome on Gmail gets prose formatting, Chrome on localhost:3000 still gets developer formatting.
 
 VOX should understand **where the user is typing**.
 
@@ -196,9 +207,9 @@ Wispr's Context Awareness detects the active application and adapts transcriptio
 
 ---
 
-# 5. AI Rewrite / Transform — ❌ Remaining
+# 5. AI Rewrite / Transform — ✅ Done (presets + custom prompt)
 
-> **Status:** Not implemented. Only a generic "Enhance" action exists; there are no transform presets (professional, casual, shorter, clearer, summarize, translate, custom prompt) or a ⌘+Shift+V transform menu. **Remaining:** full transform UI + prompt presets.
+> **Status:** Implemented (commit `170c7a3`). `TransformOverlay` offers 6 presets — Polish, Make concise, Professional, Casual, Summarize, Fix grammar — plus a custom instruction input. The ⌘⇧V global shortcut (`handle_transform_shortcut`) captures selected text from the active app, shows the main window, and opens the overlay; `apply_transform` runs the local Qwen2.5 sidecar via `transform_prompt`. **Remaining (minor):** translate preset, "turn into bullet points", and the Prompt Engineer preset (#10).
 
 After text is generated, user can select it and say:
 
@@ -241,7 +252,7 @@ AI Transform
 
 # 6. Personal Dictionary — ✅ Done
 
-> **Status:** Dictionary setting is stored in SQLite and passed to Whisper as a context dictionary. **Remaining (minor):** automatic learning from corrections, word replacement rules, structured entries for names/companies/acronyms are manual free-text only.
+> **Status:** Dictionary setting is stored in SQLite and passed to Whisper as a context dictionary. **Automatic learning from corrections** is now implemented: when you edit a transcript in the Transcript Library, new words (filtered against common English/Hindi stopwords) are auto-added to the dictionary under a "Learned" category, with a confirmation message. **Remaining (minor):** word replacement rules; structured entries for names/companies/acronyms are manual free-text only.
 
 VOX should learn words the user frequently uses.
 
@@ -277,9 +288,9 @@ Wispr automatically adds corrected words to its personal dictionary. ([Wispr Flo
 
 ---
 
-# 7. Snippets / Text Expansion — ❌ Remaining
+# 7. Snippets / Text Expansion — ✅ Done
 
-> **Status:** Not implemented. No trigger/expansion store or expansion pass over transcribed text.
+> **Status:** Implemented. A **Snippets** settings section (sidebar) manages trigger → expansion pairs stored in a SQLite `snippets` table. Snippets sync to Rust (`SnippetsState` + `set_snippets`) and `expand_snippets` runs at the end of the transcription pipeline: case-insensitive, word-boundary-aware replacement ("send it to my email" → "send it to rajeshwar@example.com"; "my emailaddress" is untouched).
 
 Extremely useful.
 
@@ -317,9 +328,9 @@ Wispr supports voice-triggered snippets and saved text blocks. ([Wispr Flow Help
 
 ---
 
-# 8. Writing Styles — ❌ Remaining
+# 8. Writing Styles — 🟡 Partial (app-context done; custom styles remaining)
 
-> **Status:** Not implemented. Only a `transcriptFormattingMode` of auto/plain/developer exists (not user-defined writing styles).
+> **Status:** The **app-context style registry** is implemented — `app_style_instruction` in `lib.rs` maps the active app to a writing style injected into AI cleanup (Gmail → professional email, Slack → casual, Notion → structured document), so VOX automatically applies the appropriate style based on the application/context. **Remaining:** user-defined custom styles (a settings UI where users author named styles and assign them to apps).
 
 Allow users to define styles:
 
@@ -415,9 +426,9 @@ Wispr specifically has syntax awareness, developer jargon recognition, and file 
 
 ---
 
-# 10. AI Prompt Mode — ❌ Remaining
+# 10. AI Prompt Mode — ✅ Done
 
-> **Status:** Not implemented. No "Prompt Engineer" transform that restructures dictated text into a structured AI prompt.
+> **Status:** Implemented. A **PromptEngine** transform preset restructures selected text into a well-scoped AI prompt (goal statement + numbered requirements). Available in the ⌘⇧V AI Transform overlay ("AI prompt") and as a voice command ("make this an AI prompt" / "prompt engineer").
 
 This is particularly useful for developers.
 
@@ -442,9 +453,9 @@ Wispr already has a **Prompt Engineer** transform for restructuring dictated tex
 
 ---
 
-# 11. File Awareness — ❌ Remaining
+# 11. File Awareness — ✅ Done (window-title file tagging)
 
-> **Status:** Not implemented. No file tagging or path resolution for Cursor/Windsurf.
+> **Status:** Implemented. `current_file_from_title` extracts the file name from editor window titles ("user.service.ts — my-project — Visual Studio Code") and feeds it into three places: the ASR context prompt ("The user is working on the file user.service.ts"), the developer dictionary (so the model transcribes the filename correctly), and the AI cleanup/transform style (so prompts can reference the file). Path dictation ("src slash services slash user dot service dot ts") already worked via developer mode. **Remaining (later):** true editor integration to enumerate open files beyond the active window title.
 
 For coding environments:
 
@@ -464,9 +475,9 @@ Wispr's File Tagging can recognize filenames in Cursor/Windsurf and automaticall
 
 ---
 
-# 12. Smart Formatting — 🟡 Partial
+# 12. Smart Formatting — ✅ Done
 
-> **Status:** Developer-mode formatting handles numbered lists, code blocks, symbols, and indentation. **Remaining:** general smart formatting for non-developer contexts (bullet lists, headings, auto-paragraphs, punctuation) when not in developer mode — currently returns plain trimmed text.
+> **Status:** Developer-mode formatting handles code blocks, symbols, and indentation. **General smart formatting** for non-developer contexts is now rule-based (`format_general_transcript` in `lib.rs`): numbered lists from ordinals ("first X second Y third Z" → 1./2./3.), bullet lists from intent phrases + separators ("things I need milk and eggs and bread" → • Milk/• Eggs/• Bread), and headings ("title project requirements" / "meeting notes" → ## Project Requirements). Runs before AI cleanup so the model sees pre-structured text; falls back to the original when no pattern matches.
 
 Speech:
 
@@ -516,9 +527,9 @@ const user = await getUser();
 
 ---
 
-# 13. Multilingual — ❌ Remaining
+# 13. Multilingual — ✅ Done (auto-detect + English/Hindi/Hinglish)
 
-> **Status:** A multilingual Parakeet v3 model is available for download, but `whisper.rs` hardcodes the language to `en`. No automatic language detection, no language switching, no Hindi/Hinglish tuning. **Remaining:** remove hardcoded `en`, add auto-detect, multi-language selection, Hinglish support.
+> **Status:** The hardcoded `en` is gone. A **Dictation language** setting (Auto / English / Hindi / Hinglish) lives in Settings → General and syncs to Rust. `whisper.rs` maps Auto/Hinglish → whisper.cpp auto-detection, pins `en`/`hi` explicitly, and reports the detected language back (stored per transcript via the `language` column). English-only models (`.en`) fail fast with a "download a multilingual model" message when a non-English language is selected. Parakeet v3 auto-detects. **Remaining (later):** 100+ language picker, regional variants, per-session language switching.
 
 * 100+ languages
 * Automatic language detection
@@ -544,9 +555,9 @@ very well before trying to support 100+ languages.
 
 ---
 
-# 14. Whisper Mode — ❌ Remaining
+# 14. Whisper Mode — ✅ Done
 
-> **Status:** Not implemented. No special handling for low-volume/whispered speech.
+> **Status:** Implemented. A **Whisper mode** toggle in Settings → General applies a 2.5× gain boost to recorded samples in the audio callback (all sample formats), so quiet/whispered speech clears the ASR noise floor. When AI cleanup runs, the prompt also notes the source was whispered so the model transcribes faithfully instead of "fixing" quiet fragments.
 
 Useful for quiet environments.
 
@@ -556,9 +567,9 @@ Wispr advertises whisper support. ([Wispr Flow][7])
 
 ---
 
-# 15. Notes / Scratchpad — ❌ Remaining
+# 15. Notes / Scratchpad — ✅ Done
 
-> **Status:** Not implemented. No standalone scratchpad screen, voice notes, markdown preview, or AI summary.
+> **Status:** Implemented. A **Notes** page (sidebar) with a searchable note list, autosaving editor (600ms debounce), **markdown preview** (headings, lists, code blocks, bold), copy, delete, and a **Dictate** button that records and appends the transcription to the current note. Notes live in a SQLite `notes` table. **Remaining (later):** AI summary, cross-device sync.
 
 A standalone place to dictate without another application.
 
@@ -580,9 +591,9 @@ Wispr currently has Scratchpad/Notes functionality across its apps. ([Wispr Flow
 
 ---
 
-# 16. AI Commands — ❌ Remaining
+# 16. AI Commands — ✅ Done
 
-> **Status:** Not implemented. Dictation produces text only; no voice command parsing ("make this professional", "summarize", "translate to Hindi").
+> **Status:** Implemented. `detect_voice_command` in `lib.rs` recognizes short dictated instructions (≤ 10 words) — "make this professional/casual/shorter", "summarize this", "fix the grammar", "polish this", "translate to Hindi/English", "turn this into bullet points", "make this an AI prompt" — and routes them to the existing transform pipeline (`run_transform_and_paste`, shared with the ⌘⇧V overlay). The command utterance is never pasted; instead VOX captures the selected text, transforms it, and pastes the result. A **Voice commands** toggle in Settings → General controls it (default on).
 
 Instead of only dictating text, the user can give instructions:
 
@@ -602,9 +613,9 @@ This changes VOX from **dictation software → voice AI editor**. ([Wispr Flow H
 
 ---
 
-# 17. History — 🟡 Partial
+# 17. History — ✅ Done
 
-> **Status:** Transcript history with date grouping, search, copy, and delete is implemented (SQLite `transcripts` table + transcripts page). **Remaining:** per-transcript raw vs AI text, word count, language, retry, edit, undo AI edit, report.
+> **Status:** Transcript history with date grouping, search, copy, delete, **inline edit**, **undo AI edit**, word count, duration, app badge, **language badge**, and **report** is implemented (SQLite `transcripts` table + transcripts page). **Retry** is intentionally not offered for old rows — raw audio is deleted after transcription for privacy; retry exists for failed transcriptions while the recording file is still on disk.
 
 Store:
 
@@ -642,9 +653,9 @@ Wispr's current history UI supports several of these operations. ([Wispr Flow He
 
 ---
 
-# 18. Undo AI Changes — 🟡 Partial (raw preserved)
+# 18. Undo AI Changes — ✅ Done
 
-> **Status:** Groundwork done. The transcripts table now stores `raw_text` alongside the cleaned `text` whenever AI cleanup runs, and the transcription result carries `rawText`. **Remaining:** the UI to view/restore the raw version (Undo AI edit button on history rows).
+> **Status:** Implemented. The transcripts table stores `raw_text` alongside the cleaned `text` whenever AI cleanup runs, and the transcripts page exposes an "Undo AI edit" action (`undoAiEdit` in `transcripts.tsx`) that restores the raw version.
 
 Very important if you're using aggressive AI cleanup.
 
@@ -691,9 +702,9 @@ Wispr's Hub includes dictation statistics and usage trends. ([Wispr Flow Help Ce
 
 ---
 
-# 20. Cross-Device Sync — ❌ Remaining
+# 20. Cross-Device Sync — ❌ Deferred
 
-> **Status:** Not implemented. All data is local (SQLite + files); no account/cloud sync for dictionary, snippets, styles, or history.
+> **Status:** Not implemented. All data is local (SQLite + files); no account/cloud sync for dictionary, snippets, styles, or history. **Decision:** requires accounts + a backend; defer. Keep the personalization schema (dictionary, snippets, styles) additive so sync can be layered on later.
 
 Account-based synchronization:
 
@@ -717,7 +728,7 @@ So your personalization follows the user.
 
 ---
 
-# 21. App-Specific Routing — ❌ Remaining
+# 21. App-Specific Routing — ❌ Deferred
 
 > **Status:** Not implemented. No per-app routing shortcuts or voice routing to Slack/Email/Calendar.
 
@@ -733,9 +744,9 @@ Voice can also route dictation directly to specific workflows. Wispr's documenta
 
 ---
 
-# 22. Meeting / Voice Intelligence — ❌ Remaining
+# 22. Meeting / Voice Intelligence — ❌ Out of scope for now
 
-> **Status:** Not implemented. No meeting recording, live transcription, speaker diarization, summaries, or action items.
+> **Status:** Not implemented. No meeting recording, live transcription, speaker diarization, summaries, or action items. **Decision:** this is a separate product (a meeting recorder, not a dictation layer) — it drags in streaming ASR, diarization models, and a new UI. Explicitly deferred.
 
 A more advanced VOX feature set:
 
@@ -753,9 +764,9 @@ This moves VOX beyond dictation into a **voice productivity assistant**.
 
 ---
 
-# 23. Privacy / Security — 🟡 Partial
+# 23. Privacy / Security — ✅ Done
 
-> **Status:** Strong local-first baseline — all processing (transcription + enhancement) is on-device, opt-in error reporting with PII redaction, delete-all-data, recording cleanup, wipe local files. **Remaining:** configurable transcript retention, explicit "privacy mode", "don't store raw audio" toggle, encryption-at-rest option, enterprise controls.
+> **Status:** Strong local-first baseline — all processing (transcription + enhancement) is on-device, opt-in error reporting with PII redaction, delete-all-data, recording cleanup, wipe local files. **Added:** a dedicated Privacy settings section with **privacy mode** (disables error reporting + 7-day retention), **configurable transcript retention** (forever / 7 / 30 / 90 days, enforced on app launch and library open), and a "What Vox stores" explainer (raw audio is deleted after transcription, transcripts stay local). **Remaining (deferred):** encryption-at-rest and enterprise controls.
 
 For a serious desktop app:
 
@@ -773,9 +784,9 @@ Privacy is especially important because you're handling microphone/audio data.
 
 ---
 
-# 24. Team Features — ❌ Remaining
+# 24. Team Features — ❌ Deferred
 
-> **Status:** Not implemented. No team dictionary, shared snippets/styles, usage dashboard, or admin controls.
+> **Status:** Not implemented. No team dictionary, shared snippets/styles, usage dashboard, or admin controls. **Decision:** requires SaaS (accounts, billing, admin); nothing to build until there are paying users.
 
 If you eventually make VOX SaaS:
 
@@ -864,46 +875,42 @@ VOX
     └── Android
 ```
 
-### If you're making VOX, prioritize these first
+### If you're making VOX, prioritize these first (revised against current code)
 
-**V1 — must have**
+**V1 — must have** (✅ = shipped)
 
-1. Global voice dictation
-2. Whisper/fast transcription
-3. Auto punctuation
-4. Filler removal
-5. Grammar cleanup
-6. Self-correction
-7. Smart paragraph/list formatting
-8. Personal dictionary
-9. Snippets
-10. Global hotkey
-11. History
-12. Undo AI cleanup
+1. ✅ Global voice dictation
+2. ✅ Whisper/fast transcription
+3. ✅ Auto punctuation
+4. ✅ Filler removal
+5. ✅ Grammar cleanup
+6. ✅ Self-correction
+7. ✅ Smart paragraph/list formatting (rule-based numbered lists, bullets, headings + developer mode)
+8. ✅ Personal dictionary
+9. ✅ Global hotkey
+10. ✅ History
+11. ✅ Undo AI cleanup
+12. ✅ AI Transform (presets + custom prompt)
+13. ✅ Multilingual / Hinglish — auto-detect + English/Hindi/Hinglish picker
+14. ✅ Rule-based fast-path cleanup — Light is instant (no LLM); Medium/High pre-clean then run the model
 
 **V2 — make it competitive**
 
-13. Context awareness
-14. Writing styles
-15. AI commands
-16. Custom transforms
-17. Developer mode
-18. Code/CLI awareness
-19. Prompt Engineer
-20. Multilingual/Hinglish
-21. Notes/Scratchpad
-22. Cross-device sync
+15. ✅ AI commands (voice-triggered transforms — "make this professional", "summarize", "translate to Hindi")
+16. ✅ Writing styles (app-context style registry → AI cleanup)
+17. ✅ Context awareness (app-specific style adaptation)
+18. ✅ Snippets / text expansion (voice-triggered, word-boundary-aware)
+19. ✅ Prompt Engineer (AI prompt transform preset + voice command)
+20. ✅ Notes / Scratchpad (autosaving editor, markdown preview, dictate-to-note)
+21. ✅ Whisper mode (2.5× gain boost + whisper-aware cleanup prompt)
 
 **V3 — differentiate VOX**
 
-23. Meeting transcription
-24. Speaker detection
-25. AI action items
-26. Local/private mode
-27. App-specific workflows
-28. Team dictionary
-29. Team snippets
-30. Usage analytics
+22. Meeting transcription + speaker detection + action items (separate product — out of scope for now)
+23. Local/private mode hardening
+24. App-specific workflows / routing
+25. Cross-device sync (needs accounts + backend)
+26. Team dictionary / snippets / usage analytics (needs SaaS)
 
 The key insight is: **Whisper is only the transcription engine. The actual VOX product should be the entire pipeline:**
 

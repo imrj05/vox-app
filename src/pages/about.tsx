@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
-import { Code2, Cpu, Database, ExternalLink, Globe, Mail, MonitorSmartphone } from "@/components/icons"
+import { Code2, Cpu, Database, Download, ExternalLink, Globe, Mail, MonitorSmartphone, ShieldCheck } from "@/components/icons"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import {
@@ -9,6 +10,7 @@ import {
   ABOUT_WEBSITE,
 } from "@/lib/about"
 import { openExternalLink } from "@/lib/external-link"
+import { cn } from "@/lib/utils"
 import { Logo } from "@/components/logo"
 import {
   getHotkeyDiagnostics,
@@ -55,6 +57,17 @@ export function AboutPage() {
       : null
   const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting"
 
+  const updateBadge =
+    updateStatus === "checking"
+      ? { label: "Checking…", tone: "muted" }
+      : updateStatus === "upToDate"
+        ? { label: "Up to date", tone: "ok" }
+        : updateInfo
+          ? { label: "Update available", tone: "primary" }
+          : updateBusy
+            ? { label: "Updating…", tone: "primary" }
+            : { label: "Ready", tone: "muted" }
+
   return (
     <div className="h-full overflow-hidden bg-background">
 
@@ -75,11 +88,14 @@ export function AboutPage() {
                   </div>
                 </div>
                 <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Vox is designed for fast voice capture, local transcription, and a focused desktop experience without sending your audio to external services.
+                  Voice capture, transcription, and AI cleanup all run on this device — your audio never leaves your machine.
                 </p>
-                <div className="mt-5 flex flex-wrap gap-x-5 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[11px] text-muted-foreground">
                   <span>v{ABOUT_VERSION}</span>
-                  <span>local-first</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 font-sans text-[11px] font-medium text-foreground">
+                    <ShieldCheck className="h-3 w-3 text-primary" />
+                    Local-first
+                  </span>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:max-w-[340px] lg:justify-end">
@@ -90,8 +106,7 @@ export function AboutPage() {
             </div>
           </section>
 
-          <section className="grid gap-4 lg:grid-cols-[0.82fr_1.18fr]">
-            <div className="space-y-4">
+          <section className="grid items-start gap-4 md:grid-cols-2">
               <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <MonitorSmartphone className="h-4 w-4" />
@@ -123,23 +138,33 @@ export function AboutPage() {
                 </div>
                 <p className="mt-4 text-base font-semibold text-foreground">Storage</p>
                 <div className="mt-4 space-y-3">
-                  <AboutInfoRow label="App data" value={shortenPath(diagnostics?.appDataDir)} />
-                  <AboutInfoRow label="Models" value={shortenPath(diagnostics?.modelsDir)} />
-                  <AboutInfoRow label="Recordings" value={shortenPath(diagnostics?.recordingsDir)} />
+                  <AboutInfoRow label="App data" value={shortenPath(diagnostics?.appDataDir)} mono />
+                  <AboutInfoRow label="Models" value={shortenPath(diagnostics?.modelsDir)} mono />
+                  <AboutInfoRow label="Recordings" value={shortenPath(diagnostics?.recordingsDir)} mono />
                 </div>
               </div>
-            </div>
-            <div className="space-y-4">
               <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-base font-semibold text-foreground">Updates</p>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      Check for new GitHub release builds and install them directly from inside Vox.
-                    </p>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <Download className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="text-base font-semibold text-foreground">Updates</p>
+                      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                        Check for new GitHub release builds and install them directly from inside Vox.
+                      </p>
+                    </div>
                   </div>
-                  <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-primary">
-                    Enabled
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
+                      updateBadge.tone === "muted"
+                        ? "bg-muted text-muted-foreground"
+                        : "bg-primary/10 text-primary"
+                    )}
+                  >
+                    {updateBadge.label}
                   </span>
                 </div>
                 <div className="mt-4 rounded-xl border border-border bg-background px-4 py-3">
@@ -186,54 +211,57 @@ export function AboutPage() {
                   )}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => void checkForUpdates()}
                     disabled={updateBusy}
-                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {updateStatus === "checking" ? <Spinner className="size-4" /> : null}
                     Check for updates
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    size="sm"
                     onClick={() => void installUpdate()}
                     disabled={!updateInfo || updateBusy}
-                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-primary px-3 py-2 text-sm text-primary-foreground transition-colors hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting" ? <Spinner className="size-4" /> : null}
                     {updateStatus === "downloading"
-                      ? "Downloading..."
+                      ? "Downloading…"
                       : updateStatus === "installing"
-                        ? "Installing..."
+                        ? "Installing…"
                         : updateStatus === "restarting"
-                          ? "Restarting..."
+                          ? "Restarting…"
                           : "Download and install"}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setShowUpdateDialog(true)}
                     disabled={!updateInfo}
-                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     View changelog
-                  </button>
-                  <a
-                    href={ABOUT_REPOSITORY + "/releases"}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(event) => {
-                      event.preventDefault()
-                      openExternalLink(ABOUT_REPOSITORY + "/releases")
-                    }}
-                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    asChild
                   >
-                    View releases
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                    <a
+                      href={ABOUT_REPOSITORY + "/releases"}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        openExternalLink(ABOUT_REPOSITORY + "/releases")
+                      }}
+                    >
+                      View releases
+                      <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                    </a>
+                  </Button>
                 </div>
               </div>
-            </div>
           </section>
         </div>
       </ScrollArea>
@@ -248,30 +276,31 @@ function shortenPath(path: string | null | undefined): string {
 
 function AboutLinkButton({ icon, href, label }: { icon: React.ReactNode; href: string; label: string }) {
   return (
-    <a
-      href={href}
-      target={href.startsWith("mailto:") ? undefined : "_blank"}
-      rel={href.startsWith("mailto:") ? undefined : "noreferrer"}
-      onClick={(event) => {
-        event.preventDefault()
-        openExternalLink(href)
-      }}
-      className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45"
-    >
-      {icon}
-      {label}
-      {href.startsWith("mailto:") ? null : (
-        <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-      )}
-    </a>
+    <Button variant="outline" size="sm" asChild>
+      <a
+        href={href}
+        target={href.startsWith("mailto:") ? undefined : "_blank"}
+        rel={href.startsWith("mailto:") ? undefined : "noreferrer"}
+        onClick={(event) => {
+          event.preventDefault()
+          openExternalLink(href)
+        }}
+      >
+        {icon}
+        {label}
+        {href.startsWith("mailto:") ? null : (
+          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+      </a>
+    </Button>
   )
 }
 
-function AboutInfoRow({ label, value }: { label: string; value: string }) {
+function AboutInfoRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
       <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="text-sm font-medium text-foreground">{value}</span>
+      <span className={cn("text-sm font-medium text-foreground", mono && "font-mono text-xs")}>{value}</span>
     </div>
   )
 }

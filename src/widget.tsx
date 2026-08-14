@@ -1,6 +1,8 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
+import { enhanceFocusedInputNow, hideWidget } from "@/lib/native";
+import { LoaderCircle, Sparkles, X } from "@/components/icons";
 import "./widget.css";
 
 /* ------------------------------------------------------------------ */
@@ -16,6 +18,11 @@ interface WidgetState {
   mode: WidgetMode;
   message: string;
   elapsedSeconds?: number;
+  showEnhance?: boolean;
+  /** Active app detected at recording start (e.g. "Visual Studio Code"). */
+  appName?: string | null;
+  /** Active window title (e.g. "user.service.ts — my-project — VS Code"). */
+  windowTitle?: string | null;
 }
 
 interface AudioLevelPayload {
@@ -38,6 +45,36 @@ function formatElapsed(s: number): string {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Build a compact "what am I doing right now" label from the detected app
+ * context: "Visual Studio Code · user.service.ts", "WhatsApp",
+ * "Google Chrome · Gmail - rajeshwar@gmail.com". Returns null when no context
+ * was detected (e.g. non-macOS or no frontmost app).
+ */
+function buildContextLabel(
+  appName?: string | null,
+  windowTitle?: string | null
+): string | null {
+  const app = appName?.trim();
+  const title = windowTitle?.trim();
+  if (!app && !title) return null;
+
+  if (!app) return title || null;
+  if (!title) return app;
+
+  // Skip redundant titles (WhatsApp window titled "WhatsApp").
+  if (title.toLowerCase() === app.toLowerCase()) return app;
+
+  // Editor titles: "user.service.ts — my-project — Visual Studio Code" →
+  // show the file name instead of the full title.
+  const first = title.split(" — ")[0]?.split(" - ")[0]?.trim();
+  const looksLikeFile =
+    !!first && (first.includes(".") || first.includes("/") || first.includes("\\"));
+  if (looksLikeFile && first !== app) return `${app} · ${first}`;
+
+  return `${app} · ${title}`;
 }
 
 function shapeVoiceLevel(value: number): number {
@@ -100,12 +137,22 @@ function VoiceDots({
   audioLevel,
   elapsed,
   message,
+  showEnhance,
+  enhancing,
+  contextLabel,
+  onEnhance,
+  onClose,
 }: {
   mode: WidgetMode;
   meterLevels: number[];
   audioLevel: number;
   elapsed: number | undefined;
   message: string;
+  showEnhance: boolean;
+  enhancing: boolean;
+  contextLabel: string | null;
+  onEnhance: () => void;
+  onClose: () => void;
 }) {
   const isRecording = mode === "recording";
 
@@ -117,61 +164,106 @@ function VoiceDots({
       : 0;
 
   return (
-    <div className="widget-voice-container">
-      {/* Theme-aware Vox logo (light mark on light, dark mark on dark) */}
-      <div className="widget-logo-wrap">
-        <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
-        <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
+    <>
+      <div className="widget-voice-container">
+        {/* Theme-aware Vox logo (light mark on light, dark mark on dark) */}
+        <div className="widget-logo-wrap">
+          <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
+          <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
+        </div>
+
+        <div className="widget-glow" style={{ opacity: glowAlpha }} />
+
+        {mode === "transcribing" && (
+          <div className="widget-transcribing-wrap">
+            <span className="widget-shimmer-text" data-text="Transcribing…">
+              Transcribing…
+            </span>
+          </div>
+        )}
+
+        {mode === "done" && (
+          <div className="widget-done-wrap">
+            <div className="widget-status widget-status-done">
+              <CheckIcon />
+              <span className="widget-status-text">{message || "Done"}</span>
+            </div>
+            {showEnhance && (
+              <>
+                <span className="widget-done-divider" aria-hidden="true" />
+                <button
+                  type="button"
+                  className="widget-enhance-btn"
+                  onClick={onEnhance}
+                  onMouseDown={(event) => event.preventDefault()}
+                  disabled={enhancing}
+                  aria-label={enhancing ? "Enhancing text" : "Enhance text"}
+                >
+                  {enhancing ? (
+                    <LoaderCircle className="widget-action-icon widget-spin" />
+                  ) : (
+                    <Sparkles className="widget-action-icon" />
+                  )}
+                  <span>{enhancing ? "Enhancing…" : "Enhance"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="widget-close-btn"
+                  onClick={onClose}
+                  onMouseDown={(event) => event.preventDefault()}
+                  aria-label="Close"
+                >
+                  <X className="widget-action-icon" />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {mode === "error" && (
+          <div className="widget-status widget-status-error">
+            <AlertIcon />
+            <span className="widget-status-text">{message || "Something went wrong"}</span>
+          </div>
+        )}
+
+        {isRecording && (
+          <>
+            <div className="widget-bars">
+              {Array.from({ length: BAR_COUNT }).map((_, i) => {
+                const level = shapeVoiceLevel(meterLevels[i] ?? 0);
+                return (
+                  <div
+                    key={i}
+                    className="widget-bar"
+                    style={{
+                      height: `${(6 + level * 26).toFixed(1)}px`,
+                      opacity: 0.5 + level * 0.5,
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            {elapsed !== undefined && elapsed > 0 && (
+              <span className="widget-timer">{formatElapsed(elapsed)}</span>
+            )}
+
+            {message && message !== "Listening…" && (
+              <span className="widget-mode-label">{message}</span>
+            )}
+          </>
+        )}
       </div>
 
-      <div className="widget-glow" style={{ opacity: glowAlpha }} />
-
-      {mode === "transcribing" && (
-        <div className="widget-transcribing-wrap">
-          <span className="widget-shimmer-text" data-text="Transcribing…">
-            Transcribing…
-          </span>
-        </div>
+      {/* Live app-context line: what the user is doing right now */}
+      {isRecording && contextLabel && (
+        <span className="widget-context" role="status">
+          <span className="widget-context-dot" aria-hidden="true" />
+          <span className="widget-context-text">{contextLabel}</span>
+        </span>
       )}
-
-      {mode === "done" && (
-        <div className="widget-status widget-status-done">
-          <CheckIcon />
-          <span className="widget-status-text">{message || "Done"}</span>
-        </div>
-      )}
-
-      {mode === "error" && (
-        <div className="widget-status widget-status-error">
-          <AlertIcon />
-          <span className="widget-status-text">{message || "Something went wrong"}</span>
-        </div>
-      )}
-
-      {isRecording && (
-        <>
-          <div className="widget-bars">
-            {Array.from({ length: BAR_COUNT }).map((_, i) => {
-              const level = shapeVoiceLevel(meterLevels[i] ?? 0);
-              return (
-                <div
-                  key={i}
-                  className="widget-bar"
-                  style={{
-                    height: `${(6 + level * 26).toFixed(1)}px`,
-                    opacity: 0.5 + level * 0.5,
-                  }}
-                />
-              );
-            })}
-          </div>
-
-          {elapsed !== undefined && elapsed > 0 && (
-            <span className="widget-timer">{formatElapsed(elapsed)}</span>
-          )}
-        </>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -253,6 +345,7 @@ export function Widget() {
   });
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
+  const [enhancing, setEnhancing] = useState(false);
   const prevMode = useRef<WidgetMode>("idle");
 
   useEffect(() => {
@@ -321,6 +414,8 @@ export function Widget() {
   }, []);
 
   const isActive = state.mode === "recording" || state.mode === "transcribing";
+  const isRecording = state.mode === "recording";
+  const contextLabel = buildContextLabel(state.appName, state.windowTitle);
 
   const isVisible =
     state.mode === "recording" ||
@@ -328,10 +423,28 @@ export function Widget() {
     state.mode === "done" ||
     state.mode === "error";
 
+  const enhance = async () => {
+    if (enhancing) return;
+    setEnhancing(true);
+    try {
+      await enhanceFocusedInputNow();
+      // Success: the text is replaced — dismiss the widget.
+      close();
+    } catch {
+      // Failure: keep the widget so the user can retry.
+    } finally {
+      setEnhancing(false);
+    }
+  };
+
+  const close = () => {
+    void hideWidget().catch(() => {});
+  };
+
   return (
     <div className="widget-root">
       <div
-        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}
+        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"} ${isRecording && contextLabel ? "widget-has-context" : ""}`}
       >
         <VoiceDots
           mode={state.mode}
@@ -339,6 +452,11 @@ export function Widget() {
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
           message={state.message}
+          showEnhance={state.showEnhance ?? false}
+          enhancing={enhancing}
+          contextLabel={contextLabel}
+          onEnhance={() => void enhance()}
+          onClose={close}
         />
       </div>
     </div>

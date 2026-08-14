@@ -1,4 +1,4 @@
-import { CircleHelp, Cpu, FileText, Home, Settings, Sparkles } from "@/components/icons";
+import { CircleHelp, Cpu, FileText, Home, Pencil, Settings, Sparkles } from "@/components/icons";
 import { Logo } from "@/components/logo";
 import {
   Sidebar as ShadcnSidebar,
@@ -16,6 +16,7 @@ interface SidebarProps {
 const primaryNav = [
   { id: "home", label: "Dictation", icon: Home },
   { id: "transcripts", label: "Transcripts", icon: FileText },
+  { id: "notes", label: "Notes", icon: Pencil },
   { id: "models", label: "Models", icon: Cpu },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "about", label: "About", icon: CircleHelp },

@@ -33,6 +33,8 @@ export interface TranscriptionResult {
   durationSeconds: number | null;
   /** Raw transcription before AI cleanup, when cleanup was applied. */
   rawText?: string | null;
+  /** Language actually used for transcription (auto-detected or pinned). */
+  language?: string | null;
 }
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
@@ -65,7 +67,7 @@ export interface EnhanceResult {
 export interface HotkeyDiagnostics {
   platform: string;
   currentShortcut: string;
-  triggerMode: "toggle" | "pushToTalk";
+  triggerMode: "toggle" | "pushToTalk" | "handsFree";
   accessibilityTrusted: boolean;
   eventTapActive: boolean;
   eventTapError: string | null;
@@ -105,8 +107,8 @@ export async function getRecordingStatus() {
   return invoke<RecordingStatus>("recording_status");
 }
 
-export async function startRecording() {
-  return invoke<RecordingStatus>("start_recording");
+export async function startRecording(handsFree?: boolean) {
+  return invoke<RecordingStatus>("start_recording", { handsFree });
 }
 
 export async function stopRecording() {
@@ -177,6 +179,14 @@ export async function enhanceFocusedInput(snapshotId: string) {
   return invoke<EnhanceResult>("enhance_focused_input", { snapshotId });
 }
 
+export async function enhanceFocusedInputNow() {
+  return invoke<EnhanceResult>("enhance_focused_input_now");
+}
+
+export async function hideWidget() {
+  return invoke<void>("hide_widget");
+}
+
 export async function deleteRecordingFile(audioPath: string) {
   return invoke<void>("delete_recording_file", { audioPath });
 }
@@ -206,15 +216,58 @@ export async function requestAccessibilityPermission() {
 }
 
 export async function getTriggerMode() {
-  return invoke<"toggle" | "pushToTalk">("get_trigger_mode");
+  return invoke<"toggle" | "pushToTalk" | "handsFree">("get_trigger_mode");
 }
 
-export async function setTriggerMode(mode: "toggle" | "pushToTalk") {
+export async function setTriggerMode(mode: "toggle" | "pushToTalk" | "handsFree") {
   return invoke<void>("set_trigger_mode", { mode });
 }
 
 export async function setNativeDictionary(dictionary: string) {
   return invoke<void>("set_dictionary", { dictionary });
+}
+
+export async function setNativeLanguage(language: string) {
+  return invoke<void>("set_language", { language });
+}
+
+export async function setNativeVoiceCommandsEnabled(enabled: boolean) {
+  return invoke<void>("set_voice_commands_enabled", { enabled });
+}
+
+export async function setNativeWhisperMode(enabled: boolean) {
+  return invoke<void>("set_whisper_mode", { enabled });
+}
+
+export interface NativeSnippet {
+  trigger: string;
+  expansion: string;
+}
+
+export async function setNativeSnippets(snippets: NativeSnippet[]) {
+  return invoke<void>("set_snippets", { snippets });
+}
+
+export type CustomModelKind = "stt" | "enhance";
+
+export interface CustomModel {
+  name: string;
+  url: string;
+  kind: CustomModelKind;
+  size: number;
+  downloaded: boolean;
+}
+
+export async function listCustomModels() {
+  return invoke<CustomModel[]>("list_custom_models");
+}
+
+export async function addCustomModel(url: string, kind?: CustomModelKind) {
+  return invoke<CustomModel>("add_custom_model", { url, kind });
+}
+
+export async function deleteCustomModel(name: string) {
+  return invoke<void>("delete_custom_model", { name });
 }
 
 export async function setTranscriptFormattingMode(
@@ -289,7 +342,8 @@ export type TransformPreset =
   | "professional"
   | "casual"
   | "summarize"
-  | "fixGrammar";
+  | "fixGrammar"
+  | "promptEngine";
 
 export async function applyTransform(
   text: string,

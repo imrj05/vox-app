@@ -23,16 +23,21 @@ import {
   setNativeEnhanceIconEnabled,
   setNativeEnhancementModel,
   setNativeErrorReporting,
+  setNativeLanguage,
+  setNativeVoiceCommandsEnabled,
+  setNativeWhisperMode,
   setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
+import { pruneTranscripts } from "@/lib/db";
 import { getUpdateNotes, renderReleaseNotes } from "@/components/release-notes";
 import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
+const NotesPage = lazy(() => import("@/pages/notes").then(({ NotesPage }) => ({ default: NotesPage })));
 const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
 const AboutPage = lazy(() => import("@/pages/about").then(({ AboutPage }) => ({ default: AboutPage })));
@@ -61,7 +66,12 @@ function App() {
     transcriptFormattingMode,
     cleanupLevel,
     errorReportingEnabled,
+    transcriptRetention,
+    language,
+    voiceCommandsEnabled,
+    whisperMode,
     hydrate,
+    loadSnippets,
     updateInfo,
     updateStatus,
     updateProgress,
@@ -126,6 +136,18 @@ function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+  // Load voice-triggered snippets and sync them to Rust
+  useEffect(() => {
+    void loadSnippets().catch(() => {});
+  }, [loadSnippets]);
+  // Enforce configurable transcript retention after hydration
+  useEffect(() => {
+    if (onboardingComplete === null) return;
+    if (transcriptRetention === "forever") return;
+    const days = Number(transcriptRetention);
+    if (!Number.isFinite(days) || days <= 0) return;
+    void pruneTranscripts(days).catch(() => {});
+  }, [onboardingComplete, transcriptRetention]);
   // Check for updates once after hydration completes
   useEffect(() => {
     if (onboardingComplete === null) return;
@@ -147,6 +169,18 @@ function App() {
   useEffect(() => {
     void setNativeDictionary(dictionary).catch(() => {});
   }, [dictionary]);
+  // Sync dictation language for background hotkey transcriptions handled in Rust
+  useEffect(() => {
+    void setNativeLanguage(language).catch(() => {});
+  }, [language]);
+  // Sync voice-command toggle for background hotkey transcriptions handled in Rust
+  useEffect(() => {
+    void setNativeVoiceCommandsEnabled(voiceCommandsEnabled).catch(() => {});
+  }, [voiceCommandsEnabled]);
+  // Sync whisper mode so the recording path boosts quiet speech
+  useEffect(() => {
+    void setNativeWhisperMode(whisperMode).catch(() => {});
+  }, [whisperMode]);
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
@@ -229,6 +263,8 @@ function App() {
         return <HomePage />;
       case "transcripts":
         return <TranscriptsPage />;
+      case "notes":
+        return <NotesPage />;
       case "models":
         return <ModelsPage />;
       case "settings":

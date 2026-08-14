@@ -93,6 +93,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Stage text enhancement sidecar
         run: pnpm build:text-enhance-sidecar
+      - name: Stage Parakeet ASR sidecar
+        run: pnpm build:parakeet-asr
       - name: Run Rust check
         working-directory: src-tauri
         run: cargo check --workspace

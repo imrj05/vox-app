@@ -31,7 +31,11 @@ export interface TranscriptionResult {
   text: string;
   appName: string | null;
   durationSeconds: number | null;
+  /** Raw transcription before AI cleanup, when cleanup was applied. */
+  rawText?: string | null;
 }
+
+export type CleanupLevel = "none" | "light" | "medium" | "high";
 
 export interface WhisperModelInfo {
   name: string;
@@ -219,6 +223,14 @@ export async function setTranscriptFormattingMode(
   return invoke<void>("set_transcript_formatting_mode", { mode });
 }
 
+export async function setCleanupLevel(level: CleanupLevel) {
+  return invoke<void>("set_cleanup_level", { level });
+}
+
+export async function getCleanupLevel() {
+  return invoke<CleanupLevel>("get_cleanup_level");
+}
+
 export async function setNativeWidgetEnabled(enabled: boolean) {
   return invoke<void>("set_widget_enabled", { enabled });
 }
@@ -269,6 +281,23 @@ export function isEventTapOnlyShortcut(shortcut: string): boolean {
 }
 
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
+export const TRANSFORM_HOTKEY = "Meta+Shift+V";
+
+export type TransformPreset =
+  | "polish"
+  | "concise"
+  | "professional"
+  | "casual"
+  | "summarize"
+  | "fixGrammar";
+
+export async function applyTransform(
+  text: string,
+  preset?: TransformPreset,
+  customInstruction?: string
+) {
+  return invoke<void>("apply_transform", { text, preset, customInstruction });
+}
 
 /** Human-readable label for a shortcut string like "Meta+Shift+Space" */
 export function formatShortcut(shortcut: string): string {

@@ -19,6 +19,7 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{env, io::Write, process::Stdio};
 
+use arboard::Clipboard;
 #[cfg(target_os = "macos")]
 use core_foundation::{
     base::{CFRelease, CFType, CFTypeRef, TCFType},
@@ -246,6 +247,9 @@ mod whisper;
 
 const DEFAULT_SHORTCUT: &str = "Meta+Shift+Space";
 const TRAY_OPEN_APP_ID: &str = "open_app";
+const TRAY_START_DICTATION_ID: &str = "start_dictation";
+const TRAY_CANCEL_DICTATION_ID: &str = "cancel_dictation";
+const TRAY_SETTINGS_ID: &str = "settings";
 const TRAY_QUIT_ID: &str = "quit";
 
 type SharedWriter = Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>;
@@ -261,6 +265,11 @@ struct DictionaryState {
 
 struct TranscriptFormattingState {
     mode: Mutex<TranscriptFormattingMode>,
+}
+
+#[derive(Default)]
+struct CleanupLevelState {
+    level: Mutex<text_enhancement::CleanupLevel>,
 }
 
 struct WidgetPreferencesState {
@@ -451,6 +460,12 @@ struct FocusedInputSnapshotState {
     presented: Mutex<Option<PresentedEnhanceOverlay>>,
 }
 
+#[derive(Default)]
+struct TransformState {
+    /// Clipboard content saved before capturing the current selection.
+    original_clipboard: Mutex<Option<String>>,
+}
+
 #[derive(Clone)]
 struct FocusedInputSnapshot {
     id: String,
@@ -522,6 +537,8 @@ struct TranscriptionResult {
     text: String,
     app_name: Option<String>,
     duration_seconds: Option<u64>,
+    /// Raw transcription before AI cleanup, when cleanup was applied.
+    raw_text: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -805,8 +822,6 @@ fn start_recording_inner(
         .map_err(|error| error.to_string())?
         .as_secs();
     let path = recordings_dir.join(format!("vox-recording-{timestamp}.wav"));
-    let app_name = frontmost_app_name();
-    let window_title = frontmost_window_title(app_name.as_deref());
 
     let host = cpal::default_host();
     let device = host
@@ -837,6 +852,11 @@ fn start_recording_inner(
         Arc::clone(&state.audio_bars),
     )?;
     stream.play().map_err(|error| error.to_string())?;
+
+    // Capture app context AFTER the stream is running so the hotkey feels
+    // instant — enumerating windows (copy_window_info) can take a while.
+    let app_name = frontmost_app_name();
+    let window_title = frontmost_window_title(app_name.as_deref());
 
     let started_at = Instant::now();
     *session = Some(RecordingSession {
@@ -1183,6 +1203,127 @@ async fn enhance_focused_input(
 }
 
 #[tauri::command]
+async fn capture_selected_text(app: AppHandle) -> Result<String, String> {
+    let original = Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .ok();
+
+    simulate_copy_shortcut()?;
+    thread::sleep(Duration::from_millis(150));
+
+    let selected = Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .map_err(|error| format!("Could not read clipboard: {error}"))?;
+
+    if selected.trim().is_empty() {
+        return Err("No text selected. Select text in another app and try again.".to_string());
+    }
+
+    *app.state::<TransformState>()
+        .original_clipboard
+        .lock()
+        .map_err(|_| "Transform state unavailable".to_string())? = original;
+
+    Ok(selected)
+}
+
+#[tauri::command]
+async fn apply_transform(
+    app: AppHandle,
+    text: String,
+    preset: Option<text_enhancement::TransformPreset>,
+    custom_instruction: Option<String>,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("No text to transform".to_string());
+    }
+
+    let model_name = app
+        .state::<EnhancePreferencesState>()
+        .model_name
+        .lock()
+        .map_err(|_| "Enhance preferences unavailable".to_string())?
+        .clone();
+    let models_dir = text_enhancement_models_dir(&app)?;
+    let inference_text = text.clone();
+    let inference_custom = custom_instruction.clone();
+
+    let transformed = tauri::async_runtime::spawn_blocking(move || {
+        text_enhancement::transform_text(
+            &models_dir,
+            Some(&model_name),
+            &inference_text,
+            preset,
+            inference_custom.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Transform task failed: {error}"))??;
+
+    let mut clipboard =
+        Clipboard::new().map_err(|error| format!("Could not access clipboard: {error}"))?;
+    clipboard
+        .set_text(&transformed)
+        .map_err(|error| format!("Could not write transformed text to clipboard: {error}"))?;
+
+    hide_main_window(&app);
+    thread::sleep(Duration::from_millis(150));
+    simulate_paste_shortcut()?;
+    thread::sleep(Duration::from_millis(150));
+
+    if let Ok(Some(original)) = app
+        .state::<TransformState>()
+        .original_clipboard
+        .lock()
+        .map(|value| value.clone())
+    {
+        let _ = clipboard.set_text(&original);
+    }
+
+    Ok(())
+}
+
+fn simulate_copy_shortcut() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let modifier = if cfg!(target_os = "macos") {
+        Key::Meta
+    } else {
+        Key::Control
+    };
+
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Unicode('c'), Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn simulate_paste_shortcut() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let modifier = if cfg!(target_os = "macos") {
+        Key::Meta
+    } else {
+        Key::Control
+    };
+
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Unicode('v'), Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn transcribe_recording(
     app: AppHandle,
     audio_path: String,
@@ -1240,7 +1381,7 @@ fn transcribe_recording_inner(
         .try_state::<FocusContextState>()
         .and_then(|state| state.is_editable_focused.lock().ok().map(|value| *value))
         .unwrap_or(false);
-    let text = format_transcript_for_context(
+    let (formatted_text, dev_applied) = format_transcript_for_context(
         &text,
         formatting_mode,
         context_app_name.as_deref(),
@@ -1248,11 +1389,45 @@ fn transcribe_recording_inner(
         is_editable_focused,
     );
 
+    // Auto AI cleanup only runs on plain (non-developer) transcripts so it
+    // never rephrases or mangles dictated code, commands, paths, or symbols.
+    let mut final_text = formatted_text;
+    let mut raw_text: Option<String> = None;
+    if !dev_applied {
+        let cleanup_level = app
+            .try_state::<CleanupLevelState>()
+            .and_then(|state| state.level.lock().ok().map(|level| *level))
+            .unwrap_or(text_enhancement::CleanupLevel::None);
+        if cleanup_level.is_enabled() && is_selected_enhancement_model_available(&app) {
+            let enhance_model = app
+                .try_state::<EnhancePreferencesState>()
+                .and_then(|state| state.model_name.lock().ok().map(|name| name.clone()))
+                .unwrap_or_default();
+            let enhance_models_dir = text_enhancement_models_dir(&app).ok();
+            if let Some(models_dir) = enhance_models_dir {
+                show_widget(&app, "transcribing", "Cleaning up…");
+                match text_enhancement::enhance_text_with_level(
+                    &models_dir,
+                    Some(&enhance_model),
+                    &final_text,
+                    cleanup_level,
+                ) {
+                    Ok(cleaned) if cleaned != final_text => {
+                        raw_text = Some(final_text);
+                        final_text = cleaned;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     Ok(TranscriptionResult {
         audio_path: audio_path.to_string_lossy().to_string(),
-        text,
+        text: final_text,
         app_name: context_app_name,
         duration_seconds: None,
+        raw_text,
     })
 }
 
@@ -1335,6 +1510,23 @@ fn set_transcript_formatting_mode(
         .mode
         .lock()
         .map_err(|_| "Transcript formatting state unavailable".to_string())? = mode;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_cleanup_level(state: State<'_, CleanupLevelState>) -> text_enhancement::CleanupLevel {
+    *state.level.lock().unwrap()
+}
+
+#[tauri::command]
+fn set_cleanup_level(
+    level: text_enhancement::CleanupLevel,
+    state: State<'_, CleanupLevelState>,
+) -> Result<(), String> {
+    *state
+        .level
+        .lock()
+        .map_err(|_| "Cleanup level state unavailable".to_string())? = level;
     Ok(())
 }
 
@@ -1458,8 +1650,9 @@ pub fn run() {
     let default_shortcut = Shortcut::new(Some(Modifiers::META | Modifiers::SHIFT), Code::Space);
     let default_hotkey =
         event_tap::parse_hotkey(DEFAULT_SHORTCUT).expect("DEFAULT_SHORTCUT must be valid");
+    let transform_shortcut = Shortcut::new(Some(Modifiers::META | Modifiers::SHIFT), Code::KeyV);
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(
             |app, args, _working_directory| {
                 let options = CliOptions::from_forwarded_args(args);
@@ -1473,7 +1666,14 @@ pub fn run() {
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, _pressed_shortcut, event| {
+                .with_handler(move |app, pressed_shortcut, event| {
+                    if pressed_shortcut == &transform_shortcut {
+                        if event.state == ShortcutState::Pressed {
+                            handle_transform_shortcut(app.clone());
+                        }
+                        return;
+                    }
+
                     let mode = app
                         .try_state::<EventTapHandle>()
                         .map(|tap_handle| (*tap_handle.state.mode.lock().unwrap()).into())
@@ -1495,13 +1695,21 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_sql::Builder::default().build())
+        .plugin(tauri_plugin_sql::Builder::default().build());
+
+    // NSPanel support so the floating overlays can be drawn over other apps'
+    // full-screen Spaces (plain NSWindows cannot). macOS only.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .manage(RecorderState::default())
         .manage(ActiveShortcut {
             current: Mutex::new(DEFAULT_SHORTCUT.to_string()),
         })
         .manage(DictionaryState::default())
         .manage(TranscriptFormattingState::default())
+        .manage(CleanupLevelState::default())
         .manage(WidgetPreferencesState {
             enabled: Mutex::new(true),
         })
@@ -1510,11 +1718,13 @@ pub fn run() {
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
         .manage(whisper::DownloadRegistry::default())
+        .manage(TransformState::default())
         .setup(move |app| {
             create_tray_menu(app)?;
 
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
+            app.global_shortcut().register(transform_shortcut)?;
 
             // Start CGEventTap for full key support (Globe, bare Option, Fn, etc.)
             let app_press = app.handle().clone();
@@ -1530,9 +1740,27 @@ pub fn run() {
             apply_startup_visibility(app.handle(), &cli_options);
             run_cli_commands(app.handle(), &cli_options);
             refresh_selected_enhancement_model_availability(app.handle());
+
+            // Keep the floating overlays above normal windows and visible over
+            // full-screen apps and on every Space (macOS).
+            if let Some(widget) = app.get_webview_window("widget") {
+                configure_floating_window(&widget);
+            }
+            if let Some(enhance) = app.get_webview_window("enhance") {
+                configure_floating_window(&enhance);
+            }
+
             start_enhance_focus_watcher(app.handle().clone());
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             native_status,
@@ -1563,6 +1791,8 @@ pub fn run() {
             set_trigger_mode,
             set_dictionary,
             set_transcript_formatting_mode,
+            get_cleanup_level,
+            set_cleanup_level,
             set_widget_enabled,
             set_error_reporting_enabled,
             set_editable_focus_context,
@@ -1572,26 +1802,21 @@ pub fn run() {
             check_microphone_permission,
             resolve_app_icon,
             open_external_link,
+            capture_selected_text,
+            apply_transform,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Vox");
 }
 
 fn create_tray_menu(app: &App) -> tauri::Result<()> {
-    let open_app = MenuItem::with_id(app, TRAY_OPEN_APP_ID, "Open App", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(app, &[&open_app, &separator, &quit])?;
+    let menu = build_tray_menu(app.handle(), false)?;
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Vox")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            TRAY_OPEN_APP_ID => show_main_window(app),
-            TRAY_QUIT_ID => app.exit(0),
-            _ => {}
-        });
+        .on_menu_event(handle_tray_menu_event);
 
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone()).icon_as_template(true);
@@ -1601,9 +1826,68 @@ fn create_tray_menu(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn build_tray_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    is_recording: bool,
+) -> tauri::Result<Menu<R>> {
+    let open_app = MenuItem::with_id(app, TRAY_OPEN_APP_ID, "Show Vox", true, None::<&str>)?;
+    let dictation = if is_recording {
+        MenuItem::with_id(
+            app,
+            TRAY_CANCEL_DICTATION_ID,
+            "Cancel Dictation",
+            true,
+            None::<&str>,
+        )?
+    } else {
+        MenuItem::with_id(
+            app,
+            TRAY_START_DICTATION_ID,
+            "Start Dictation",
+            true,
+            None::<&str>,
+        )?
+    };
+    let separator = PredefinedMenuItem::separator(app)?;
+    let settings = MenuItem::with_id(app, TRAY_SETTINGS_ID, "Settings", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)?;
+
+    Menu::with_items(app, &[&open_app, &dictation, &settings, &separator, &quit])
+}
+
+fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        TRAY_OPEN_APP_ID => show_main_window(app),
+        TRAY_START_DICTATION_ID => start_recording_flow(app.clone()),
+        TRAY_CANCEL_DICTATION_ID => cancel_recording(app.clone()),
+        TRAY_SETTINGS_ID => {
+            show_main_window(app);
+            let _ = app.emit("vox-open-settings", ());
+        }
+        TRAY_QUIT_ID => app.exit(0),
+        _ => {}
+    }
+}
+
+fn refresh_tray_menu(app: &AppHandle) {
+    let is_recording = app
+        .try_state::<RecorderState>()
+        .and_then(|state| state.session.lock().ok().map(|session| session.is_some()))
+        .unwrap_or(false);
+
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id("main"), build_tray_menu(app, is_recording)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 fn apply_startup_visibility(app: &AppHandle, options: &CliOptions) {
     if options.start_hidden {
         hide_main_window(app);
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.maximize();
     }
 }
 
@@ -1722,8 +2006,26 @@ fn handle_hotkey_release(app: AppHandle) {
     });
 }
 
+fn handle_transform_shortcut(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        match capture_selected_text(app.clone()).await {
+            Ok(text) => {
+                show_main_window(&app);
+                let _ = app.emit("vox-show-transform", serde_json::json!({ "text": text }));
+            }
+            Err(error) => {
+                show_main_window(&app);
+                let _ = app.emit("vox-show-transform", serde_json::json!({ "error": error }));
+            }
+        }
+    });
+}
+
 fn start_recording_flow(app: AppHandle) {
     let recorder_state = app.state::<RecorderState>();
+
+    // Fast pre-checks first (model availability) so we never flash a widget
+    // that immediately turns into an error.
     let models_dir = match whisper_models_dir(&app) {
         Ok(d) => d,
         Err(e) => {
@@ -1747,10 +2049,14 @@ fn start_recording_flow(app: AppHandle) {
         return;
     }
 
+    // Show the widget immediately so the hotkey feels instant, while the audio
+    // device warms up in the background.
+    show_widget(&app, "recording", "Listening…");
+
     match start_recording_inner(&app, &recorder_state) {
         Ok(_) => {
-            show_widget(&app, "recording", "Listening…");
             start_recording_timer(app.clone());
+            refresh_tray_menu(&app);
         }
         Err(error) => {
             show_widget(&app, "error", &error);
@@ -1799,6 +2105,7 @@ fn stop_and_transcribe(app: AppHandle) {
                             eprintln!("[vox] stop_and_transcribe: blank transcription");
                             show_widget(&app, "done", "No speech detected");
                             hide_widget_after_delay(app.clone(), 1200);
+                            refresh_tray_menu(&app);
                             return;
                         }
 
@@ -1815,23 +2122,27 @@ fn stop_and_transcribe(app: AppHandle) {
                         }
 
                         hide_widget_after_delay(app.clone(), 1200);
+                        refresh_tray_menu(&app);
                     }
                     Err(error) => {
                         eprintln!("[vox] stop_and_transcribe: transcription error: {error}");
                         show_widget(&app, "error", &error);
                         hide_widget_after_delay(app.clone(), 4000);
+                        refresh_tray_menu(&app);
                     }
                 }
             } else {
                 eprintln!("[vox] stop_and_transcribe: stopped without audio path");
                 show_widget(&app, "error", "Recording did not produce an audio file");
                 hide_widget_after_delay(app.clone(), 4000);
+                refresh_tray_menu(&app);
             }
         }
         Err(error) => {
             eprintln!("[vox] stop_and_transcribe: stop error: {error}");
             show_widget(&app, "error", &error);
             hide_widget_after_delay(app.clone(), 4000);
+            refresh_tray_menu(&app);
         }
     }
 }
@@ -1843,15 +2154,16 @@ fn cancel_recording(app: AppHandle) {
             if let Some(path) = status.path {
                 let _ = fs::remove_file(path);
             }
-            show_widget(&app, "idle", "Recording cancelled");
-            hide_widget_after_delay(app, 900);
+            show_widget(&app, "done", "Recording cancelled");
+            hide_widget_after_delay(app.clone(), 900);
+            refresh_tray_menu(&app);
         }
         Err(error) if error == "Recording is not running" => {
-            hide_widget_after_delay(app, 0);
+            hide_widget_after_delay(app.clone(), 0);
         }
         Err(error) => {
             show_widget(&app, "error", &error);
-            hide_widget_after_delay(app, 4000);
+            hide_widget_after_delay(app.clone(), 4000);
         }
     }
 }
@@ -2400,10 +2712,10 @@ fn format_transcript_for_context(
     app_name: Option<&str>,
     window_title: Option<&str>,
     is_editable_focused: bool,
-) -> String {
+) -> (String, bool) {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return String::new();
+        return (String::new(), false);
     }
 
     let should_format_for_developer = match mode {
@@ -2415,10 +2727,10 @@ fn format_transcript_for_context(
     };
 
     if !should_format_for_developer {
-        return trimmed.to_string();
+        return (trimmed.to_string(), false);
     }
 
-    format_developer_transcript(trimmed)
+    (format_developer_transcript(trimmed), true)
 }
 
 fn is_developer_app_context(
@@ -3467,6 +3779,9 @@ fn show_widget_with_elapsed(
         // Ensure the window is visible even if macOS hid it (e.g. after a focus change).
         // show_without_focusing keeps the previously-focused app in the foreground.
         let _ = window.show();
+        // Order the panel front even over full-screen apps (orderFrontRegardless,
+        // dispatched to the main thread).
+        order_overlay_front(app, "widget");
         let _ = window.emit(
             "vox-widget-state",
             WidgetEvent {
@@ -3484,6 +3799,85 @@ fn is_widget_enabled(app: &AppHandle) -> bool {
         .and_then(|state| state.enabled.lock().ok().map(|enabled| *enabled))
         .unwrap_or(true)
 }
+
+/// NSPanel subclass used for the floating overlays (recording widget / enhance
+/// icon). `can_become_key_window: false` keeps the panel from stealing focus
+/// from the app being dictated into.
+///
+/// Wrapped in a module so the `tauri_panel!` macro's internal imports don't
+/// clash with the crate-level `objc` imports.
+#[cfg(target_os = "macos")]
+mod overlay_panel {
+    use tauri::Manager;
+
+    tauri_nspanel::tauri_panel!(VoxOverlayPanel {
+        config: {
+            can_become_key_window: false,
+            is_floating_panel: true
+        }
+    });
+}
+
+/// Convert a floating overlay window (recording widget / enhance icon) to a
+/// non-activating NSPanel so it stays above normal windows and remains visible
+/// over full-screen apps and on every Space (macOS).
+///
+/// A plain NSWindow cannot be drawn over another app's full-screen Space —
+/// the window must be an NSPanel (see tauri#9556 / #11488).
+#[cfg(target_os = "macos")]
+fn configure_floating_window(window: &WebviewWindow) {
+    use tauri_nspanel::{CollectionBehavior, ManagerExt, StyleMask, WebviewWindowExt};
+
+    let label = window.label().to_string();
+    let app = window.app_handle();
+
+    // Convert the window to an NSPanel once; later calls reuse the panel.
+    let panel = match app.get_webview_panel(&label) {
+        Ok(panel) => panel,
+        Err(_) => match window.to_panel::<overlay_panel::VoxOverlayPanel>() {
+            Ok(panel) => panel,
+            Err(error) => {
+                eprintln!("[vox] to_panel failed: {error:?}");
+                return;
+            }
+        },
+    };
+
+    // Non-activating panel: never steals focus from the app being dictated into.
+    panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
+    // Above normal windows (and the menu bar).
+    panel.set_level(25);
+    // Visible on every Space and over full-screen apps.
+    panel.set_collection_behavior(
+        CollectionBehavior::new()
+            .full_screen_auxiliary()
+            .can_join_all_spaces()
+            .into(),
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_floating_window(_window: &WebviewWindow) {}
+
+/// Order a floating overlay panel to the front even when the app is not active
+/// and the frontmost app is in full screen (macOS).
+///
+/// `orderFrontRegardless` is an AppKit call, so it is dispatched to the main
+/// thread (this function may be called from background threads).
+#[cfg(target_os = "macos")]
+fn order_overlay_front(app: &AppHandle, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    let _ = app.clone().run_on_main_thread(move || {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel(&label) {
+            panel.order_front_regardless();
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn order_overlay_front(_app: &AppHandle, _label: &str) {}
 
 fn start_enhance_focus_watcher(app: AppHandle) {
     thread::spawn(move || loop {
@@ -3590,6 +3984,9 @@ fn show_enhance_overlay(app: &AppHandle, snapshot: &FocusedInputSnapshot) {
         let (x, y) = position;
         let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
         let _ = window.show();
+        // Order the panel front even over full-screen apps (orderFrontRegardless,
+        // dispatched to the main thread).
+        order_overlay_front(app, "enhance");
         let _ = window.emit(
             "vox-enhance-overlay",
             EnhanceOverlayEvent {

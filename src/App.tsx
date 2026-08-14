@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
+import { TransformOverlay } from "@/components/transform-overlay";
 import {
   Dialog,
   DialogContent,
@@ -17,6 +18,7 @@ import {
 import {
   setGlobalShortcut,
   setEditableFocusContext,
+  setCleanupLevel,
   setNativeDictionary,
   setNativeEnhanceIconEnabled,
   setNativeEnhancementModel,
@@ -57,6 +59,7 @@ function App() {
     enhanceIconEnabled,
     enhancementModel,
     transcriptFormattingMode,
+    cleanupLevel,
     errorReportingEnabled,
     hydrate,
     updateInfo,
@@ -69,6 +72,9 @@ function App() {
     setShowUpdateDialog,
   } = useAppStore();
   const [activeNav, setActiveNav] = useState("home");
+  const [transformOpen, setTransformOpen] = useState(false);
+  const [transformText, setTransformText] = useState("");
+  const [transformError, setTransformError] = useState<string | null>(null);
   const hasCheckedForUpdates = useRef(false);
   // Global model-download progress listener. Keeps progress + in-flight state in
   // the store so it survives navigation and prevents duplicate re-downloads.
@@ -82,6 +88,32 @@ function App() {
         const store = useAppStore.getState();
         store.beginModelDownload(modelName);
         store.setModelDownloadProgress(modelName, downloaded, total);
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  // Hydrate store from SQLite on mount
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("vox-open-settings", () => setActiveNav("settings")).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ text?: string; error?: string }>(
+      "vox-show-transform",
+      (event) => {
+        setTransformOpen(true);
+        setTransformText(event.payload.text ?? "");
+        setTransformError(event.payload.error ?? null);
       }
     ).then((cleanup) => {
       unlisten = cleanup;
@@ -118,6 +150,9 @@ function App() {
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
+  useEffect(() => {
+    void setCleanupLevel(cleanupLevel).catch(() => {});
+  }, [cleanupLevel]);
   useEffect(() => {
     void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
   }, [widgetEnabled]);
@@ -206,6 +241,17 @@ function App() {
   };
   return (
     <TooltipProvider delayDuration={300}>
+      <TransformOverlay
+        key={transformOpen ? "open" : "closed"}
+        open={transformOpen}
+        onClose={() => {
+          setTransformOpen(false);
+          setTransformText("");
+          setTransformError(null);
+        }}
+        initialText={transformText}
+        initialError={transformError}
+      />
       <Dialog open={showUpdateDialog} onOpenChange={(open) => {
         if (!open && updateBusy) return;
         setShowUpdateDialog(open);

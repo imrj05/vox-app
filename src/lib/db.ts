@@ -44,6 +44,7 @@ async function migrate(db: Database) {
   `);
   await db.execute("ALTER TABLE transcripts ADD COLUMN app_name TEXT").catch(() => {});
   await db.execute("ALTER TABLE transcripts ADD COLUMN duration_seconds INTEGER").catch(() => {});
+  await db.execute("ALTER TABLE transcripts ADD COLUMN raw_text TEXT").catch(() => {});
 }
 
 // ── Settings helpers ───────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ export interface TranscriptRow {
   audio_path: string | null;
   app_name: string | null;
   duration_seconds: number | null;
+  raw_text: string | null;
   created_at: number;
 }
 
@@ -80,19 +82,20 @@ export async function saveTranscript(
   text: string,
   audioPath?: string,
   appName?: string | null,
-  durationSeconds?: number | null
+  durationSeconds?: number | null,
+  rawText?: string | null
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
-    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, created_at) VALUES ($1, $2, $3, $4, $5)",
-    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, Date.now()]
+    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, raw_text, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, rawText ?? null, Date.now()]
   );
 }
 
 export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
   const db = await getDb();
   return db.select<TranscriptRow[]>(
-    "SELECT id, text, audio_path, app_name, duration_seconds, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
+    "SELECT id, text, audio_path, app_name, duration_seconds, raw_text, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
     [limit]
   );
 }
@@ -100,6 +103,11 @@ export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
 export async function deleteTranscript(id: number): Promise<void> {
   const db = await getDb();
   await db.execute("DELETE FROM transcripts WHERE id = $1", [id]);
+}
+
+export async function updateTranscriptText(id: number, text: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("UPDATE transcripts SET text = $1 WHERE id = $2", [text, id]);
 }
 
 export async function clearTranscripts(): Promise<void> {

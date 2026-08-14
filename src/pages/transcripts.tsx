@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, Search, Trash2 } from "@/components/icons";
+import { ArrowTurnBackward, Check, Copy, Search, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { deleteTranscript, getTranscripts, type TranscriptRow } from "@/lib/db";
+import { deleteTranscript, getTranscripts, updateTranscriptText, type TranscriptRow } from "@/lib/db";
 import { resolveAppIcon } from "@/lib/native";
 
 const TRANSCRIPT_LIBRARY_LIMIT = 1000;
@@ -68,6 +69,16 @@ export function TranscriptsPage() {
   const removeTranscript = async (id: number) => {
     await deleteTranscript(id);
     setHistory((items) => items.filter((item) => item.id !== id));
+  };
+
+  const undoAiEdit = async (item: TranscriptRow) => {
+    if (!item.raw_text) return;
+    await updateTranscriptText(item.id, item.raw_text);
+    setHistory((items) =>
+      items.map((entry) =>
+        entry.id === item.id ? { ...entry, text: item.raw_text! } : entry
+      )
+    );
   };
 
   useEffect(() => {
@@ -146,6 +157,11 @@ export function TranscriptsPage() {
                         />
                         <p className="text-sm font-medium text-foreground">{item.app_name ?? "Unknown app"}</p>
                         <span className="text-xs text-muted-foreground">{formatTranscriptDate(item.created_at)}</span>
+                        {hasAiCleanup(item) ? (
+                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                            AI cleaned
+                          </Badge>
+                        ) : null}
                       </div>
                       <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{item.text}</p>
                       <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
@@ -160,6 +176,12 @@ export function TranscriptsPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 gap-2">
+                      {hasAiCleanup(item) ? (
+                        <Button variant="outline" size="sm" onClick={() => void undoAiEdit(item)}>
+                          <ArrowTurnBackward className="h-4 w-4" />
+                          Undo AI edit
+                        </Button>
+                      ) : null}
                       <Button variant="outline" size="sm" onClick={() => void copyTranscript(item)}>
                         {copiedId === item.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                         {copiedId === item.id ? "Copied" : "Copy"}
@@ -244,6 +266,11 @@ function AppBadge({
 
 function countWords(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function hasAiCleanup(item: TranscriptRow): boolean {
+  if (!item.raw_text) return false;
+  return item.raw_text.trim() !== item.text.trim();
 }
 
 function formatDurationCompact(seconds: number) {

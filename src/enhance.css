@@ -35,8 +35,8 @@ body {
     justify-content: center;
     border: 1px solid rgb(255 255 255 / 16%);
     border-radius: 4px;
-    background: #201d1d;
-    color: #fdfcfc;
+    background: #0d0a0a;
+    color: #f7ede8;
     box-shadow: none;
     cursor: pointer;
     outline: none;
@@ -45,7 +45,7 @@ body {
 
 .enhance-button:hover {
     transform: translateY(-1px);
-    background: #302c2c;
+    background: #2b2424;
 }
 
 .enhance-button:focus-visible {
@@ -80,7 +80,7 @@ body {
 }
 
 .enhance-button[data-mode="success"] {
-    background: rgb(32 29 29 / 96%);
+    background: rgb(24 20 20 / 96%);
 }
 
 .enhance-button[data-mode="error"] {

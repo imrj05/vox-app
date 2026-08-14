@@ -80,6 +80,7 @@ import { clearAppData, clearTranscripts } from "@/lib/db";
 import { useAppStore } from "@/store/app-store";
 import type {
   AppTheme,
+  CleanupLevel,
   TranscriptFormattingMode,
   TriggerMode,
 } from "@/store/app-store";
@@ -165,6 +166,8 @@ export function GeneralSection() {
     setEnhanceIconEnabled,
     transcriptFormattingMode,
     setTranscriptFormattingMode,
+    cleanupLevel,
+    setCleanupLevel,
   } = useAppStore();
   const [startAtLogin, setStartAtLoginState] = useState(false);
   const [startAtLoginLoading, setStartAtLoginLoading] = useState(true);
@@ -326,6 +329,41 @@ export function GeneralSection() {
           </p>
         </div>
         <div className="h-px bg-border" />
+        <div className="space-y-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                AI cleanup
+              </p>
+              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                Automatically clean up dictated text with the local enhancement model. Removes filler words, fixes grammar and punctuation, and resolves self-corrections. Disabled in developer mode to protect code.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {cleanupLevelOptions.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void setCleanupLevel(option.value)}
+                className={cn(
+                  "rounded-xl border px-3 py-3 text-left transition-colors",
+                  cleanupLevel === option.value
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="h-px bg-border" />
         <SettingRow
           icon={<LogIn className="h-4 w-4" />}
           title="Start at login"
@@ -377,6 +415,33 @@ const formattingModeOptions: Array<{
     value: "developer",
     label: "Developer",
     description: "Always prefer code punctuation, structure, identifier formatting, and template snippets.",
+  },
+];
+
+const cleanupLevelOptions: Array<{
+  value: CleanupLevel;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "none",
+    label: "None",
+    description: "Paste the raw transcription as-is, no AI changes.",
+  },
+  {
+    value: "light",
+    label: "Light",
+    description: "Fix spelling, capitalization, punctuation, and remove clear filler words.",
+  },
+  {
+    value: "medium",
+    label: "Medium",
+    description: "Remove filler words and self-corrections, fix grammar, and make sentences concise.",
+  },
+  {
+    value: "high",
+    label: "High",
+    description: "Aggressive rewrite: rephrase for clarity and format into paragraphs and lists.",
   },
 ];
 

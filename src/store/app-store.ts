@@ -16,6 +16,7 @@ export const TRANSCRIPT_FORMATTING_MODE_KEY = "transcript_formatting_mode";
 export const ERROR_REPORTING_ENABLED_KEY = "error_reporting_enabled";
 export const ENHANCE_ICON_ENABLED_KEY = "enhance_icon_enabled";
 export const ENHANCEMENT_MODEL_KEY = "enhancement_model";
+export const CLEANUP_LEVEL_KEY = "cleanup_level";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
@@ -28,9 +29,11 @@ export interface ModelDownloadProgress {
 export type TriggerMode = "toggle" | "pushToTalk";
 export type AppTheme = "system" | "light" | "dark";
 export type TranscriptFormattingMode = "auto" | "plain" | "developer";
+export type CleanupLevel = "none" | "light" | "medium" | "high";
 export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
+export const DEFAULT_CLEANUP_LEVEL: CleanupLevel = "none";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
 export type UpdateStatus =
   | "idle"
@@ -57,6 +60,7 @@ interface AppState {
   enhanceIconEnabled: boolean;
   enhancementModel: string;
   transcriptFormattingMode: TranscriptFormattingMode;
+  cleanupLevel: CleanupLevel;
   errorReportingEnabled: boolean;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
@@ -71,6 +75,7 @@ interface AppState {
   setEnhanceIconEnabled: (value: boolean) => Promise<void>;
   setEnhancementModel: (value: string) => Promise<void>;
   setTranscriptFormattingMode: (value: TranscriptFormattingMode) => Promise<void>;
+  setCleanupLevel: (value: CleanupLevel) => Promise<void>;
   setErrorReportingEnabled: (value: boolean) => Promise<void>;
   resetAppState: () => void;
   // Model downloads (global, so status survives screen changes)
@@ -107,6 +112,7 @@ const defaultAppState = {
   enhanceIconEnabled: true,
   enhancementModel: DEFAULT_ENHANCEMENT_MODEL,
   transcriptFormattingMode: DEFAULT_TRANSCRIPT_FORMATTING_MODE,
+  cleanupLevel: DEFAULT_CLEANUP_LEVEL,
   errorReportingEnabled: false,
   // Model downloads
   downloadingModels: [],
@@ -177,6 +183,7 @@ export const useAppStore = create<AppState>((set) => ({
         enhanceIconEnabled,
         enhancementModel,
         transcriptFormattingMode,
+        cleanupLevel,
         errorReportingEnabled,
       ] = await withTimeout(
         Promise.all([
@@ -191,6 +198,7 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(ENHANCE_ICON_ENABLED_KEY),
           getSetting(ENHANCEMENT_MODEL_KEY),
           getSetting(TRANSCRIPT_FORMATTING_MODE_KEY),
+          getSetting(CLEANUP_LEVEL_KEY),
           getSetting(ERROR_REPORTING_ENABLED_KEY),
         ]),
         SETTINGS_HYDRATE_TIMEOUT_MS,
@@ -219,6 +227,7 @@ export const useAppStore = create<AppState>((set) => ({
         enhanceIconEnabled: resolvedEnhanceIconEnabled,
         enhancementModel: enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
+        cleanupLevel: parseCleanupLevelSetting(cleanupLevel),
         errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
       });
     } catch (error) {
@@ -276,6 +285,10 @@ export const useAppStore = create<AppState>((set) => ({
   setTranscriptFormattingMode: async (value) => {
     await setSetting(TRANSCRIPT_FORMATTING_MODE_KEY, value);
     set({ transcriptFormattingMode: value });
+  },
+  setCleanupLevel: async (value) => {
+    await setSetting(CLEANUP_LEVEL_KEY, value);
+    set({ cleanupLevel: value });
   },
   setErrorReportingEnabled: async (value) => {
     await setSetting(ERROR_REPORTING_ENABLED_KEY, String(value));
@@ -415,4 +428,9 @@ function parseTranscriptFormattingModeSetting(
   return value === "auto" || value === "plain" || value === "developer"
     ? value
     : DEFAULT_TRANSCRIPT_FORMATTING_MODE;
+}
+function parseCleanupLevelSetting(value: string | null): CleanupLevel {
+  return value === "none" || value === "light" || value === "medium" || value === "high"
+    ? value
+    : DEFAULT_CLEANUP_LEVEL;
 }

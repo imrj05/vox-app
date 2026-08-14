@@ -10,6 +10,54 @@ use tokio::{fs::File, io::AsyncWriteExt};
 
 pub const DEFAULT_TEXT_ENHANCEMENT_MODEL: &str = "qwen2.5-1.5b-instruct-q4-k-m";
 
+/// Aggressiveness of automatic AI cleanup applied to dictated transcripts.
+/// `None` keeps the raw transcription; higher levels rephrase more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CleanupLevel {
+    None,
+    Light,
+    Medium,
+    High,
+}
+
+impl CleanupLevel {
+    pub fn is_enabled(self) -> bool {
+        self != CleanupLevel::None
+    }
+}
+
+impl Default for CleanupLevel {
+    fn default() -> Self {
+        CleanupLevel::None
+    }
+}
+
+/// Preset transform applied to selected text via the AI Transform overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransformPreset {
+    Polish,
+    Concise,
+    Professional,
+    Casual,
+    Summarize,
+    FixGrammar,
+}
+
+impl TransformPreset {
+    fn instruction(self) -> &'static str {
+        match self {
+            TransformPreset::Polish => "Fix grammar, spelling, punctuation, and flow while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Concise => "Shorten the text, remove redundancy, and preserve the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Professional => "Rewrite the text in a formal, polite, workplace-ready tone while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Casual => "Rewrite the text in a friendly, relaxed, conversational tone while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Summarize => "Summarize the text into a brief bullet list of key points. Preserve the original language. Return only the summary.",
+            TransformPreset::FixGrammar => "Fix grammar, spelling, and punctuation only. Do not rephrase or change tone. Preserve the original meaning and language. Return only the corrected text.",
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextEnhancementModelInfo {
@@ -143,6 +191,67 @@ pub fn enhance_text(
         })
 }
 
+/// Run AI cleanup on a transcript at the requested level. Falls back to the
+/// original text if the model is unavailable or returns empty output, so the
+/// auto-cleanup path never blocks transcription.
+pub fn enhance_text_with_level(
+    models_dir: &Path,
+    model_name: Option<&str>,
+    text: &str,
+    level: CleanupLevel,
+) -> Result<String, String> {
+    if !level.is_enabled() {
+        return Ok(text.to_string());
+    }
+
+    let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
+    let model = find_model(model_name)?;
+    let path = model_path(models_dir, model.name);
+    if !path.exists() {
+        return Err(format!(
+            "Download {} before cleaning up transcripts",
+            model.display_name
+        ));
+    }
+
+    let prompt = cleanup_prompt(text, level);
+    match run_sidecar(&path, &prompt).map(clean_model_output) {
+        Ok(output) if !output.trim().is_empty() => Ok(output),
+        // Never let a failed/empty cleanup block transcription.
+        _ => Ok(text.to_string()),
+    }
+}
+
+/// Transform selected text using a preset or custom instruction.
+pub fn transform_text(
+    models_dir: &Path,
+    model_name: Option<&str>,
+    text: &str,
+    preset: Option<TransformPreset>,
+    custom_instruction: Option<&str>,
+) -> Result<String, String> {
+    let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
+    let model = find_model(model_name)?;
+    let path = model_path(models_dir, model.name);
+    if !path.exists() {
+        return Err(format!(
+            "Download {} before transforming text",
+            model.display_name
+        ));
+    }
+
+    let prompt = transform_prompt(text, preset, custom_instruction);
+    run_sidecar(&path, &prompt)
+        .map(clean_model_output)
+        .and_then(|output| {
+            if output.trim().is_empty() {
+                Err("Transform returned empty text".to_string())
+            } else {
+                Ok(output)
+            }
+        })
+}
+
 fn find_model(model_name: &str) -> Result<&'static TextEnhancementModelInfo, String> {
     MODELS
         .iter()
@@ -157,6 +266,41 @@ fn model_path(models_dir: &Path, model_name: &str) -> PathBuf {
 fn enhancement_prompt(text: &str) -> String {
     format!(
         "<|im_start|>system\nYou rewrite text. Preserve the original meaning and language. Fix grammar, punctuation, and clarity. Keep formatting where possible. Return only the rewritten text.<|im_end|>\n<|im_start|>user\nRewrite this text clearly and naturally:\n\n{}<|im_end|>\n<|im_start|>assistant\n",
+        text.trim()
+    )
+}
+
+fn transform_prompt(
+    text: &str,
+    preset: Option<TransformPreset>,
+    custom_instruction: Option<&str>,
+) -> String {
+    let instruction = if let Some(preset) = preset {
+        preset.instruction()
+    } else {
+        custom_instruction.unwrap_or("Rewrite the following text while preserving its meaning and language. Return only the rewritten text.")
+    };
+    format!(
+        "<|im_start|>system\n{}\n<|im_end|>\n<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+        instruction,
+        text.trim()
+    )
+}
+
+/// Build a cleanup prompt for the given level. The prompt instructs the model to
+/// preserve meaning, language, technical terms, code, names, paths, and URLs,
+/// while removing filler words and self-corrections and fixing
+/// grammar/punctuation. Higher levels rephrase and format more aggressively.
+fn cleanup_prompt(text: &str, level: CleanupLevel) -> String {
+    let instruction = match level {
+        CleanupLevel::Light => "Lightly clean up dictated text. Preserve the original meaning and language. Only fix obvious spelling, capitalization, and punctuation, and remove only clear filler words such as 'um' and 'uh'. Do not rephrase, restructure, or rewrite. Keep all technical terms, code, names, paths, and formatting verbatim.",
+        CleanupLevel::Medium => "Clean up dictated speech. Preserve the original meaning and language. Remove filler words (um, uh, like) and remove false starts and self-corrections: when the speaker corrects themselves, keep only the final corrected version (for example 'let's meet at 2... actually 3 PM' becomes 'Let's meet at 3 PM.'). Fix grammar, spelling, capitalization, and punctuation, and make sentences concise without changing meaning. Keep all technical terms, code, names, paths, and formatting verbatim.",
+        CleanupLevel::High => "Aggressively but faithfully clean up dictated speech. Preserve the original meaning and language. Remove filler words, false starts, and self-corrections (keep only the corrected version), fix grammar, spelling, capitalization, and punctuation, rephrase for clarity and conciseness, and organize into clean paragraphs and lists where appropriate, without changing meaning. Keep all technical terms, code, names, paths, and URLs verbatim.",
+        CleanupLevel::None => "",
+    };
+    format!(
+        "<|im_start|>system\n{} Return only the cleaned text, with no commentary.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+        instruction,
         text.trim()
     )
 }

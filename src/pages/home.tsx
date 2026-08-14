@@ -78,7 +78,7 @@ export function HomePage() {
 
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
     setTranscriptionResult(result);
-    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds);
+    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null);
     await deleteRecordingFile(result.audioPath).catch(() => {});
     setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
   };

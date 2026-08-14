@@ -8,8 +8,6 @@ import "./widget.css";
 /* ------------------------------------------------------------------ */
 
 const BAR_COUNT = 7;
-const BAR_MIN_HEIGHT = 7;
-const BAR_HEIGHT_RANGE = 27;
 const THEME_KEY = "theme";
 
 type WidgetMode = "idle" | "recording" | "transcribing" | "done" | "error";
@@ -35,9 +33,7 @@ interface AudioBarsPayload {
 function formatElapsed(s: number): string {
   const m = Math.floor(s / 60);
   const sec = s % 60;
-  return m > 0
-    ? `${m}:${String(sec).padStart(2, "0")}`
-    : `${sec}s`;
+  return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `${sec}s`;
 }
 
 function clamp01(value: number): number {
@@ -68,7 +64,34 @@ function mapAudioBarsToMeter(bars: number[]): number[] {
 }
 
 /* ------------------------------------------------------------------ */
-/*  WaveformBars                                                      */
+/*  Icons                                                             */
+/* ------------------------------------------------------------------ */
+
+function CheckIcon() {
+  return (
+    <svg className="widget-status-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.2 8.4 6.6 11.8 12.8 4.6"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg className="widget-status-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 5.2v3.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="8" cy="11.6" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  VoiceDots                                                         */
 /* ------------------------------------------------------------------ */
 
 function VoiceDots({
@@ -76,64 +99,77 @@ function VoiceDots({
   meterLevels,
   audioLevel,
   elapsed,
+  message,
 }: {
   mode: WidgetMode;
   meterLevels: number[];
   audioLevel: number;
   elapsed: number | undefined;
+  message: string;
 }) {
+  const isRecording = mode === "recording";
+
   // Glow intensity scales with audio level during recording
-  const glowAlpha =
-    mode === "recording"
-      ? Math.min(0.5, Math.max(0, audioLevel - 0.002) * 0.9 + 0.03)
-      : mode === "transcribing"
-        ? 0.1
-        : 0;
+  const glowAlpha = isRecording
+    ? Math.min(0.35, Math.max(0, audioLevel - 0.002) * 0.6 + 0.02)
+    : mode === "transcribing"
+      ? 0.08
+      : 0;
 
   return (
     <div className="widget-voice-container">
-      {/* Theme-aware Vox logo (dark mark on light, light mark on dark) */}
-      <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
-      <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
-      <div
-        className="widget-glow"
-        style={{ opacity: glowAlpha }}
-      />
+      {/* Theme-aware Vox logo (light mark on light, dark mark on dark) */}
+      <div className="widget-logo-wrap">
+        <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
+        <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
+      </div>
 
-      {mode === "transcribing" ? (
+      <div className="widget-glow" style={{ opacity: glowAlpha }} />
+
+      {mode === "transcribing" && (
         <div className="widget-transcribing-wrap">
-          <span
-            className="widget-shimmer-text"
-            data-text="Transcribing"
-          >
-            Transcribing
+          <span className="widget-shimmer-text" data-text="Transcribing…">
+            Transcribing…
           </span>
-        </div>
-      ) : (
-        <div className="widget-bars">
-          {Array.from({ length: BAR_COUNT }).map((_, i) => {
-            const level = mode === "recording" ? shapeVoiceLevel(meterLevels[i] ?? 0) : 0;
-            const style = {
-              height: `${(BAR_MIN_HEIGHT + level * BAR_HEIGHT_RANGE).toFixed(1)}px`,
-              opacity: mode === "recording" ? 0.46 + level * 0.54 : 0.72,
-            };
-
-            return (
-              <div
-                key={i}
-                className="widget-bar"
-                style={style}
-              />
-            );
-          })}
         </div>
       )}
 
-      {/* Timer (recording only) */}
-      {mode === "recording" && elapsed !== undefined && elapsed > 0 && (
-        <span className="widget-timer">
-          {formatElapsed(elapsed)}
-        </span>
+      {mode === "done" && (
+        <div className="widget-status widget-status-done">
+          <CheckIcon />
+          <span className="widget-status-text">{message || "Done"}</span>
+        </div>
+      )}
+
+      {mode === "error" && (
+        <div className="widget-status widget-status-error">
+          <AlertIcon />
+          <span className="widget-status-text">{message || "Something went wrong"}</span>
+        </div>
+      )}
+
+      {isRecording && (
+        <>
+          <div className="widget-bars">
+            {Array.from({ length: BAR_COUNT }).map((_, i) => {
+              const level = shapeVoiceLevel(meterLevels[i] ?? 0);
+              return (
+                <div
+                  key={i}
+                  className="widget-bar"
+                  style={{
+                    height: `${(6 + level * 26).toFixed(1)}px`,
+                    opacity: 0.5 + level * 0.5,
+                  }}
+                />
+              );
+            })}
+          </div>
+
+          {elapsed !== undefined && elapsed > 0 && (
+            <span className="widget-timer">{formatElapsed(elapsed)}</span>
+          )}
+        </>
       )}
     </div>
   );
@@ -284,9 +320,7 @@ export function Widget() {
     };
   }, []);
 
-  const isActive =
-    state.mode === "recording" ||
-    state.mode === "transcribing";
+  const isActive = state.mode === "recording" || state.mode === "transcribing";
 
   const isVisible =
     state.mode === "recording" ||
@@ -296,12 +330,15 @@ export function Widget() {
 
   return (
     <div className="widget-root">
-      <div className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}>
+      <div
+        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}
+      >
         <VoiceDots
           mode={state.mode}
           meterLevels={meterLevels}
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
+          message={state.message}
         />
       </div>
     </div>

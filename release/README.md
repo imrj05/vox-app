@@ -48,6 +48,37 @@ Upload these files to the GitHub release matching the tag used above:
 
 The `.app.tar.gz` archive is required by Tauri's auto-updater. The `.dmg` is the user-facing installer asset people can download and install manually from GitHub Releases.
 
+## Custom DMG with signing + notarization
+
+`pnpm make:dmg` builds the latest changes (sidecars + frontend + Rust app) and
+produces a polished, signed and notarized DMG from the freshly built `.app`
+(background layout, app-drop link, volume icon):
+
+```bash
+pnpm make:dmg
+```
+
+To skip the rebuild and wrap an existing `.app`, run the script directly:
+
+```bash
+bash scripts/make-dmg.sh
+```
+
+Optional arguments: `pnpm make:dmg -- <version> <path-to-Vox.app>`
+
+Environment:
+
+- `APPLE_SIGNING_IDENTITY` — Developer ID Application identity. If omitted, the
+  first `Developer ID Application` identity in the keychain is used. Without one,
+  the DMG is built unsigned (fine for local installs).
+- `NOTARY_PROFILE` (default `vox-notary`) — `notarytool` keychain profile. Falls
+  back to `APPLE_ID` / `APPLE_ID_PASSWORD` / `APPLE_TEAM_ID` from `.env`.
+- `DMG_OUT_DIR` (default `release/`), `DMG_BACKGROUND`, `DMG_VOLUME_ICON`.
+
+Requires `create-dmg` for the polished layout: `brew install create-dmg`
+(plain `hdiutil` is used as a fallback when missing). The script prints the
+sha256 of the finished DMG for release notes.
+
 ## macOS — Gatekeeper warning
 
 If macOS blocks the app, run once in Terminal after installing:

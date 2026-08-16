@@ -25,6 +25,7 @@ import {
   Database,
   Download,
   ExternalLink,
+  Github,
   Globe,
   Keyboard,
   ListBullet,
@@ -89,6 +90,7 @@ import {
   type DictionaryEntry,
 } from "@/lib/dictionary";
 import { useAppStore } from "@/store/app-store";
+import { getPocketBase } from "@/lib/pocketbase";
 import type {
   AppTheme,
   CleanupLevel,
@@ -1133,6 +1135,130 @@ export function SnippetsSection() {
     </div>
   );
 }
+export function AccountSection() {
+  const { authUser, authStatus, signInWithGithub, signOut } = useAppStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSignIn = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await signInWithGithub();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const lower = message.toLowerCase();
+      if (lower.includes("cancelled")) {
+        setError("Sign-in was cancelled.");
+      } else if (lower.includes("timed out")) {
+        setError(message);
+      } else {
+        setError(
+          "Couldn't reach the Vox server. Check your connection and try again."
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await signOut();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const displayName =
+    authUser?.name || authUser?.username || authUser?.email || "GitHub user";
+  const avatarUrl = authUser?.avatar
+    ? getPocketBase().files.getURL(authUser, authUser.avatar)
+    : null;
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Account"
+        description="Your Vox account is linked to GitHub. We don't store any data in the cloud — everything stays on this device. Your account details are used only for analytics."
+      />
+      <SettingsCard className="space-y-4">
+        {authUser ? (
+          <>
+            <div className="flex items-center gap-3">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="h-10 w-10 rounded-full border border-border object-cover"
+                />
+              ) : (
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <Github className="h-5 w-5" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {displayName}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {authUser?.email ?? "Signed in with GitHub"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">Sign out</p>
+                <p className="text-xs text-muted-foreground">
+                  You'll be asked to sign in again on next launch.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => void handleSignOut()}
+                disabled={busy}
+                className="shrink-0"
+              >
+                {busy ? <Spinner className="size-4" /> : <LogIn className="size-4" />}
+                Sign out
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                Not signed in
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Sign in with GitHub to link your account. Vox works fully
+                without an account.
+              </p>
+            </div>
+            <Button
+              onClick={() => void handleSignIn()}
+              disabled={busy || authStatus === "loading"}
+              className="shrink-0 gap-2"
+            >
+              {busy ? (
+                <Spinner className="size-4" />
+              ) : (
+                <Github className="size-4" />
+              )}
+              {busy ? "Opening your browser…" : "Sign in with GitHub"}
+            </Button>
+          </div>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </SettingsCard>
+    </div>
+  );
+}
+
 export function DataSection() {
   const {
     errorReportingEnabled,
@@ -2059,6 +2185,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     switch (activeSection) {
       case "general":
         return <GeneralSection />;
+      case "account":
+        return <AccountSection />;
       case "models":
         return <ModelsSection />;
       case "dictionary":

@@ -4,6 +4,12 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting, getSnippets, saveSnippet, updateSnippet, deleteSnippet, type Snippet } from "@/lib/db";
 import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets } from "@/lib/native";
+import {
+  initAuth as initPocketBaseAuth,
+  signInWithGithub as signInWithGithubOAuth,
+  signOut as signOutPocketBase,
+} from "@/lib/pocketbase";
+import type { RecordModel } from "pocketbase";
 export const HOTKEY_KEY = "hotkey";
 export const ONBOARDING_KEY = "onboarding_complete";
 export const TRIGGER_MODE_KEY = "trigger_mode";
@@ -22,6 +28,7 @@ export const PRIVACY_MODE_KEY = "privacy_mode";
 export const LANGUAGE_KEY = "language";
 export const VOICE_COMMANDS_KEY = "voice_commands_enabled";
 export const WHISPER_MODE_KEY = "whisper_mode";
+export const AUTH_SKIPPED_KEY = "auth_skipped";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
@@ -56,7 +63,9 @@ export type UpdateStatus =
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
 }
-interface AppState {
+export type AuthStatus = "loading" | "signedOut" | "signedIn" | "skipped";
+
+export interface AppState {
   /** null = not yet loaded from DB */
   onboardingComplete: boolean | null;
   hotkey: string;
@@ -77,6 +86,13 @@ interface AppState {
   voiceCommandsEnabled: boolean;
   whisperMode: boolean;
   snippets: Snippet[];
+  // PocketBase auth
+  authStatus: AuthStatus;
+  authUser: RecordModel | null;
+  initAuth: () => Promise<void>;
+  signInWithGithub: () => Promise<void>;
+  skipAuth: () => Promise<void>;
+  signOut: () => Promise<void>;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
   setOnboardingComplete: (value: boolean) => Promise<void>;
@@ -144,6 +160,9 @@ const defaultAppState = {
   voiceCommandsEnabled: true,
   whisperMode: false,
   snippets: [],
+  // PocketBase auth
+  authStatus: "loading" as AuthStatus,
+  authUser: null,
   // Model downloads
   downloadingModels: [],
   pausedModels: [],
@@ -368,6 +387,39 @@ export const useAppStore = create<AppState>((set) => ({
   loadSnippets: async () => {
     await syncSnippetsToNative();
   },
+  initAuth: async () => {
+    try {
+      const user = await initPocketBaseAuth();
+      if (user) {
+        set({ authUser: user, authStatus: "signedIn" });
+        return;
+      }
+      // No valid session: if the user previously skipped sign-in, keep the
+      // app usable without an account instead of showing the login gate again.
+      const skipped = await getSetting(AUTH_SKIPPED_KEY);
+      set({
+        authUser: null,
+        authStatus: skipped === "true" ? "skipped" : "signedOut",
+      });
+    } catch (error) {
+      console.error("Failed to initialize PocketBase auth", error);
+      set({ authUser: null, authStatus: "signedOut" });
+    }
+  },
+  signInWithGithub: async () => {
+    const user = await signInWithGithubOAuth();
+    // A successful sign-in clears any previous skip.
+    await setSetting(AUTH_SKIPPED_KEY, "false");
+    set({ authUser: user, authStatus: "signedIn" });
+  },
+  skipAuth: async () => {
+    await setSetting(AUTH_SKIPPED_KEY, "true");
+    set({ authUser: null, authStatus: "skipped" });
+  },
+  signOut: async () => {
+    signOutPocketBase();
+    set({ authUser: null, authStatus: "signedOut" });
+  },
   addSnippet: async (trigger, expansion) => {
     await saveSnippet(trigger, expansion);
     await syncSnippetsToNative();
@@ -384,7 +436,10 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
     localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
-    set({ ...defaultAppState, onboardingComplete: false });
+    // Full factory reset: drop the account session too so the app returns to
+    // the first-launch sign-in gate instead of hanging on the loading screen.
+    signOutPocketBase();
+    set({ ...defaultAppState, onboardingComplete: false, authStatus: "signedOut", authUser: null });
   },
   beginModelDownload: (name) =>
     set((state) =>

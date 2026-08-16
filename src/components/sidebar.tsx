@@ -1,4 +1,4 @@
-import { CircleHelp, Cpu, FileText, Home, Pencil, Settings, Sparkles } from "@/components/icons";
+import { CircleHelp, Cpu, FileText, Github, Home, Pencil, Settings, Sparkles } from "@/components/icons";
 import { Logo } from "@/components/logo";
 import {
   Sidebar as ShadcnSidebar,
@@ -7,6 +7,8 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/store/app-store";
+import { getPocketBase } from "@/lib/pocketbase";
 
 interface SidebarProps {
   activeNav: string;
@@ -23,13 +25,20 @@ const primaryNav = [
 ] as const;
 
 export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
+  const { authUser } = useAppStore();
+  const displayName =
+    authUser?.name || authUser?.username || authUser?.email || "GitHub user";
+  const avatarUrl = authUser?.avatar
+    ? getPocketBase().files.getURL(authUser, authUser.avatar)
+    : null;
+
   return (
     <ShadcnSidebar
       collapsible="none"
       className="select-none border-r border-sidebar-border bg-sidebar"
     >
       <SidebarHeader
-        className="shrink-0 px-4 pb-5 pt-[52px]"
+        className="shrink-0 px-4 pb-4 pt-[52px]"
         data-tauri-drag-region
       >
         <div className="flex items-center gap-3 px-2">
@@ -39,6 +48,30 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
             <p className="text-[11px] text-muted-foreground">Private local dictation</p>
           </div>
         </div>
+
+        {authUser && (
+          <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-2">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                className="h-7 w-7 shrink-0 rounded-full border border-border object-cover"
+              />
+            ) : (
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Github className="h-4 w-4" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-sidebar-foreground">
+                {displayName}
+              </p>
+              <p className="truncate text-[10px] text-muted-foreground">
+                {authUser?.email ?? "Signed in with GitHub"}
+              </p>
+            </div>
+          </div>
+        )}
       </SidebarHeader>
 
       <SidebarContent className="px-3">

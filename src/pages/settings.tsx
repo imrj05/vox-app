@@ -6,6 +6,7 @@ import {
   type SettingsSection,
 } from "@/components/settings-sections";
 import {
+  AccountSection,
   DictionarySection,
   DataSection,
   GeneralSection,
@@ -25,6 +26,8 @@ export function SettingsPage() {
     switch (activeSection) {
       case "general":
         return <GeneralSection />;
+      case "account":
+        return <AccountSection />;
       case "models":
         return <ModelsSection />;
       case "dictionary":

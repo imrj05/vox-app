@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
+import { GithubLogin } from "@/components/github-login";
 import { TransformOverlay } from "@/components/transform-overlay";
 import {
   Dialog,
@@ -72,6 +73,8 @@ function App() {
     whisperMode,
     hydrate,
     loadSnippets,
+    authStatus,
+    initAuth,
     updateInfo,
     updateStatus,
     updateProgress,
@@ -136,6 +139,10 @@ function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+  // Restore PocketBase session (validates any persisted token)
+  useEffect(() => {
+    void initAuth();
+  }, [initAuth]);
   // Load voice-triggered snippets and sync them to Rust
   useEffect(() => {
     void loadSnippets().catch(() => {});
@@ -244,7 +251,7 @@ function App() {
       : null;
   const updateBusy = updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting";
 
-  if (onboardingComplete === null) {
+  if (onboardingComplete === null || authStatus === "loading") {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background px-6">
         <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3">
@@ -256,6 +263,9 @@ function App() {
         </div>
       </div>
     );
+  }
+  if (authStatus === "signedOut") {
+    return <GithubLogin />;
   }
   const renderPage = () => {
     switch (activeNav) {

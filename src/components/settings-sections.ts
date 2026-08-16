@@ -1,7 +1,8 @@
-import { BookOpenText, CircleHelp, Cpu, Database, Keyboard, ListBullet, Settings, ShieldCheck } from "@/components/icons";
+import { BookOpenText, CircleHelp, Cpu, Database, Github, Keyboard, ListBullet, Settings, ShieldCheck } from "@/components/icons";
 
 export const settingsSections = [
   { id: "general", label: "General", icon: Settings },
+  { id: "account", label: "Account", icon: Github },
   { id: "models", label: "Models", icon: Cpu },
   { id: "dictionary", label: "Dictionary", icon: BookOpenText },
   { id: "snippets", label: "Snippets", icon: ListBullet },

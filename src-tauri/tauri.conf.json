@@ -81,7 +81,7 @@
         ],
         "macOS": {
             "minimumSystemVersion": "10.15",
-            "signingIdentity": "Developer ID Application: One Man Wireless Inc. (RFBXG4V45C)"
+            "signingIdentity": "Developer ID Application: -"
         },
         "windows": {
             "nsis": {

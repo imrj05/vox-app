@@ -16,7 +16,7 @@
 #                            Without one the DMG is built unsigned (fine for
 #                            local installs, not for distribution).
 #   NOTARY_PROFILE           notarytool keychain profile (default: vox-notary).
-#                            Falls back to APPLE_ID / APPLE_ID_PASSWORD /
+#                            Falls back to APPLE_ID / APPLE_PASSWORD /
 #                            APPLE_TEAM_ID from the environment (e.g. .env).
 #   DMG_OUT_DIR              Output directory (default: <repo>/release).
 #   DMG_BACKGROUND           Optional background image for the DMG window.
@@ -117,14 +117,14 @@ if [ -n "$IDENTITY" ]; then
   echo "==> Notarizing"
   if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
     xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
-  elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_ID_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+  elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
     xcrun notarytool submit "$DMG" \
       --apple-id "$APPLE_ID" \
-      --apple-password "$APPLE_ID_PASSWORD" \
+      --password "$APPLE_PASSWORD" \
       --team-id "$APPLE_TEAM_ID" \
       --wait
   else
-    echo "!! Notarization skipped: set NOTARY_PROFILE or APPLE_ID/APPLE_ID_PASSWORD/APPLE_TEAM_ID." >&2
+    echo "!! Notarization skipped: set NOTARY_PROFILE or APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID." >&2
   fi
 
   echo "==> Stapling"

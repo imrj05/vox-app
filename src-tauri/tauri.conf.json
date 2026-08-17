@@ -80,7 +80,8 @@
             "icons/icon.ico"
         ],
         "macOS": {
-            "minimumSystemVersion": "10.15"
+            "minimumSystemVersion": "10.15",
+            "signingIdentity": "Developer ID Application: One Man Wireless Inc. (RFBXG4V45C)"
         },
         "windows": {
             "nsis": {
@@ -108,7 +109,7 @@
             "endpoints": [
                 "https://github.com/imrj05/vox-app/releases/latest/download/latest.json"
             ],
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIzRjE0RjNGNDA2NUQ0NzkKUldSNTFHVkFQMC94czJPamdzQmc3WHZTNHd4b0J5bEFzMThVczZLSHJTQ2p4Mzg2VE5sY1ZOZHEK"
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI1QjI0RDk5NjIxNzQ3QUIKUldTclJ4ZGltVTJ5SlhwVUpBd29YSjFUQ0ttUFIvUHhSOHFxN1oyTndObnhvSVNLQThuK0J4NzQK"
         }
     }
 }

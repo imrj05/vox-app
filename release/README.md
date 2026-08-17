@@ -72,7 +72,7 @@ Environment:
   first `Developer ID Application` identity in the keychain is used. Without one,
   the DMG is built unsigned (fine for local installs).
 - `NOTARY_PROFILE` (default `vox-notary`) — `notarytool` keychain profile. Falls
-  back to `APPLE_ID` / `APPLE_ID_PASSWORD` / `APPLE_TEAM_ID` from `.env`.
+  back to `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` from `.env`.
 - `DMG_OUT_DIR` (default `release/`), `DMG_BACKGROUND`, `DMG_VOLUME_ICON`.
 
 Requires `create-dmg` for the polished layout: `brew install create-dmg`

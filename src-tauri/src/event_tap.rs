@@ -206,6 +206,9 @@ pub enum TriggerMode {
     Toggle,
     /// Hold to record, release to stop and transcribe.
     PushToTalk,
+    /// Press once to start a continuous session; speech is auto-segmented on
+    /// silence and each segment is transcribed and inserted progressively.
+    HandsFree,
 }
 
 /// Shared mutable hotkey — updated atomically when the user changes the binding.

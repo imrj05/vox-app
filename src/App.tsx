@@ -6,6 +6,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
+import { GithubLogin } from "@/components/github-login";
+import { TransformOverlay } from "@/components/transform-overlay";
 import {
   Dialog,
   DialogContent,
@@ -17,20 +19,26 @@ import {
 import {
   setGlobalShortcut,
   setEditableFocusContext,
+  setCleanupLevel,
   setNativeDictionary,
   setNativeEnhanceIconEnabled,
   setNativeEnhancementModel,
   setNativeErrorReporting,
+  setNativeLanguage,
+  setNativeVoiceCommandsEnabled,
+  setNativeWhisperMode,
   setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
+import { pruneTranscripts } from "@/lib/db";
 import { getUpdateNotes, renderReleaseNotes } from "@/components/release-notes";
 import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
+const NotesPage = lazy(() => import("@/pages/notes").then(({ NotesPage }) => ({ default: NotesPage })));
 const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
 const AboutPage = lazy(() => import("@/pages/about").then(({ AboutPage }) => ({ default: AboutPage })));
@@ -57,8 +65,16 @@ function App() {
     enhanceIconEnabled,
     enhancementModel,
     transcriptFormattingMode,
+    cleanupLevel,
     errorReportingEnabled,
+    transcriptRetention,
+    language,
+    voiceCommandsEnabled,
+    whisperMode,
     hydrate,
+    loadSnippets,
+    authStatus,
+    initAuth,
     updateInfo,
     updateStatus,
     updateProgress,
@@ -69,6 +85,9 @@ function App() {
     setShowUpdateDialog,
   } = useAppStore();
   const [activeNav, setActiveNav] = useState("home");
+  const [transformOpen, setTransformOpen] = useState(false);
+  const [transformText, setTransformText] = useState("");
+  const [transformError, setTransformError] = useState<string | null>(null);
   const hasCheckedForUpdates = useRef(false);
   // Global model-download progress listener. Keeps progress + in-flight state in
   // the store so it survives navigation and prevents duplicate re-downloads.
@@ -92,8 +111,50 @@ function App() {
   }, []);
   // Hydrate store from SQLite on mount
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("vox-open-settings", () => setActiveNav("settings")).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ text?: string; error?: string }>(
+      "vox-show-transform",
+      (event) => {
+        setTransformOpen(true);
+        setTransformText(event.payload.text ?? "");
+        setTransformError(event.payload.error ?? null);
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  // Hydrate store from SQLite on mount
+  useEffect(() => {
     void hydrate();
   }, [hydrate]);
+  // Restore PocketBase session (validates any persisted token)
+  useEffect(() => {
+    void initAuth();
+  }, [initAuth]);
+  // Load voice-triggered snippets and sync them to Rust
+  useEffect(() => {
+    void loadSnippets().catch(() => {});
+  }, [loadSnippets]);
+  // Enforce configurable transcript retention after hydration
+  useEffect(() => {
+    if (onboardingComplete === null) return;
+    if (transcriptRetention === "forever") return;
+    const days = Number(transcriptRetention);
+    if (!Number.isFinite(days) || days <= 0) return;
+    void pruneTranscripts(days).catch(() => {});
+  }, [onboardingComplete, transcriptRetention]);
   // Check for updates once after hydration completes
   useEffect(() => {
     if (onboardingComplete === null) return;
@@ -115,9 +176,24 @@ function App() {
   useEffect(() => {
     void setNativeDictionary(dictionary).catch(() => {});
   }, [dictionary]);
+  // Sync dictation language for background hotkey transcriptions handled in Rust
+  useEffect(() => {
+    void setNativeLanguage(language).catch(() => {});
+  }, [language]);
+  // Sync voice-command toggle for background hotkey transcriptions handled in Rust
+  useEffect(() => {
+    void setNativeVoiceCommandsEnabled(voiceCommandsEnabled).catch(() => {});
+  }, [voiceCommandsEnabled]);
+  // Sync whisper mode so the recording path boosts quiet speech
+  useEffect(() => {
+    void setNativeWhisperMode(whisperMode).catch(() => {});
+  }, [whisperMode]);
   useEffect(() => {
     void setTranscriptFormattingMode(transcriptFormattingMode).catch(() => {});
   }, [transcriptFormattingMode]);
+  useEffect(() => {
+    void setCleanupLevel(cleanupLevel).catch(() => {});
+  }, [cleanupLevel]);
   useEffect(() => {
     void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
   }, [widgetEnabled]);
@@ -175,7 +251,7 @@ function App() {
       : null;
   const updateBusy = updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting";
 
-  if (onboardingComplete === null) {
+  if (onboardingComplete === null || authStatus === "loading") {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background px-6">
         <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3">
@@ -188,12 +264,17 @@ function App() {
       </div>
     );
   }
+  if (authStatus === "signedOut") {
+    return <GithubLogin />;
+  }
   const renderPage = () => {
     switch (activeNav) {
       case "home":
         return <HomePage />;
       case "transcripts":
         return <TranscriptsPage />;
+      case "notes":
+        return <NotesPage />;
       case "models":
         return <ModelsPage />;
       case "settings":
@@ -206,6 +287,17 @@ function App() {
   };
   return (
     <TooltipProvider delayDuration={300}>
+      <TransformOverlay
+        key={transformOpen ? "open" : "closed"}
+        open={transformOpen}
+        onClose={() => {
+          setTransformOpen(false);
+          setTransformText("");
+          setTransformError(null);
+        }}
+        initialText={transformText}
+        initialError={transformError}
+      />
       <Dialog open={showUpdateDialog} onOpenChange={(open) => {
         if (!open && updateBusy) return;
         setShowUpdateDialog(open);

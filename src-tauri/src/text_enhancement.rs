@@ -10,6 +10,56 @@ use tokio::{fs::File, io::AsyncWriteExt};
 
 pub const DEFAULT_TEXT_ENHANCEMENT_MODEL: &str = "qwen2.5-1.5b-instruct-q4-k-m";
 
+/// Aggressiveness of automatic AI cleanup applied to dictated transcripts.
+/// `None` keeps the raw transcription; higher levels rephrase more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CleanupLevel {
+    None,
+    Light,
+    Medium,
+    High,
+}
+
+impl CleanupLevel {
+    pub fn is_enabled(self) -> bool {
+        self != CleanupLevel::None
+    }
+}
+
+impl Default for CleanupLevel {
+    fn default() -> Self {
+        CleanupLevel::None
+    }
+}
+
+/// Preset transform applied to selected text via the AI Transform overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransformPreset {
+    Polish,
+    Concise,
+    Professional,
+    Casual,
+    Summarize,
+    FixGrammar,
+    PromptEngine,
+}
+
+impl TransformPreset {
+    fn instruction(self) -> &'static str {
+        match self {
+            TransformPreset::Polish => "Fix grammar, spelling, punctuation, and flow while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Concise => "Shorten the text, remove redundancy, and preserve the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Professional => "Rewrite the text in a formal, polite, workplace-ready tone while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Casual => "Rewrite the text in a friendly, relaxed, conversational tone while preserving the original meaning and language. Return only the rewritten text.",
+            TransformPreset::Summarize => "Summarize the text into a brief bullet list of key points. Preserve the original language. Return only the summary.",
+            TransformPreset::FixGrammar => "Fix grammar, spelling, and punctuation only. Do not rephrase or change tone. Preserve the original meaning and language. Return only the corrected text.",
+            TransformPreset::PromptEngine => "Restructure the text into a clear, well-scoped AI prompt: start with a concise goal statement, then list requirements and constraints as bullet points. Preserve the original language. Return only the prompt.",
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextEnhancementModelInfo {
@@ -21,14 +71,32 @@ pub struct TextEnhancementModelInfo {
     pub recommended: bool,
 }
 
-const MODELS: &[TextEnhancementModelInfo] = &[TextEnhancementModelInfo {
-    name: DEFAULT_TEXT_ENHANCEMENT_MODEL,
-    display_name: "Qwen2.5 1.5B Instruct Q4",
-    size: 986_000_000,
-    url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    downloaded: false,
-    recommended: true,
-}];
+const MODELS: &[TextEnhancementModelInfo] = &[
+    TextEnhancementModelInfo {
+        name: DEFAULT_TEXT_ENHANCEMENT_MODEL,
+        display_name: "Qwen2.5 1.5B Instruct Q4",
+        size: 986_000_000,
+        url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        downloaded: false,
+        recommended: true,
+    },
+    TextEnhancementModelInfo {
+        name: "qwen2.5-0.5b-instruct-q4_k_m",
+        display_name: "Qwen2.5 0.5B Instruct Q4",
+        size: 397_000_000,
+        url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        downloaded: false,
+        recommended: false,
+    },
+    TextEnhancementModelInfo {
+        name: "qwen2.5-3b-instruct-q4_k_m",
+        display_name: "Qwen2.5 3B Instruct Q4",
+        size: 1_980_000_000,
+        url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+        downloaded: false,
+        recommended: false,
+    },
+];
 
 pub fn models_dir(app_data_dir: PathBuf) -> PathBuf {
     app_data_dir.join("text-models")
@@ -122,13 +190,9 @@ pub fn enhance_text(
     text: &str,
 ) -> Result<String, String> {
     let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
-    let model = find_model(model_name)?;
-    let path = model_path(models_dir, model.name);
+    let path = resolve_model_path(models_dir, model_name)?;
     if !path.exists() {
-        return Err(format!(
-            "Download {} before enhancing text",
-            model.display_name
-        ));
+        return Err(format!("Download {model_name} before enhancing text"));
     }
 
     let prompt = enhancement_prompt(text);
@@ -143,6 +207,63 @@ pub fn enhance_text(
         })
 }
 
+/// Run AI cleanup on a transcript at the requested level. Falls back to the
+/// original text if the model is unavailable or returns empty output, so the
+/// auto-cleanup path never blocks transcription.
+///
+/// `style` is an optional app-context writing-style instruction (e.g. "write in
+/// a professional email style") derived from the active application.
+pub fn enhance_text_with_level(
+    models_dir: &Path,
+    model_name: Option<&str>,
+    text: &str,
+    level: CleanupLevel,
+    style: Option<&str>,
+) -> Result<String, String> {
+    if !level.is_enabled() {
+        return Ok(text.to_string());
+    }
+
+    let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
+    let path = resolve_model_path(models_dir, model_name)?;
+    if !path.exists() {
+        return Err(format!("Download {model_name} before cleaning up transcripts"));
+    }
+
+    let prompt = cleanup_prompt(text, level, style);
+    match run_sidecar(&path, &prompt).map(clean_model_output) {
+        Ok(output) if !output.trim().is_empty() => Ok(output),
+        // Never let a failed/empty cleanup block transcription.
+        _ => Ok(text.to_string()),
+    }
+}
+
+/// Transform selected text using a preset or custom instruction.
+pub fn transform_text(
+    models_dir: &Path,
+    model_name: Option<&str>,
+    text: &str,
+    preset: Option<TransformPreset>,
+    custom_instruction: Option<&str>,
+) -> Result<String, String> {
+    let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
+    let path = resolve_model_path(models_dir, model_name)?;
+    if !path.exists() {
+        return Err(format!("Download {model_name} before transforming text"));
+    }
+
+    let prompt = transform_prompt(text, preset, custom_instruction);
+    run_sidecar(&path, &prompt)
+        .map(clean_model_output)
+        .and_then(|output| {
+            if output.trim().is_empty() {
+                Err("Transform returned empty text".to_string())
+            } else {
+                Ok(output)
+            }
+        })
+}
+
 fn find_model(model_name: &str) -> Result<&'static TextEnhancementModelInfo, String> {
     MODELS
         .iter()
@@ -150,13 +271,78 @@ fn find_model(model_name: &str) -> Result<&'static TextEnhancementModelInfo, Str
         .ok_or_else(|| format!("Unknown enhancement model: {model_name}"))
 }
 
-fn model_path(models_dir: &Path, model_name: &str) -> PathBuf {
-    models_dir.join(format!("{model_name}.gguf"))
+/// Resolve the on-disk path for an enhancement model, supporting both built-in
+/// models and custom models added via URL (which live in the dir under their
+/// file name).
+fn resolve_model_path(models_dir: &Path, model_name: &str) -> Result<PathBuf, String> {
+    if let Ok(model) = find_model(model_name) {
+        return Ok(model_path(models_dir, model.name));
+    }
+    let custom_path = crate::custom_models::enhance_model_path(models_dir, model_name);
+    if custom_path.exists() {
+        return Ok(custom_path);
+    }
+    Err(format!("Unknown enhancement model: {model_name}"))
 }
+
+fn model_path(models_dir: &Path, model_name: &str) -> PathBuf {
+    // Custom models carry their own extension in the name (e.g. "x.gguf").
+    if model_name.ends_with(".gguf") {
+        models_dir.join(model_name)
+    } else {
+        models_dir.join(format!("{model_name}.gguf"))
+    }
+}
+
+/// Strong instruction that keeps the model from translating the input. The
+/// Qwen2.5 model defaults to English output, so this must be explicit.
+const PRESERVE_LANGUAGE: &str = "Respond in the EXACT SAME language as the input text. If the input is in Hindi, write in Hindi (Devanagari script). If it is Hinglish (Hindi-English mix), keep the same mix. Never translate to English or any other language.";
 
 fn enhancement_prompt(text: &str) -> String {
     format!(
-        "<|im_start|>system\nYou rewrite text. Preserve the original meaning and language. Fix grammar, punctuation, and clarity. Keep formatting where possible. Return only the rewritten text.<|im_end|>\n<|im_start|>user\nRewrite this text clearly and naturally:\n\n{}<|im_end|>\n<|im_start|>assistant\n",
+        "<|im_start|>system\nYou rewrite dictated text. {PRESERVE_LANGUAGE} Remove filler words (um, uh, like, you know), fix grammar, spelling, punctuation, and clarity, and make the text read naturally. Keep formatting where possible. Return only the rewritten text.<|im_end|>\n<|im_start|>user\nRewrite this text clearly and naturally:\n\n{}<|im_end|>\n<|im_start|>assistant\n",
+        text.trim()
+    )
+}
+
+fn transform_prompt(
+    text: &str,
+    preset: Option<TransformPreset>,
+    custom_instruction: Option<&str>,
+) -> String {
+    let instruction = if let Some(preset) = preset {
+        preset.instruction()
+    } else {
+        custom_instruction.unwrap_or("Rewrite the following text while preserving its meaning and language. Return only the rewritten text.")
+    };
+    format!(
+        "<|im_start|>system\n{instruction}\n{PRESERVE_LANGUAGE}\n<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+        text.trim()
+    )
+}
+
+/// Build a cleanup prompt for the given level. The prompt instructs the model to
+/// preserve meaning, language, technical terms, code, names, paths, and URLs,
+/// while removing filler words and self-corrections and fixing
+/// grammar/punctuation. Higher levels rephrase and format more aggressively.
+///
+/// `style` is an optional app-context writing-style instruction appended to the
+/// system prompt (e.g. professional email, casual chat, structured document).
+fn cleanup_prompt(text: &str, level: CleanupLevel, style: Option<&str>) -> String {
+    let instruction = match level {
+        CleanupLevel::Light => "Lightly clean up dictated text. Preserve the original meaning and language. Only fix obvious spelling, capitalization, and punctuation, and remove only clear filler words such as 'um' and 'uh'. Do not rephrase, restructure, or rewrite. Keep all technical terms, code, names, paths, and formatting verbatim.",
+        CleanupLevel::Medium => "Clean up dictated speech. Preserve the original meaning and language. Remove filler words (um, uh, like) and remove false starts and self-corrections: when the speaker corrects themselves, keep only the final corrected version (for example 'let's meet at 2... actually 3 PM' becomes 'Let's meet at 3 PM.'). Fix grammar, spelling, capitalization, and punctuation, and make sentences concise without changing meaning. Keep all technical terms, code, names, paths, and formatting verbatim.",
+        CleanupLevel::High => "Aggressively but faithfully clean up dictated speech. Preserve the original meaning and language. Remove filler words, false starts, and self-corrections (keep only the corrected version), fix grammar, spelling, capitalization, and punctuation, rephrase for clarity and conciseness, and organize into clean paragraphs and lists where appropriate, without changing meaning. Also remove meta-commentary: sentences that describe the dictation or writing process itself (for example 'there is lots of noise and some other text that should not be there' or 'I want to write an essay about my life') — keep only the actual content. Keep all technical terms, code, names, paths, and URLs verbatim.",
+        CleanupLevel::None => "",
+    };
+    let instruction = format!("{instruction} {PRESERVE_LANGUAGE}");
+    let style_instruction = style
+        .map(|style| format!("\nStyle: {style}"))
+        .unwrap_or_default();
+    format!(
+        "<|im_start|>system\n{}{} Return only the cleaned text, with no commentary.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+        instruction,
+        style_instruction,
         text.trim()
     )
 }

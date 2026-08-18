@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "vox"
-version = "0.0.7"
+version = "0.0.8"
 description = "Vox desktop app"
 authors = ["Vox"]
 edition = "2021"
@@ -17,6 +17,7 @@ crate-type = ["staticlib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+arboard = "3.4"
 cpal = "0.17.3"
 enigo = "0.2"
 hound = "3.5.1"
@@ -39,3 +40,6 @@ core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["highsierra"] }
 objc = "0.2"
 whisper-rs = { version = "0.15.1", features = ["metal"] }
+# Converts the floating widget/enhance windows to NSPanels so they can be
+# drawn over other apps' full-screen Spaces (plain NSWindows cannot).
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

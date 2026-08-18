@@ -74,6 +74,38 @@ const MODELS: &[WhisperModelInfo] = &[
         recommended: false,
     },
     WhisperModelInfo {
+        name: "tiny",
+        display_name: "Whisper Tiny (multilingual)",
+        size: 77_691_392,
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+        downloaded: false,
+        recommended: false,
+    },
+    WhisperModelInfo {
+        name: "base",
+        display_name: "Whisper Base (multilingual)",
+        size: 148_897_792,
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        downloaded: false,
+        recommended: false,
+    },
+    WhisperModelInfo {
+        name: "small",
+        display_name: "Whisper Small (multilingual)",
+        size: 488_505_344,
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+        downloaded: false,
+        recommended: false,
+    },
+    WhisperModelInfo {
+        name: "medium",
+        display_name: "Whisper Medium (multilingual)",
+        size: 1_533_116_416,
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+        downloaded: false,
+        recommended: false,
+    },
+    WhisperModelInfo {
         name: "large-v3",
         display_name: "Whisper Large v3",
         size: 3_094_347_776,
@@ -240,13 +272,18 @@ pub async fn download_model(
     Ok(model)
 }
 
+/// Transcribe audio and return `(text, detected_language)`. `language` is the
+/// user's preferred language code ("en", "hi", …) or "auto"/None for
+/// automatic detection. The detected language is reported back so the frontend
+/// can store it with the transcript.
 pub fn transcribe(
     models_dir: &Path,
     audio_path: &Path,
     model_name: Option<&str>,
     dictionary: Option<&str>,
     context: Option<&str>,
-) -> Result<String, String> {
+    language: Option<&str>,
+) -> Result<(String, Option<String>), String> {
     let model_path = selected_model_path(models_dir, model_name)?;
 
     // Parakeet is a different architecture (FastConformer + TDT) than Whisper and
@@ -255,7 +292,7 @@ pub fn transcribe(
         return transcribe_with_parakeet(&model_path, audio_path);
     }
 
-    transcribe_with_backend(&model_path, audio_path, dictionary, context)
+    transcribe_with_backend(&model_path, audio_path, dictionary, context, language)
 }
 
 fn is_parakeet_path(path: &Path) -> bool {
@@ -299,7 +336,7 @@ fn find_cli_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn transcribe_with_parakeet(model_path: &Path, audio_path: &Path) -> Result<String, String> {
+fn transcribe_with_parakeet(model_path: &Path, audio_path: &Path) -> Result<(String, Option<String>), String> {
     let cli = parakeet_cli_path()?;
     let model_arg = model_path
         .to_str()
@@ -350,7 +387,8 @@ fn transcribe_with_parakeet(model_path: &Path, audio_path: &Path) -> Result<Stri
         return Err("Parakeet returned an empty transcript".to_string());
     }
 
-    Ok(text)
+    // Parakeet TDT models auto-detect language; the CLI does not expose it.
+    Ok((text, None))
 }
 
 /// transcribe-cli prints a `text: <transcript>` line amid a header block. Extract
@@ -407,10 +445,24 @@ fn transcribe_with_backend(
     audio_path: &Path,
     dictionary: Option<&str>,
     context: Option<&str>,
-) -> Result<String, String> {
+    language: Option<&str>,
+) -> Result<(String, Option<String>), String> {
     let model_path = model_path
         .to_str()
         .ok_or_else(|| "Model path contains invalid UTF-8".to_string())?;
+
+    // English-only models (tiny.en, base.en, …) cannot transcribe other
+    // languages; fail fast with a helpful message instead of garbage output.
+    let requested = language.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(requested) = requested {
+        if requested != "auto" && requested != "en" && is_english_only_model(model_path) {
+            return Err(
+                "The selected model is English-only. Download a multilingual model (Whisper Large v3, Turbo, or Parakeet v3) to dictate in other languages."
+                    .to_string(),
+            );
+        }
+    }
+
     let mut ctx_params = WhisperContextParameters::default();
     ctx_params.use_gpu(true);
 
@@ -431,7 +483,13 @@ fn transcribe_with_backend(
         beam_size: 5,
         patience: -1.0,
     });
-    params.set_language(Some("en"));
+    // "auto" / "hinglish" → None so whisper.cpp auto-detects the language;
+    // explicit codes ("en", "hi", …) pin the language.
+    let whisper_language = match requested {
+        Some("auto") | Some("hinglish") | None => None,
+        Some(code) => Some(code),
+    };
+    params.set_language(whisper_language);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
@@ -464,7 +522,17 @@ fn transcribe_with_backend(
         return Err("Whisper returned an empty transcript".to_string());
     }
 
-    Ok(text)
+    // Report the language whisper.cpp actually used (auto-detected or pinned).
+    let detected = whisper_rs::get_lang_str(state.full_lang_id_from_state())
+        .map(str::to_string);
+
+    Ok((text, detected))
+}
+
+/// True for whisper.cpp English-only models (names ending in `.en`).
+pub fn is_english_only_model(model_path: &str) -> bool {
+    let name = model_path.rsplit(['/', '\\']).next().unwrap_or(model_path);
+    name.to_ascii_lowercase().contains(".en.") || name.to_ascii_lowercase().ends_with(".en")
 }
 
 fn dictionary_prompt(dictionary: Option<&str>, context: Option<&str>) -> Option<String> {
@@ -528,12 +596,19 @@ fn find_model(model_name: &str) -> Result<&'static WhisperModelInfo, String> {
 
 fn selected_model_path(models_dir: &Path, model_name: Option<&str>) -> Result<PathBuf, String> {
     if let Some(model_name) = model_name {
-        let model = find_model(model_name)?;
-        let path = model_path(models_dir, model.name);
-        return path
+        // Built-in model first, then custom models (file present in the dir).
+        if let Ok(model) = find_model(model_name) {
+            let path = model_path(models_dir, model.name);
+            return path
+                .exists()
+                .then_some(path)
+                .ok_or_else(|| format!("Model is not downloaded: {}", model.display_name));
+        }
+        let custom_path = crate::custom_models::stt_model_path(models_dir, model_name);
+        return custom_path
             .exists()
-            .then_some(path)
-            .ok_or_else(|| format!("Model is not downloaded: {}", model.display_name));
+            .then_some(custom_path)
+            .ok_or_else(|| format!("Unknown model: {model_name}"));
     }
 
     for model in MODELS.iter().filter(|model| model.recommended) {
@@ -554,7 +629,12 @@ fn selected_model_path(models_dir: &Path, model_name: Option<&str>) -> Result<Pa
 }
 
 fn model_path(models_dir: &Path, model_name: &str) -> PathBuf {
-    models_dir.join(format!("{model_name}.{}", model_extension(model_name)))
+    // Custom models carry their own extension in the name (e.g. "x.gguf").
+    if model_name.ends_with(".gguf") || model_name.ends_with(".bin") || model_name.ends_with(".ggml") {
+        models_dir.join(model_name)
+    } else {
+        models_dir.join(format!("{model_name}.{}", model_extension(model_name)))
+    }
 }
 
 fn read_wav_as_16khz_mono(audio_path: &Path) -> Result<Vec<f32>, String> {

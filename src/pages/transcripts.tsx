@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Copy, Search, Trash2 } from "@/components/icons";
+import { ArrowTurnBackward, Check, Copy, Pencil, Search, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,10 +14,19 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { deleteTranscript, getTranscripts, type TranscriptRow } from "@/lib/db";
+import { deleteTranscript, getTranscripts, pruneTranscripts, updateTranscriptText, type TranscriptRow } from "@/lib/db";
 import { resolveAppIcon } from "@/lib/native";
+import { openExternalLink } from "@/lib/external-link";
+import { useAppStore } from "@/store/app-store";
+import {
+  dedupeDictionaryEntries,
+  parseDictionaryEntries,
+  serializeDictionaryEntries,
+  wordsToLearn,
+} from "@/lib/dictionary";
 
 const TRANSCRIPT_LIBRARY_LIMIT = 1000;
 
@@ -26,23 +36,33 @@ export function TranscriptsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [learnedMessage, setLearnedMessage] = useState<string | null>(null);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     let active = true;
-    void getTranscripts(TRANSCRIPT_LIBRARY_LIMIT)
-      .then((rows) => {
-        if (!active) return;
-        setHistory(rows);
-        setError(null);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : "Could not load transcripts");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    // Enforce configurable transcript retention before loading the library.
+    const retention = useAppStore.getState().transcriptRetention;
+    const prune = retention !== "forever"
+      ? pruneTranscripts(Number(retention)).catch(() => 0)
+      : Promise.resolve(0);
+    void prune.then(() =>
+      getTranscripts(TRANSCRIPT_LIBRARY_LIMIT)
+        .then((rows) => {
+          if (!active) return;
+          setHistory(rows);
+          setError(null);
+        })
+        .catch((err) => {
+          if (!active) return;
+          setError(err instanceof Error ? err.message : "Could not load transcripts");
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        })
+    );
 
     return () => {
       active = false;
@@ -68,6 +88,57 @@ export function TranscriptsPage() {
   const removeTranscript = async (id: number) => {
     await deleteTranscript(id);
     setHistory((items) => items.filter((item) => item.id !== id));
+  };
+
+  const undoAiEdit = async (item: TranscriptRow) => {
+    if (!item.raw_text) return;
+    await updateTranscriptText(item.id, item.raw_text);
+    setHistory((items) =>
+      items.map((entry) =>
+        entry.id === item.id ? { ...entry, text: item.raw_text! } : entry
+      )
+    );
+  };
+
+  const startEdit = (item: TranscriptRow) => {
+    setEditingId(item.id);
+    setEditDraft(item.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const saveEdit = async (item: TranscriptRow) => {
+    const next = editDraft.trim();
+    if (!next) return;
+    await updateTranscriptText(item.id, next);
+    // Auto-learn corrected words into the personal dictionary (Wispr-style).
+    const learned = wordsToLearn(item.text, next);
+    if (learned.length > 0) {
+      const store = useAppStore.getState();
+      const entries = dedupeDictionaryEntries([
+        ...parseDictionaryEntries(store.dictionary),
+        ...learned.map((word) => ({ word, hint: "", category: "Learned" })),
+      ]);
+      await store.setDictionary(serializeDictionaryEntries(entries));
+      setLearnedMessage(`Learned ${learned.length} ${learned.length === 1 ? "word" : "words"} into your dictionary.`);
+      window.setTimeout(() => setLearnedMessage(null), 3000);
+    }
+    setHistory((items) =>
+      items.map((entry) => (entry.id === item.id ? { ...entry, text: next } : entry))
+    );
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const reportTranscript = (item: TranscriptRow) => {
+    const subject = encodeURIComponent("Vox transcription issue");
+    const body = encodeURIComponent(
+      `App: ${item.app_name ?? "Unknown"}\n\nTranscript:\n${item.text.slice(0, 2000)}\n\n---\nDescribe the issue here.`
+    );
+    openExternalLink(`mailto:?subject=${subject}&body=${body}`);
   };
 
   useEffect(() => {
@@ -124,6 +195,12 @@ export function TranscriptsPage() {
             <LibraryStat label="Words" value={history.reduce((sum, item) => sum + countWords(item.text), 0).toLocaleString()} />
           </div>
 
+          {learnedMessage && (
+            <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-primary">
+              {learnedMessage}
+            </div>
+          )}
+
           {loading ? (
             <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
               <Spinner className="size-4" />
@@ -146,8 +223,39 @@ export function TranscriptsPage() {
                         />
                         <p className="text-sm font-medium text-foreground">{item.app_name ?? "Unknown app"}</p>
                         <span className="text-xs text-muted-foreground">{formatTranscriptDate(item.created_at)}</span>
+                        {item.language ? (
+                          <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
+                            {item.language}
+                          </Badge>
+                        ) : null}
+                        {hasAiCleanup(item) ? (
+                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                            AI cleaned
+                          </Badge>
+                        ) : null}
                       </div>
-                      <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{item.text}</p>
+                      {editingId === item.id ? (
+                        <div className="space-y-2">
+                          <Textarea
+                            value={editDraft}
+                            onChange={(event) => setEditDraft(event.target.value)}
+                            rows={Math.min(8, Math.max(3, editDraft.split("\n").length))}
+                            className="min-h-20 text-sm leading-6"
+                            autoFocus
+                          />
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={() => void saveEdit(item)} disabled={!editDraft.trim()}>
+                              <Check className="h-4 w-4" />
+                              Save
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={cancelEdit}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{item.text}</p>
+                      )}
                       <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                         <span className="font-mono tabular-nums">
                           {countWords(item.text)} words
@@ -160,9 +268,24 @@ export function TranscriptsPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 gap-2">
+                      {editingId === item.id ? null : (
+                        <Button variant="outline" size="sm" onClick={() => startEdit(item)}>
+                          <Pencil className="h-4 w-4" />
+                          Edit
+                        </Button>
+                      )}
+                      {hasAiCleanup(item) ? (
+                        <Button variant="outline" size="sm" onClick={() => void undoAiEdit(item)}>
+                          <ArrowTurnBackward className="h-4 w-4" />
+                          Undo AI edit
+                        </Button>
+                      ) : null}
                       <Button variant="outline" size="sm" onClick={() => void copyTranscript(item)}>
                         {copiedId === item.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                         {copiedId === item.id ? "Copied" : "Copy"}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => reportTranscript(item)}>
+                        Report
                       </Button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -244,6 +367,11 @@ function AppBadge({
 
 function countWords(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function hasAiCleanup(item: TranscriptRow): boolean {
+  if (!item.raw_text) return false;
+  return item.raw_text.trim() !== item.text.trim();
 }
 
 function formatDurationCompact(seconds: number) {

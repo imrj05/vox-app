@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- CoreAudio / CPAL microphone capture. Required under the hardened
+       runtime for signed + notarized release builds; without it the audio
+       input stream silently fails (default_input_device() returns None). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- AVFoundation microphone authorization (used by the permission check). -->
+  <key>com.apple.security.device.microphone</key>
+  <true/>
+  <!-- CGEventTap global hotkey. Required under the hardened runtime for the
+       event tap to receive keyboard events from other apps. -->
+  <key>com.apple.security.device.input-monitoring</key>
+  <true/>
+</dict>
+</plist>

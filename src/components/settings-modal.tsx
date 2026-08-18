@@ -67,12 +67,14 @@ import {
   setGlobalShortcut,
   checkAccessibilityPermission,
   checkMicrophonePermission,
+  checkInputMonitoringPermission,
   getHotkeyDiagnostics,
   getNativeStatus,
   getStartAtLogin,
   isEventTapOnlyShortcut,
   requestAccessibilityPermission,
   requestMicrophonePermission,
+  requestInputMonitoringPermission,
   setStartAtLogin,
   setTriggerMode as setNativeTriggerMode,
   wipeLocalAppFiles,
@@ -1597,6 +1599,8 @@ function permissionCopy(kind: PlatformKind) {
         accessibilityDescription:
           "Required to detect global hotkeys like Globe, bare Option, or Fn keys via CGEventTap.",
         accessibilityAction: "Open Settings",
+        inputMonitoringDescription:
+          "Required for the global hotkey to receive keyboard events from other apps.",
         microphoneDescription:
           "Required to capture your voice locally. Audio never leaves your device.",
         note: "If a permission was recently granted, it may take a moment to reflect here.",
@@ -1609,6 +1613,7 @@ function permissionCopy(kind: PlatformKind) {
         accessibilityDescription:
           "Windows does not require macOS Accessibility permission. Global shortcuts use the desktop shortcut API.",
         accessibilityAction: "Refresh",
+        inputMonitoringDescription: "",
         microphoneDescription:
           "Required to capture your voice locally. If blocked, enable microphone access in Windows Privacy settings.",
         note: "For startup behavior, use Start at login in General settings and confirm Windows allows startup apps.",
@@ -1621,6 +1626,7 @@ function permissionCopy(kind: PlatformKind) {
         accessibilityDescription:
           "Linux does not use macOS Accessibility permission. For text insertion, install xdotool on X11 or wtype/dotool on Wayland.",
         accessibilityAction: "Refresh",
+        inputMonitoringDescription: "",
         microphoneDescription:
           "Required to capture your voice locally. Check PipeWire, PulseAudio, or ALSA if access is blocked.",
         note: "Wayland may restrict global shortcuts. Bind Vox CLI commands in your desktop keyboard settings when needed.",
@@ -1633,6 +1639,7 @@ function permissionCopy(kind: PlatformKind) {
         accessibilityDescription:
           "Used for shortcuts and text insertion where the operating system allows it.",
         accessibilityAction: "Refresh",
+        inputMonitoringDescription: "",
         microphoneDescription:
           "Required to capture your voice locally. Audio never leaves your device.",
         note: "If a permission was recently granted, it may take a moment to reflect here.",
@@ -1701,13 +1708,19 @@ export function PermissionsSection() {
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<PermissionStatus>("checking");
   const [micStatus, setMicStatus] = useState<PermissionStatus>("checking");
+  const [inputMonitoringStatus, setInputMonitoringStatus] =
+    useState<PermissionStatus>("checking");
   const [accessibilityBusy, setAccessibilityBusy] = useState(false);
   const [micBusy, setMicBusy] = useState(false);
+  const [inputMonitoringBusy, setInputMonitoringBusy] = useState(false);
   const kind = platformKind(platform ?? undefined);
   const copy = permissionCopy(kind);
+  const isMacos = kind === "macos";
   const isLoadingPermissions =
-    accessibilityStatus === "checking" || micStatus === "checking";
-  // Check both permissions on mount
+    accessibilityStatus === "checking" ||
+    micStatus === "checking" ||
+    (isMacos && inputMonitoringStatus === "checking");
+  // Check permissions on mount
   useEffect(() => {
     void getNativeStatus()
       .then((status) => setPlatform(status.platform))
@@ -1718,6 +1731,9 @@ export function PermissionsSection() {
     void checkMicrophonePermission()
       .then((granted) => setMicStatus(granted ? "granted" : "denied"))
       .catch(() => setMicStatus("denied"));
+    void checkInputMonitoringPermission()
+      .then((granted) => setInputMonitoringStatus(granted ? "granted" : "denied"))
+      .catch(() => setInputMonitoringStatus("denied"));
   }, []);
   // Poll accessibility while denied (user may grant in System Settings)
   useEffect(() => {
@@ -1750,6 +1766,17 @@ export function PermissionsSection() {
       setMicStatus("denied");
     } finally {
       setMicBusy(false);
+    }
+  };
+  const handleGrantInputMonitoring = async () => {
+    setInputMonitoringBusy(true);
+    try {
+      const granted = await requestInputMonitoringPermission();
+      setInputMonitoringStatus(granted ? "granted" : "denied");
+    } catch {
+      setInputMonitoringStatus("denied");
+    } finally {
+      setInputMonitoringBusy(false);
     }
   };
   return (
@@ -1790,6 +1817,17 @@ export function PermissionsSection() {
           onAction={handleGrantMic}
           busy={micBusy}
         />
+        {isMacos && (
+          <PermissionRow
+            icon={<Keyboard className="h-4 w-4" />}
+            title="Input Monitoring"
+            description={copy.inputMonitoringDescription}
+            status={inputMonitoringStatus}
+            actionLabel="Open Settings"
+            onAction={handleGrantInputMonitoring}
+            busy={inputMonitoringBusy}
+          />
+        )}
       </SettingsCard>
       <p className="text-[11px] text-muted-foreground">
         {copy.note}

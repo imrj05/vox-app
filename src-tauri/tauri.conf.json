@@ -81,7 +81,8 @@
         ],
         "macOS": {
             "minimumSystemVersion": "10.15",
-            "signingIdentity": "Developer ID Application: -"
+            "signingIdentity": "Developer ID Application: -",
+            "entitlements": "Entitlements.plist"
         },
         "windows": {
             "nsis": {

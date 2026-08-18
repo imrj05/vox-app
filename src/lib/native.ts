@@ -215,6 +215,14 @@ export async function requestAccessibilityPermission() {
   return invoke<boolean>("request_accessibility_permission");
 }
 
+export async function checkInputMonitoringPermission() {
+  return invoke<boolean>("check_input_monitoring_permission");
+}
+
+export async function requestInputMonitoringPermission() {
+  return invoke<boolean>("request_input_monitoring_permission");
+}
+
 export async function getTriggerMode() {
   return invoke<"toggle" | "pushToTalk" | "handsFree">("get_trigger_mode");
 }

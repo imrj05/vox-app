@@ -63,6 +63,15 @@ extern "C" {}
 extern "C" {}
 
 #[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    // Input Monitoring permission (macOS 10.15+). Required for CGEventTap to
+    // receive keyboard events from other apps, which the global hotkey relies on.
+    fn CGPreflightListenEventAccess() -> bool;
+    fn CGRequestListenEventAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
 mod event_tap;
 mod text_enhancement;
 mod custom_models;
@@ -755,6 +764,30 @@ fn check_microphone_permission() -> bool {
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
 fn check_microphone_permission() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn check_input_monitoring_permission() -> bool {
+    unsafe { CGPreflightListenEventAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn check_input_monitoring_permission() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn request_input_monitoring_permission() -> bool {
+    unsafe { CGRequestListenEventAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn request_input_monitoring_permission() -> bool {
     true
 }
 
@@ -1711,6 +1744,17 @@ fn transcribe_recording_inner(
         ));
     }
 
+    // A WAV header is exactly 44 bytes. If the file is header-only, the
+    // microphone produced zero samples — almost always a missing mic
+    // permission (TCC) or a missing audio-input entitlement under the
+    // hardened runtime, not a transcription problem.
+    if audio_path.metadata().map(|m| m.len()).unwrap_or(0) <= 44 {
+        return Err(
+            "No audio was captured — the microphone produced no samples. Check that Vox has microphone permission in System Settings → Privacy & Security → Microphone, then try again."
+                .to_string(),
+        );
+    }
+
     let models_dir = whisper_models_dir(&app)?;
     let context_dictionary = build_context_dictionary(
         dictionary.as_deref(),
@@ -2317,6 +2361,8 @@ pub fn run() {
             check_accessibility_permission,
             request_accessibility_permission,
             check_microphone_permission,
+            check_input_monitoring_permission,
+            request_input_monitoring_permission,
             resolve_app_icon,
             open_external_link,
             capture_selected_text,

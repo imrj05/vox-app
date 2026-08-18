@@ -1,8 +1,8 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
-import { enhanceFocusedInputNow, hideWidget } from "@/lib/native";
-import { LoaderCircle, Sparkles, X } from "@/components/icons";
+import { hideWidget } from "@/lib/native";
+import { X } from "@/components/icons";
 import "./widget.css";
 
 /* ------------------------------------------------------------------ */
@@ -137,10 +137,7 @@ function VoiceDots({
   audioLevel,
   elapsed,
   message,
-  showEnhance,
-  enhancing,
   contextLabel,
-  onEnhance,
   onClose,
 }: {
   mode: WidgetMode;
@@ -148,10 +145,7 @@ function VoiceDots({
   audioLevel: number;
   elapsed: number | undefined;
   message: string;
-  showEnhance: boolean;
-  enhancing: boolean;
   contextLabel: string | null;
-  onEnhance: () => void;
   onClose: () => void;
 }) {
   const isRecording = mode === "recording";
@@ -188,35 +182,15 @@ function VoiceDots({
               <CheckIcon />
               <span className="widget-status-text">{message || "Done"}</span>
             </div>
-            {showEnhance && (
-              <>
-                <span className="widget-done-divider" aria-hidden="true" />
-                <button
-                  type="button"
-                  className="widget-enhance-btn"
-                  onClick={onEnhance}
-                  onMouseDown={(event) => event.preventDefault()}
-                  disabled={enhancing}
-                  aria-label={enhancing ? "Enhancing text" : "Enhance text"}
-                >
-                  {enhancing ? (
-                    <LoaderCircle className="widget-action-icon widget-spin" />
-                  ) : (
-                    <Sparkles className="widget-action-icon" />
-                  )}
-                  <span>{enhancing ? "Enhancing…" : "Enhance"}</span>
-                </button>
-                <button
-                  type="button"
-                  className="widget-close-btn"
-                  onClick={onClose}
-                  onMouseDown={(event) => event.preventDefault()}
-                  aria-label="Close"
-                >
-                  <X className="widget-action-icon" />
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              className="widget-close-btn"
+              onClick={onClose}
+              onMouseDown={(event) => event.preventDefault()}
+              aria-label="Close"
+            >
+              <X className="widget-action-icon" />
+            </button>
           </div>
         )}
 
@@ -345,7 +319,6 @@ export function Widget() {
   });
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
-  const [enhancing, setEnhancing] = useState(false);
   const prevMode = useRef<WidgetMode>("idle");
 
   useEffect(() => {
@@ -423,20 +396,6 @@ export function Widget() {
     state.mode === "done" ||
     state.mode === "error";
 
-  const enhance = async () => {
-    if (enhancing) return;
-    setEnhancing(true);
-    try {
-      await enhanceFocusedInputNow();
-      // Success: the text is replaced — dismiss the widget.
-      close();
-    } catch {
-      // Failure: keep the widget so the user can retry.
-    } finally {
-      setEnhancing(false);
-    }
-  };
-
   const close = () => {
     void hideWidget().catch(() => {});
   };
@@ -452,10 +411,7 @@ export function Widget() {
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
           message={state.message}
-          showEnhance={state.showEnhance ?? false}
-          enhancing={enhancing}
           contextLabel={contextLabel}
-          onEnhance={() => void enhance()}
           onClose={close}
         />
       </div>

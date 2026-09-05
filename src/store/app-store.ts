@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting, getSnippets, saveSnippet, updateSnippet, deleteSnippet, type Snippet } from "@/lib/db";
+import { migrateLegacyDictionary } from "@/lib/vocabulary";
 import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets } from "@/lib/native";
 import {
   initAuth as initPocketBaseAuth,
@@ -28,6 +29,9 @@ export const PRIVACY_MODE_KEY = "privacy_mode";
 export const LANGUAGE_KEY = "language";
 export const VOICE_COMMANDS_KEY = "voice_commands_enabled";
 export const WHISPER_MODE_KEY = "whisper_mode";
+export const ENGINE_KEY = "engine";
+export const ENGINE_FALLBACK_ENABLED_KEY = "engine_fallback_enabled";
+export const ENGINE_FALLBACK_TARGET_KEY = "engine_fallback_target";
 export const AUTH_SKIPPED_KEY = "auth_skipped";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
@@ -44,12 +48,18 @@ export type TranscriptFormattingMode = "auto" | "plain" | "developer";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
 export type TranscriptRetention = "forever" | "7" | "30" | "90";
 export type DictationLanguage = "auto" | "en" | "hi" | "hinglish";
+/** Which ASR engine to use (spec §6). "auto" lets the router decide. */
+export type TranscriptionEngine = "auto" | "apple" | "whisper" | "parakeet";
+export type EngineFallbackTarget = "apple" | "whisper" | "parakeet";
 export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
 export const DEFAULT_CLEANUP_LEVEL: CleanupLevel = "none";
 export const DEFAULT_TRANSCRIPT_RETENTION: TranscriptRetention = "forever";
 export const DEFAULT_LANGUAGE: DictationLanguage = "auto";
+export const DEFAULT_ENGINE: TranscriptionEngine = "auto";
+export const DEFAULT_ENGINE_FALLBACK_ENABLED = true;
+export const DEFAULT_ENGINE_FALLBACK_TARGET: EngineFallbackTarget = "whisper";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
 export type UpdateStatus =
   | "idle"
@@ -72,7 +82,6 @@ export interface AppState {
   triggerMode: TriggerMode;
   soundEnabled: boolean;
   selectedModel: string;
-  dictionary: string;
   theme: AppTheme;
   widgetEnabled: boolean;
   enhanceIconEnabled: boolean;
@@ -83,6 +92,9 @@ export interface AppState {
   transcriptRetention: TranscriptRetention;
   privacyMode: boolean;
   language: DictationLanguage;
+  engine: TranscriptionEngine;
+  engineFallbackEnabled: boolean;
+  preferredEngineFallback: EngineFallbackTarget;
   voiceCommandsEnabled: boolean;
   whisperMode: boolean;
   snippets: Snippet[];
@@ -100,7 +112,6 @@ export interface AppState {
   setTriggerMode: (value: TriggerMode) => Promise<void>;
   setSoundEnabled: (value: boolean) => Promise<void>;
   setSelectedModel: (value: string) => Promise<void>;
-  setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
   setWidgetEnabled: (value: boolean) => Promise<void>;
   setEnhanceIconEnabled: (value: boolean) => Promise<void>;
@@ -111,6 +122,9 @@ export interface AppState {
   setTranscriptRetention: (value: TranscriptRetention) => Promise<void>;
   setPrivacyMode: (value: boolean) => Promise<void>;
   setLanguage: (value: DictationLanguage) => Promise<void>;
+  setEngine: (value: TranscriptionEngine) => Promise<void>;
+  setEngineFallbackEnabled: (value: boolean) => Promise<void>;
+  setPreferredEngineFallback: (value: EngineFallbackTarget) => Promise<void>;
   setVoiceCommandsEnabled: (value: boolean) => Promise<void>;
   setWhisperMode: (value: boolean) => Promise<void>;
   loadSnippets: () => Promise<void>;
@@ -146,7 +160,6 @@ const defaultAppState = {
   triggerMode: DEFAULT_TRIGGER_MODE,
   soundEnabled: true,
   selectedModel: DEFAULT_SELECTED_MODEL,
-  dictionary: "",
   theme: DEFAULT_THEME,
   widgetEnabled: true,
   enhanceIconEnabled: true,
@@ -157,6 +170,9 @@ const defaultAppState = {
   transcriptRetention: DEFAULT_TRANSCRIPT_RETENTION,
   privacyMode: false,
   language: DEFAULT_LANGUAGE,
+  engine: DEFAULT_ENGINE,
+  engineFallbackEnabled: DEFAULT_ENGINE_FALLBACK_ENABLED,
+  preferredEngineFallback: DEFAULT_ENGINE_FALLBACK_TARGET,
   voiceCommandsEnabled: true,
   whisperMode: false,
   snippets: [],
@@ -226,7 +242,6 @@ export const useAppStore = create<AppState>((set) => ({
         triggerMode,
         soundEnabled,
         selectedModel,
-        dictionary,
         theme,
         widgetEnabled,
         enhanceIconEnabled,
@@ -239,6 +254,9 @@ export const useAppStore = create<AppState>((set) => ({
         language,
         voiceCommandsEnabled,
         whisperMode,
+        engine,
+        engineFallbackEnabled,
+        engineFallbackTarget,
       ] = await withTimeout(
         Promise.all([
           getSetting(ONBOARDING_KEY),
@@ -246,7 +264,6 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(TRIGGER_MODE_KEY),
           getSetting(SOUND_ENABLED_KEY),
           getSetting(SELECTED_MODEL_KEY),
-          getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
           getSetting(WIDGET_ENABLED_KEY),
           getSetting(ENHANCE_ICON_ENABLED_KEY),
@@ -259,6 +276,9 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(LANGUAGE_KEY),
           getSetting(VOICE_COMMANDS_KEY),
           getSetting(WHISPER_MODE_KEY),
+          getSetting(ENGINE_KEY),
+          getSetting(ENGINE_FALLBACK_ENABLED_KEY),
+          getSetting(ENGINE_FALLBACK_TARGET_KEY),
         ]),
         SETTINGS_HYDRATE_TIMEOUT_MS,
         "Timed out loading app settings"
@@ -280,7 +300,6 @@ export const useAppStore = create<AppState>((set) => ({
         triggerMode: parseTriggerModeSetting(triggerMode),
         soundEnabled: resolvedSoundEnabled,
         selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
-        dictionary: dictionary ?? "",
         theme: resolvedTheme,
         widgetEnabled: resolvedWidgetEnabled,
         enhanceIconEnabled: resolvedEnhanceIconEnabled,
@@ -291,10 +310,24 @@ export const useAppStore = create<AppState>((set) => ({
         transcriptRetention: parseTranscriptRetentionSetting(transcriptRetention),
         privacyMode: parseBooleanSetting(privacyMode, false),
         language: parseLanguageSetting(language),
+        engine: parseEngineSetting(engine),
+        engineFallbackEnabled: parseBooleanSetting(engineFallbackEnabled, DEFAULT_ENGINE_FALLBACK_ENABLED),
+        preferredEngineFallback: parseEngineFallbackTargetSetting(engineFallbackTarget),
         voiceCommandsEnabled: parseBooleanSetting(voiceCommandsEnabled, true),
         whisperMode: parseBooleanSetting(whisperMode, false),
       });
-    } catch (error) {
+          // One-time migration: fold the legacy free-text dictionary into the
+      // Vocabulary Packs Personal pack, then clear the legacy setting.
+      try {
+        const legacyDictionary = await getSetting(DICTIONARY_KEY);
+        if (legacyDictionary && legacyDictionary.trim()) {
+          await migrateLegacyDictionary(legacyDictionary);
+          await setSetting(DICTIONARY_KEY, "");
+        }
+      } catch {
+        // Migration is best-effort; never block hydration.
+      }
+} catch (error) {
       console.error("Failed to hydrate app settings", error);
       localStorage.setItem(SOUND_ENABLED_KEY, String(true));
       localStorage.setItem(THEME_KEY, DEFAULT_THEME);
@@ -323,10 +356,6 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedModel: async (value) => {
     await setSetting(SELECTED_MODEL_KEY, value);
     set({ selectedModel: value });
-  },
-  setDictionary: async (value) => {
-    await setSetting(DICTIONARY_KEY, value);
-    set({ dictionary: value });
   },
   setTheme: async (value) => {
     await setSetting(THEME_KEY, value);
@@ -375,6 +404,18 @@ export const useAppStore = create<AppState>((set) => ({
   setLanguage: async (value) => {
     await setSetting(LANGUAGE_KEY, value);
     set({ language: value });
+  },
+  setEngine: async (value) => {
+    await setSetting(ENGINE_KEY, value);
+    set({ engine: value });
+  },
+  setEngineFallbackEnabled: async (value) => {
+    await setSetting(ENGINE_FALLBACK_ENABLED_KEY, String(value));
+    set({ engineFallbackEnabled: value });
+  },
+  setPreferredEngineFallback: async (value) => {
+    await setSetting(ENGINE_FALLBACK_TARGET_KEY, value);
+    set({ preferredEngineFallback: value });
   },
   setVoiceCommandsEnabled: async (value) => {
     await setSetting(VOICE_COMMANDS_KEY, String(value));
@@ -584,6 +625,16 @@ function parseLanguageSetting(value: string | null): DictationLanguage {
   return value === "en" || value === "hi" || value === "hinglish" || value === "auto"
     ? value
     : DEFAULT_LANGUAGE;
+}
+function parseEngineSetting(value: string | null): TranscriptionEngine {
+  return value === "apple" || value === "whisper" || value === "parakeet" || value === "auto"
+    ? value
+    : DEFAULT_ENGINE;
+}
+function parseEngineFallbackTargetSetting(value: string | null): EngineFallbackTarget {
+  return value === "apple" || value === "whisper" || value === "parakeet"
+    ? value
+    : DEFAULT_ENGINE_FALLBACK_TARGET;
 }
 
 /** Reload snippets from SQLite into the store and push them to the Rust side

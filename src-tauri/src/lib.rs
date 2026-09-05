@@ -71,10 +71,11 @@ extern "C" {
     fn CGRequestListenEventAccess() -> bool;
 }
 
+mod custom_models;
 #[cfg(target_os = "macos")]
 mod event_tap;
 mod text_enhancement;
-mod custom_models;
+pub mod vocabulary;
 
 #[cfg(not(target_os = "macos"))]
 mod event_tap {
@@ -256,6 +257,8 @@ fn open_external_link(href: String) -> Result<(), String> {
         .map_err(|error| format!("Could not open link: {error}"))
 }
 
+mod engines;
+mod hardware;
 mod whisper;
 
 const DEFAULT_SHORTCUT: &str = "Meta+Shift+Space";
@@ -271,9 +274,101 @@ struct ActiveShortcut {
     current: Mutex<String>,
 }
 
-#[derive(Default)]
-struct DictionaryState {
-    content: Mutex<String>,
+/// Vocabulary Packs state (spec §23): the store is behind a Mutex and never
+/// mutated from the audio thread — it is only touched by Tauri commands and
+/// the transcription command, both of which already run off the audio path.
+/// The cached trie/context is rebuilt lazily when the generation counter or
+/// app context changes (spec §22: rebuild indexes only after changes).
+struct VocabularyState {
+    store: Mutex<vocabulary::store::VocabularyStore>,
+    cache: Mutex<Option<VocabularyCache>>,
+}
+
+struct VocabularyCache {
+    generation: u64,
+    app_key: Option<String>,
+    context: std::sync::Arc<vocabulary::model::ActiveVocabularyContext>,
+    trie: std::sync::Arc<vocabulary::index::PhraseTrie>,
+}
+
+impl VocabularyState {
+    fn with_store<T>(
+        &self,
+        mutate: impl FnOnce(&mut vocabulary::store::VocabularyStore) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Vocabulary state unavailable".to_string())?;
+        let result = mutate(&mut store)?;
+        if let Err(error) = store.persist() {
+            eprintln!("[VOX][vocabulary] persist failed: {error}");
+        }
+        *self
+            .cache
+            .lock()
+            .map_err(|_| "Vocabulary cache unavailable".to_string())? = None; // invalidate
+        Ok(result)
+    }
+
+    /// Cached active context + trie for the given app (spec §22).
+    fn cached_context(&self, app_name: Option<&str>) -> std::sync::Arc<VocabularyCache> {
+        let generation = self.store.lock().map(|store| store.generation).unwrap_or(0);
+        let app_key = app_name.map(|name| name.trim().to_lowercase());
+
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.as_ref() {
+            if cached.generation == generation && cached.app_key == app_key {
+                return std::sync::Arc::new(VocabularyCache {
+                    generation,
+                    app_key: cached.app_key.clone(),
+                    context: cached.context.clone(),
+                    trie: cached.trie.clone(),
+                });
+            }
+        }
+
+        let now = vocabulary::store::now_secs();
+        let (context, trie) = {
+            let store = self
+                .store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let packs = store.all_packs();
+            let app_context = app_key
+                .clone()
+                .map(|name| vocabulary::model::ApplicationContext {
+                    app: vocabulary::model::ApplicationIdentifier {
+                        id: name.clone(),
+                        display_name: Some(name),
+                    },
+                    window_title: None,
+                });
+            let context = vocabulary::context::build_context(&packs, app_context.clone(), now);
+            // The correction trie covers every enabled entry (local + fast);
+            // the capped `context` is what engine adapters receive (spec §8).
+            let correction_context =
+                vocabulary::context::build_correction_context(&packs, app_context, now);
+            let trie = vocabulary::index::PhraseTrie::build(&correction_context);
+            (std::sync::Arc::new(context), std::sync::Arc::new(trie))
+        };
+        let built = VocabularyCache {
+            generation,
+            app_key: app_key.clone(),
+            context: context.clone(),
+            trie: trie.clone(),
+        };
+        *cache = Some(VocabularyCache {
+            generation,
+            app_key: app_key.clone(),
+            context: context.clone(),
+            trie: trie.clone(),
+        });
+        std::sync::Arc::new(built)
+    }
 }
 
 struct TranscriptFormattingState {
@@ -506,6 +601,29 @@ struct LanguageState {
     language: Mutex<String>,
 }
 
+/// Which transcription engine runs (spec §6/§7/§8). `engine` is "auto" or an
+/// engine id; fallback settings govern what happens when the chosen engine
+/// cannot produce a transcript.
+struct EngineSelectionState {
+    engine: Mutex<String>,
+    fallback_enabled: AtomicBool,
+    preferred_fallback: Mutex<String>,
+    /// Engine used by the previous transcription — used to emit
+    /// `transcription_engine_changed` when auto/dispatch picks a different one.
+    last_engine: Mutex<String>,
+}
+
+impl Default for EngineSelectionState {
+    fn default() -> Self {
+        Self {
+            engine: Mutex::new("auto".to_string()),
+            fallback_enabled: AtomicBool::new(true),
+            preferred_fallback: Mutex::new("whisper".to_string()),
+            last_engine: Mutex::new(String::new()),
+        }
+    }
+}
+
 /// A voice-triggered text expansion: when the trigger phrase appears in a
 /// transcript, it is replaced with the expansion.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -596,6 +714,15 @@ struct TranscriptPreview {
     duration_seconds: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionInfo {
+    /// Raw ASR form that was replaced.
+    pub source: String,
+    /// Canonical form it was replaced with.
+    pub canonical: String,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TranscriptionResult {
@@ -607,6 +734,10 @@ struct TranscriptionResult {
     raw_text: Option<String>,
     /// Language actually used for transcription (auto-detected or pinned).
     language: Option<String>,
+    /// Engine that produced the raw transcript ("whisper", "parakeet", …).
+    engine: &'static str,
+    /// Vocabulary corrections applied to the final text.
+    corrections: Vec<CorrectionInfo>,
 }
 
 #[derive(Clone, Serialize)]
@@ -765,6 +896,59 @@ fn check_microphone_permission() -> bool {
 #[tauri::command]
 fn check_microphone_permission() -> bool {
     true
+}
+
+/// Raw macOS microphone authorization state so the UI can react to WHY the
+/// permission is missing:
+///   0 = not determined (offer the native prompt),
+///   1 = restricted, 2 = denied (System Settings is the only path — macOS
+///   never re-prompts after a refusal),
+///   3 = authorized.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn microphone_authorization_status() -> i64 {
+    unsafe {
+        let media_type = nsstring_from_str("soun");
+        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type]
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn microphone_authorization_status() -> i64 {
+    3
+}
+
+/// Deep-link straight into the matching Privacy pane. Essential for mic
+/// recovery: after one refusal, macOS suppresses the native prompt forever and
+/// System Settings is the only path back.
+#[tauri::command]
+fn open_system_settings(pane: String) -> Result<(), String> {
+    let url = match pane.as_str() {
+        "microphone" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        }
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "input_monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        }
+        other => return Err(format!("Unknown System Settings pane: {other}")),
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1050,6 +1234,21 @@ fn transcribe_sample() -> TranscriptPreview {
 fn whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
     let models_dir = whisper_models_dir(&app)?;
     Ok(whisper::list_models(&models_dir))
+}
+
+/// Hardware awareness (spec §25): what this machine can run comfortably.
+#[tauri::command]
+fn get_hardware_info() -> hardware::HardwareInfo {
+    hardware::detect()
+}
+
+/// Expose the registered transcription engines and their availability to the
+/// frontend (spec §3/§31). React only ever sees `id`/`displayName`/`available`
+/// — never engine internals.
+#[tauri::command]
+fn get_transcription_engines(app: AppHandle) -> Result<Vec<engines::EngineStatus>, String> {
+    let models_dir = whisper_models_dir(&app)?;
+    Ok(engines::describe_engines(&models_dir))
 }
 
 #[tauri::command]
@@ -1530,7 +1729,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "professional",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Professional,
+        ));
     }
     if contains_any(
         &joined,
@@ -1545,7 +1746,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "casual",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Casual));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Casual,
+        ));
     }
     if contains_any(
         &joined,
@@ -1562,7 +1765,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "concise",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Concise));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Concise,
+        ));
     }
     if contains_any(
         &joined,
@@ -1573,7 +1778,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "give me a summary",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Summarize,
+        ));
     }
     if contains_any(
         &joined,
@@ -1586,7 +1793,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "fix grammar of this",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::FixGrammar));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::FixGrammar,
+        ));
     }
     if contains_any(
         &joined,
@@ -1602,7 +1811,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "polish",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Polish));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Polish,
+        ));
     }
     if contains_any(
         &joined,
@@ -1652,7 +1863,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "as an ai prompt",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::PromptEngine));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::PromptEngine,
+        ));
     }
     None
 }
@@ -1714,7 +1927,6 @@ fn transcribe_recording(
     app: AppHandle,
     audio_path: String,
     model_name: Option<String>,
-    dictionary: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
 ) -> Result<TranscriptionResult, String> {
@@ -1722,7 +1934,6 @@ fn transcribe_recording(
         &app,
         audio_path,
         model_name,
-        dictionary,
         context_app_name,
         context_window_title,
     )
@@ -1732,7 +1943,6 @@ fn transcribe_recording_inner(
     app: &AppHandle,
     audio_path: String,
     model_name: Option<String>,
-    dictionary: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
 ) -> Result<TranscriptionResult, String> {
@@ -1755,26 +1965,131 @@ fn transcribe_recording_inner(
         );
     }
 
+    // A full-length file can still be all zeros when macOS routes the stream
+    // to the wrong (or muted) input device. Fail before spending seconds on a
+    // hopeless transcription pass.
+    if let Some(reason) = engines::audio::detect_silent_recording(&audio_path) {
+        return Err(reason);
+    }
+
     let models_dir = whisper_models_dir(&app)?;
-    let context_dictionary = build_context_dictionary(
-        dictionary.as_deref(),
-        context_app_name.as_deref(),
-        context_window_title.as_deref(),
-    );
+    let context_dictionary =
+        build_context_dictionary(context_app_name.as_deref(), context_window_title.as_deref());
     let context_prompt =
         build_context_prompt(context_app_name.as_deref(), context_window_title.as_deref());
+
+    // Vocabulary Packs (spec §8, §10–§12): build the active context for this
+    // app, then adapt it per engine. Fast (cached trie, ≤64 entries, spec §22);
+    // never blocks audio capture — this command runs after recording ends.
+    let vocab_cache = app
+        .try_state::<VocabularyState>()
+        .map(|state| state.cached_context(context_app_name.as_deref()));
+    let (vocab_prompt, contextual_strings) = match &vocab_cache {
+        Some(cache) => {
+            let started = std::time::Instant::now();
+            let whisper_payload = vocabulary::adapters::adapt("whisper", &cache.context);
+            let apple_payload = vocabulary::adapters::adapt("apple", &cache.context);
+            eprintln!(
+                "[VOX][vocabulary] active terms: {} | context+adapt: {}ms",
+                cache.context.entries.len(),
+                started.elapsed().as_millis()
+            );
+            (whisper_payload.prompt, apple_payload.contextual_strings)
+        }
+        None => (None, Vec::new()),
+    };
+    let context_prompt = match (&context_prompt, &vocab_prompt) {
+        (Some(prompt), Some(vocab)) => Some(format!("{prompt} {vocab}")),
+        (Some(prompt), None) => Some(prompt.clone()),
+        (None, Some(vocab)) => Some(vocab.clone()),
+        (None, None) => None,
+    };
     let language = app
         .try_state::<LanguageState>()
         .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
         .unwrap_or_else(|| "auto".to_string());
-    let (text, detected_language) = whisper::transcribe(
+    let transcribe_started = std::time::Instant::now();
+
+    // Engine selection + fallback come from user settings (spec §6–§8).
+    let (engine_pref, fallback_enabled, fallback_target, last_engine) = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| {
+            let engine = state.engine.lock().ok().map(|e| e.clone())?;
+            let fallback = state.preferred_fallback.lock().ok().map(|f| f.clone())?;
+            let last_engine = state.last_engine.lock().ok().map(|e| e.clone())?;
+            Some((
+                engine,
+                state.fallback_enabled.load(Ordering::Relaxed),
+                fallback,
+                last_engine,
+            ))
+        })
+        .unwrap_or_else(|| {
+            (
+                "auto".to_string(),
+                true,
+                "whisper".to_string(),
+                String::new(),
+            )
+        });
+    let fallback_report: Mutex<Option<engines::EngineFallback>> = Mutex::new(None);
+    let (text, detected_language, engine) = engines::route_transcribe_with_vocabulary(
         &models_dir,
         &audio_path,
         model_name.as_deref(),
         context_dictionary.as_deref(),
         context_prompt.as_deref(),
         Some(&language),
+        engines::EngineSelection {
+            preferred: &engine_pref,
+            fallback_enabled,
+            preferred_fallback: Some(&fallback_target),
+        },
+        |from, to, reason| {
+            *fallback_report.lock().unwrap() = Some(engines::EngineFallback { from, to, reason });
+        },
+        &contextual_strings,
     )?;
+    if let Some(fallback) = fallback_report.into_inner().unwrap_or(None) {
+        // Engine switches must never be silent (spec §8/§26).
+        eprintln!(
+            "[VOX][ASR] fallback: {} -> {} ({})",
+            fallback.from, fallback.to, fallback.reason
+        );
+        let _ = app.emit(
+            "transcription_engine_fallback",
+            serde_json::json!({
+                "event": "transcription_engine_fallback",
+                "from": fallback.from,
+                "to": fallback.to,
+                "reason": fallback.reason,
+            }),
+        );
+    }
+    // `transcription_engine_changed` (spec §11): emitted whenever the engine
+    // that just ran differs from the previous transcription's engine.
+    if let Some(state) = app.try_state::<EngineSelectionState>() {
+        let previous = last_engine.clone();
+        if !previous.is_empty() && previous != engine {
+            let _ = app.emit(
+                "transcription_engine_changed",
+                serde_json::json!({
+                    "event": "transcription_engine_changed",
+                    "from": previous,
+                    "to": engine,
+                }),
+            );
+        }
+        if let Ok(mut last) = state.last_engine.lock() {
+            *last = engine.to_string();
+        }
+    }
+    // Performance logging (spec §26). Never logs transcript content.
+    eprintln!(
+        "[VOX][ASR] Engine: {engine} | audio: {:.1}s | transcribe: {}ms",
+        wav_duration_seconds(&audio_path).unwrap_or(0.0),
+        transcribe_started.elapsed().as_millis()
+    );
     let formatting_mode = app
         .try_state::<TranscriptFormattingState>()
         .and_then(|state| state.mode.lock().ok().map(|mode| *mode))
@@ -1795,7 +2110,11 @@ fn transcribe_recording_inner(
     // never rephrases or mangles dictated code, commands, paths, or symbols.
     let mut final_text = formatted_text;
     let mut raw_text: Option<String> = None;
+    // Vocabulary corrections applied during post-processing, surfaced to the
+    // UI for review/teaching (spec §13, §17).
+    let mut applied_corrections: Vec<CorrectionInfo> = Vec::new();
     if !dev_applied {
+        let cleanup_started = std::time::Instant::now();
         let cleanup_level = app
             .try_state::<CleanupLevelState>()
             .and_then(|state| state.level.lock().ok().map(|level| *level))
@@ -1874,6 +2193,75 @@ fn transcribe_recording_inner(
                     }
                 }
             }
+
+            // Vocabulary Packs correction pass (spec §13–§16): token-aware,
+            // longest-match-first canonicalization across every engine. This
+            // replaces the former personal-dictionary pass; migrated dictionary
+            // terms live in the Personal pack and are corrected here.
+            if let Some(cache) = &vocab_cache {
+                if !cache.context.entries.is_empty() {
+                    let correction_started = std::time::Instant::now();
+                    let settings = app
+                        .try_state::<VocabularyState>()
+                        .map(|state| {
+                            state
+                                .store
+                                .lock()
+                                .map(|store| store.document.settings.clone())
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default();
+                    let result = vocabulary::correct::correct_transcript(
+                        &final_text,
+                        &cache.trie,
+                        &settings,
+                    );
+                    if !result.corrections.is_empty() {
+                        // Learning (spec §17): record accepted corrections and
+                        // promote unknown terms into the Personal pack.
+                        if let Some(state) = app.try_state::<VocabularyState>() {
+                            let now = vocabulary::store::now_secs();
+                            let mut store = state
+                                .store
+                                .lock()
+                                .map_err(|_| "Vocabulary state unavailable")?;
+                            for correction in &result.corrections {
+                                store.record_correction(
+                                    &correction.source,
+                                    &correction.entry_id,
+                                    correction.confidence,
+                                    now,
+                                );
+                            }
+                            let _ = store.persist();
+                            drop(store);
+                            *state.cache.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                        }
+                        eprintln!(
+                            "[VOX][vocabulary] applied {} correction(s) in {}ms",
+                            result.corrections.len(),
+                            correction_started.elapsed().as_millis()
+                        );
+                    }
+                    if result.text != final_text {
+                        if raw_text.is_none() {
+                            raw_text = Some(final_text);
+                        }
+                        final_text = result.text;
+                    }
+                    applied_corrections.extend(result.corrections.iter().map(|correction| {
+                        CorrectionInfo {
+                            source: correction.source.clone(),
+                            canonical: correction.canonical.clone(),
+                        }
+                    }));
+                }
+            }
+
+            eprintln!(
+                "[VOX][AI] Cleanup level: {cleanup_level:?} | cleanup: {}ms",
+                cleanup_started.elapsed().as_millis()
+            );
         }
     }
 
@@ -1900,6 +2288,8 @@ fn transcribe_recording_inner(
         duration_seconds: None,
         raw_text,
         language: detected_language,
+        engine,
+        corrections: applied_corrections,
     })
 }
 
@@ -2021,13 +2411,163 @@ fn set_trigger_mode(
     Ok(())
 }
 
+// ── Vocabulary Packs commands (spec §6, §7, §9, §17, §19) ────────────────────
+
 #[tauri::command]
-fn set_dictionary(dictionary: String, state: State<'_, DictionaryState>) -> Result<(), String> {
-    *state
-        .content
+fn vocabulary_packs(
+    state: State<'_, VocabularyState>,
+) -> Result<Vec<vocabulary::model::VocabularyPack>, String> {
+    let store = state
+        .store
         .lock()
-        .map_err(|_| "Dictionary state unavailable".to_string())? = dictionary;
-    Ok(())
+        .map_err(|_| "Vocabulary state unavailable".to_string())?;
+    Ok(store.all_packs())
+}
+
+#[tauri::command]
+fn vocabulary_create_pack(
+    name: String,
+    description: String,
+    category: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    let category = serde_json::from_value::<vocabulary::model::PackCategory>(
+        serde_json::Value::String(category),
+    )
+    .unwrap_or(vocabulary::model::PackCategory::Custom);
+    state.with_store(|store| store.create_pack(name, description, category))
+}
+
+#[tauri::command]
+fn vocabulary_update_pack(
+    pack_id: String,
+    name: String,
+    description: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.update_pack(&pack_id, name, description))
+}
+
+#[tauri::command]
+fn vocabulary_duplicate_pack(
+    pack_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    state.with_store(|store| store.duplicate_pack(&pack_id))
+}
+
+#[tauri::command]
+fn vocabulary_delete_pack(
+    pack_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.delete_pack(&pack_id))
+}
+
+#[tauri::command]
+fn vocabulary_set_pack_enabled(
+    pack_id: String,
+    enabled: bool,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.set_pack_enabled(&pack_id, enabled))
+}
+
+#[tauri::command]
+fn vocabulary_upsert_entry(
+    pack_id: String,
+    entry: vocabulary::model::VocabularyEntry,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyEntry, String> {
+    state.with_store(|store| store.upsert_entry(&pack_id, entry))
+}
+
+#[tauri::command]
+fn vocabulary_delete_entry(
+    pack_id: String,
+    entry_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.delete_entry(&pack_id, &entry_id))
+}
+
+#[tauri::command]
+fn vocabulary_set_entry_enabled(
+    pack_id: String,
+    entry_id: String,
+    enabled: bool,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.set_entry_enabled(&pack_id, &entry_id, enabled))
+}
+
+#[tauri::command]
+fn vocabulary_set_app_mapping(
+    app: vocabulary::model::ApplicationIdentifier,
+    pack_ids: Vec<String>,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| {
+        store.set_app_mapping(app, pack_ids);
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn vocabulary_import(
+    json: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    state.with_store(|store| store.import_pack(&json))
+}
+
+#[tauri::command]
+fn vocabulary_export(pack_id: String, state: State<'_, VocabularyState>) -> Result<String, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "Vocabulary state unavailable".to_string())?;
+    serde_json::to_string_pretty(&store.export_pack(&pack_id)?)
+        .map_err(|error| format!("Export serialization failed: {error}"))
+}
+
+#[tauri::command]
+fn vocabulary_set_settings(
+    settings: vocabulary::model::VocabularySettings,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| {
+        store.document.settings = settings;
+        Ok(())
+    })
+}
+
+/// One-time migration: converts the legacy free-text personal dictionary
+/// ("word | hint | category" lines) into Personal-pack vocabulary entries.
+/// Idempotent — safe to call repeatedly.
+#[tauri::command]
+fn vocabulary_migrate_dictionary(
+    dictionary: String,
+    state: State<'_, VocabularyState>,
+) -> Result<usize, String> {
+    state.with_store(|store| store.migrate_dictionary(&dictionary))
+}
+
+/// Teach a correction from the UI (spec §17): the Corrections page's
+/// "Teach a correction" form and transcript edits both land here. Repeated
+/// corrections raise the entry's ranking; unknown terms become Personal-pack
+/// entries with the heard form as an alias.
+#[tauri::command]
+fn vocabulary_record_correction(
+    source: String,
+    canonical: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    let now = vocabulary::store::now_secs();
+    state.with_store(|store| {
+        store.teach_correction(&source, &canonical, now)?;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -2040,6 +2580,49 @@ fn set_language(language: String, state: State<'_, LanguageState>) -> Result<(),
         .language
         .lock()
         .map_err(|_| "Language state unavailable".to_string())? = language;
+    Ok(())
+}
+
+const VALID_ENGINES: [&str; 4] = ["auto", "apple", "whisper", "parakeet"];
+
+#[tauri::command]
+fn set_transcription_engine(
+    engine: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let engine = engine.trim().to_ascii_lowercase();
+    if !VALID_ENGINES.contains(&engine.as_str()) {
+        return Err(format!("Unknown transcription engine: {engine}"));
+    }
+    *state
+        .engine
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = engine;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_engine_fallback(
+    enabled: bool,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    state.fallback_enabled.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_engine_fallback_target(
+    engine: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let engine = engine.trim().to_ascii_lowercase();
+    if !VALID_ENGINES.contains(&engine.as_str()) {
+        return Err(format!("Unknown transcription engine: {engine}"));
+    }
+    *state
+        .preferred_fallback
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = engine;
     Ok(())
 }
 
@@ -2258,7 +2841,6 @@ pub fn run() {
         .manage(ActiveShortcut {
             current: Mutex::new(DEFAULT_SHORTCUT.to_string()),
         })
-        .manage(DictionaryState::default())
         .manage(LanguageState::default())
         .manage(SnippetsState::default())
         .manage(VoiceCommandsState::default())
@@ -2272,8 +2854,19 @@ pub fn run() {
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
         .manage(whisper::DownloadRegistry::default())
+        .manage(EngineSelectionState::default())
         .manage(TransformState::default())
         .setup(move |app| {
+            // Vocabulary Packs (spec §6): persisted under <app data>/vocabulary/.
+            let vocabulary_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            app.manage(VocabularyState {
+                store: Mutex::new(vocabulary::store::VocabularyStore::load(&vocabulary_dir)),
+                cache: Mutex::new(None),
+            });
+
             create_tray_menu(app)?;
 
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
@@ -2317,10 +2910,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             native_status,
             request_microphone_permission,
+            microphone_authorization_status,
+            open_system_settings,
             recording_status,
             start_recording,
             stop_recording,
             whisper_models,
+            get_transcription_engines,
+            get_hardware_info,
             download_whisper_model,
             pause_whisper_download,
             resume_whisper_download,
@@ -2341,8 +2938,10 @@ pub fn run() {
             set_global_shortcut,
             get_trigger_mode,
             set_trigger_mode,
-            set_dictionary,
             set_language,
+            set_transcription_engine,
+            set_engine_fallback,
+            set_engine_fallback_target,
             set_snippets,
             set_whisper_mode,
             set_voice_commands_enabled,
@@ -2367,9 +2966,36 @@ pub fn run() {
             open_external_link,
             capture_selected_text,
             apply_transform,
+            vocabulary_packs,
+            vocabulary_migrate_dictionary,
+            vocabulary_create_pack,
+            vocabulary_update_pack,
+            vocabulary_duplicate_pack,
+            vocabulary_delete_pack,
+            vocabulary_set_pack_enabled,
+            vocabulary_upsert_entry,
+            vocabulary_delete_entry,
+            vocabulary_set_entry_enabled,
+            vocabulary_set_app_mapping,
+            vocabulary_import,
+            vocabulary_export,
+            vocabulary_set_settings,
+            vocabulary_record_correction,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Vox");
+        .build(tauri::generate_context!())
+        .expect("error while running Vox")
+        .run(|_app_handle, event| {
+            // Kill the persistent engine sidecars so app exit never orphans
+            // them (they hold loaded models in memory otherwise).
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                engines::apple_speech::shutdown_serve_session();
+                engines::parakeet_engine::shutdown_serve_session();
+                crate::text_enhancement::shutdown_serve_session();
+            }
+        });
 }
 
 fn create_tray_menu(app: &App) -> tauri::Result<()> {
@@ -2643,10 +3269,6 @@ fn start_recording_flow(app: AppHandle) {
 fn stop_and_transcribe(app: AppHandle) {
     eprintln!("[vox] stop_and_transcribe: stopping recording");
     let recorder_state = app.state::<RecorderState>();
-    let dictionary = app
-        .try_state::<DictionaryState>()
-        .and_then(|state| state.content.lock().ok().map(|content| content.clone()))
-        .filter(|content| !content.trim().is_empty());
     match stop_recording_inner(&recorder_state) {
         Ok(status) => {
             eprintln!(
@@ -2657,16 +3279,11 @@ fn stop_and_transcribe(app: AppHandle) {
 
             let audio_path = status.path.clone();
             if let Some(path) = status.path {
-                // Yield briefly so the webview can render "transcribing" before
-                // the heavy Whisper work blocks the event loop.
-                thread::sleep(Duration::from_millis(80));
-
                 eprintln!("[vox] stop_and_transcribe: transcribing {path}");
                 match transcribe_recording_inner(
                     &app,
                     path,
                     None,
-                    dictionary.clone(),
                     status.app_name.clone(),
                     status.window_title.clone(),
                 ) {
@@ -2721,17 +3338,23 @@ fn stop_and_transcribe(app: AppHandle) {
                         let _ = app.emit("vox-transcription-complete", result);
                         eprintln!("[vox] stop_and_transcribe: emitted completion event");
 
-                        thread::sleep(Duration::from_millis(150));
+                        let paste_started = std::time::Instant::now();
                         if let Err(e) = paste_text(&text) {
                             eprintln!("paste_text error: {e}");
                         } else {
-                            eprintln!("[vox] stop_and_transcribe: pasted transcript");
+                            // Performance logging (spec §26).
+                            eprintln!(
+                                "[VOX][OUTPUT] Inserted in {}ms",
+                                paste_started.elapsed().as_millis()
+                            );
                         }
 
                         // Offer the Enhance action in the widget only when the
                         // Enhance icon setting is on AND the model is available;
                         // otherwise dismiss after a short delay.
-                        if is_enhance_icon_enabled(&app) && is_selected_enhancement_model_available(&app) {
+                        if is_enhance_icon_enabled(&app)
+                            && is_selected_enhancement_model_available(&app)
+                        {
                             show_widget_done_with_enhance(&app, "Enhanced?");
                         } else {
                             hide_widget_after_delay(app.clone(), 1200);
@@ -2823,7 +3446,10 @@ fn spawn_hands_free_monitor(app: AppHandle) {
 
             if has_speech && silence_elapsed >= HANDS_FREE_SILENCE_TIMEOUT {
                 if let Some(segment_path) = finalize_hands_free_segment(&recorder_state) {
-                    recorder_state.vad.has_speech.store(false, Ordering::Relaxed);
+                    recorder_state
+                        .vad
+                        .has_speech
+                        .store(false, Ordering::Relaxed);
                     *recorder_state.vad.last_sound_at.lock().unwrap() = Instant::now();
                     let app_clone = app.clone();
                     thread::spawn(move || {
@@ -2832,7 +3458,7 @@ fn spawn_hands_free_monitor(app: AppHandle) {
                 }
             }
 
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(100));
         }
     });
 }
@@ -2849,10 +3475,7 @@ fn finalize_hands_free_segment(state: &RecorderState) -> Option<PathBuf> {
     }
     let finalized_path = session.path.clone();
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let new_path = session
         .path
         .with_file_name(format!("vox-recording-{timestamp}.wav"));
@@ -2879,11 +3502,6 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
 
-    let dictionary = app
-        .try_state::<DictionaryState>()
-        .and_then(|state| state.content.lock().ok().map(|content| content.clone()))
-        .filter(|content| !content.trim().is_empty());
-
     let (app_name, window_title) = {
         let session = recorder_state.session.lock().ok();
         match session.as_ref().and_then(|session| session.as_ref()) {
@@ -2893,7 +3511,7 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
     };
 
     let path_str = path.to_string_lossy().to_string();
-    match transcribe_recording_inner(&app, path_str, None, dictionary, app_name, window_title) {
+    match transcribe_recording_inner(&app, path_str, None, app_name, window_title) {
         Ok(result) => {
             if !is_blank_transcription(&result.text) {
                 let text = result.text.clone();
@@ -2904,10 +3522,18 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
                         "rawText": result.raw_text,
                         "appName": result.app_name,
                         "language": result.language,
+                        "engine": result.engine,
+                        "corrections": result.corrections,
                     }),
                 );
+                let paste_started = std::time::Instant::now();
                 if let Err(error) = paste_text(&text) {
                     eprintln!("[vox] hands-free paste error: {error}");
+                } else {
+                    eprintln!(
+                        "[VOX][OUTPUT] Inserted in {}ms",
+                        paste_started.elapsed().as_millis()
+                    );
                 }
             }
             let _ = fs::remove_file(&path);
@@ -3129,18 +3755,8 @@ fn current_file_from_title(window_title: Option<&str>) -> Option<String> {
     looks_like_file.then(|| first.to_string())
 }
 
-fn build_context_dictionary(
-    user_dictionary: Option<&str>,
-    app_name: Option<&str>,
-    window_title: Option<&str>,
-) -> Option<String> {
+fn build_context_dictionary(app_name: Option<&str>, window_title: Option<&str>) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
-    if let Some(user_dictionary) = user_dictionary
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(user_dictionary.to_string());
-    }
 
     lines.extend(developer_context_entries(app_name, window_title));
 
@@ -3542,10 +4158,9 @@ fn format_general_transcript(text: &str) -> String {
 
 /// Ordinal markers that reliably signal a dictated numbered list.
 const NUMBERED_LIST_MARKERS: &[&str] = &[
-    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth",
-    "fourthly", "fifth", "fifthly", "sixth", "seventh", "eighth", "ninth",
-    "tenth", "lastly", "finally", "one", "two", "three", "four", "five",
-    "six", "seven", "eight", "nine", "ten",
+    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth", "fourthly", "fifth",
+    "fifthly", "sixth", "seventh", "eighth", "ninth", "tenth", "lastly", "finally", "one", "two",
+    "three", "four", "five", "six", "seven", "eight", "nine", "ten",
 ];
 
 /// "first install dependencies second run migration third start the server" →
@@ -3822,7 +4437,15 @@ const SAFE_FILLERS: &[&str] = &["um", "uh", "er", "erm", "hmm", "ah", "uhh", "uh
 
 /// Filler phrases removed only when they sit between commas ("I was, like,
 /// going") so legitimate uses ("I like this") survive.
-const COMMA_FILLERS: &[&str] = &["like", "you know", "i mean", "sort of", "kind of", "basically", "literally"];
+const COMMA_FILLERS: &[&str] = &[
+    "like",
+    "you know",
+    "i mean",
+    "sort of",
+    "kind of",
+    "basically",
+    "literally",
+];
 
 fn remove_fillers(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -3850,7 +4473,8 @@ fn remove_fillers(text: &str) -> String {
             is_filler = true;
             index += 1;
         }
-        if !is_filler && COMMA_FILLERS.contains(&lower.as_str()) && is_between_commas(&words, index) {
+        if !is_filler && COMMA_FILLERS.contains(&lower.as_str()) && is_between_commas(&words, index)
+        {
             is_filler = true;
             index += 1;
         }
@@ -3888,8 +4512,17 @@ fn is_between_commas(words: &[&str], index: usize) -> bool {
 /// Markers that signal a spoken self-correction. Only honored when preceded by
 /// an ellipsis ("...") so ordinary uses ("I actually think…") survive.
 const CORRECTION_MARKERS: &[&str] = &[
-    "actually", "wait", "sorry", "no wait", "i mean", "correction", "scratch that",
-    "no, actually", "no actually", "never mind", "forget it",
+    "actually",
+    "wait",
+    "sorry",
+    "no wait",
+    "i mean",
+    "correction",
+    "scratch that",
+    "no, actually",
+    "no actually",
+    "never mind",
+    "forget it",
 ];
 
 /// "Let's meet at 2 PM... actually 3 PM." → "Let's meet at 3 PM."
@@ -3946,6 +4579,14 @@ fn collapse_self_corrections(text: &str) -> String {
     }
 }
 
+/// Approximate recording duration from its WAV header/length.
+fn wav_duration_seconds(path: &std::path::Path) -> Option<f64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let frames = reader.duration() as f64 / f64::from(spec.channels);
+    Some(frames / f64::from(spec.sample_rate))
+}
+
 /// Remove adjacent repeated words (stutters): "I I want" → "I want".
 fn fix_repeated_words(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -3994,7 +4635,10 @@ fn normalize_capitalization(text: &str) -> String {
 
 /// Map the active application to a writing-style instruction used by AI cleanup
 /// (Context Awareness). Returns `None` for developer contexts and unknown apps.
-fn app_style_instruction(app_name: Option<&str>, window_title: Option<&str>) -> Option<&'static str> {
+fn app_style_instruction(
+    app_name: Option<&str>,
+    window_title: Option<&str>,
+) -> Option<&'static str> {
     let context = format!(
         "{} {}",
         app_name.unwrap_or_default(),
@@ -4933,11 +5577,7 @@ fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
         frame.width.round() as i64,
         frame.height.round() as i64,
     );
-    Some(FocusedInputSnapshot {
-        id,
-        app_name,
-        text,
-    })
+    Some(FocusedInputSnapshot { id, app_name, text })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -5595,7 +6235,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[f32], _| {
                         write_f32_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_f32_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_f32_windowed(&bar_window, data),
+                        );
                         update_vad_f32(&vad, data);
                     },
                     on_error,
@@ -5613,7 +6256,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[i16], _| {
                         write_i16_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_i16_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_i16_windowed(&bar_window, data),
+                        );
                         update_vad_i16(&vad, data);
                     },
                     on_error,
@@ -5631,7 +6277,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[u16], _| {
                         write_u16_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_u16_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_u16_windowed(&bar_window, data),
+                        );
                         update_vad_u16(&vad, data);
                     },
                     on_error,
@@ -5790,7 +6439,11 @@ fn push_bar_window_f32(window: &Arc<Mutex<Vec<f32>>>, samples: &[f32]) {
 
 fn push_bar_window_i16(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) {
     if let Ok(mut window) = window.lock() {
-        window.extend(samples.iter().map(|sample| *sample as f32 / i16::MAX as f32));
+        window.extend(
+            samples
+                .iter()
+                .map(|sample| *sample as f32 / i16::MAX as f32),
+        );
         if window.len() > BAR_WINDOW_SAMPLES {
             let excess = window.len() - BAR_WINDOW_SAMPLES;
             window.drain(0..excess);
@@ -5800,9 +6453,11 @@ fn push_bar_window_i16(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) {
 
 fn push_bar_window_u16(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16]) {
     if let Ok(mut window) = window.lock() {
-        window.extend(samples.iter().map(|sample| {
-            (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32
-        }));
+        window.extend(
+            samples
+                .iter()
+                .map(|sample| (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32),
+        );
         if window.len() > BAR_WINDOW_SAMPLES {
             let excess = window.len() - BAR_WINDOW_SAMPLES;
             window.drain(0..excess);
@@ -5830,8 +6485,6 @@ fn compute_bar_levels_u16_windowed(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16
     let guard = window.lock().unwrap();
     compute_bar_levels(&guard, |sample| sample.clamp(-1.0, 1.0))
 }
-
-
 
 fn compute_bar_levels<T>(samples: &[T], normalize: impl Fn(&T) -> f32) -> [f32; 7] {
     let mut bars = [0.0; 7];
@@ -5871,6 +6524,27 @@ fn compute_bar_levels<T>(samples: &[T], normalize: impl Fn(&T) -> f32) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wav_duration_matches_sample_count() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("vox-duration-test.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..32_000 {
+            writer.write_sample(0i16).unwrap();
+        }
+        drop(writer);
+
+        let duration = wav_duration_seconds(&path).unwrap();
+        assert!((duration - 2.0).abs() < 0.01, "got {duration}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn treats_blank_audio_marker_as_blank_transcription() {
@@ -5957,10 +6631,7 @@ mod tests {
     #[test]
     fn formats_bullet_lists_from_intent() {
         let text = "things I need milk and eggs and bread";
-        assert_eq!(
-            format_general_transcript(text),
-            "• Milk\n• Eggs\n• Bread"
-        );
+        assert_eq!(format_general_transcript(text), "• Milk\n• Eggs\n• Bread");
         let comma_text = "my list apples, bananas, oranges";
         assert_eq!(
             format_general_transcript(comma_text),
@@ -5978,7 +6649,10 @@ mod tests {
 
     #[test]
     fn formats_known_heading_phrase() {
-        assert_eq!(format_general_transcript("meeting notes"), "## Meeting Notes");
+        assert_eq!(
+            format_general_transcript("meeting notes"),
+            "## Meeting Notes"
+        );
     }
 
     #[test]
@@ -6002,8 +6676,16 @@ mod tests {
 
     #[test]
     fn browser_gmail_is_not_developer_context() {
-        assert!(!is_developer_app_context(Some("Google Chrome"), Some("Inbox - Gmail"), true));
-        assert!(is_developer_app_context(Some("Google Chrome"), Some("localhost:3000"), true));
+        assert!(!is_developer_app_context(
+            Some("Google Chrome"),
+            Some("Inbox - Gmail"),
+            true
+        ));
+        assert!(is_developer_app_context(
+            Some("Google Chrome"),
+            Some("localhost:3000"),
+            true
+        ));
     }
 
     #[test]
@@ -6011,7 +6693,9 @@ mod tests {
         assert!(whisper::is_english_only_model("/models/ggml-base.en.bin"));
         assert!(whisper::is_english_only_model("ggml-small.en.bin"));
         assert!(!whisper::is_english_only_model("ggml-large-v3.bin"));
-        assert!(!whisper::is_english_only_model("parakeet-tdt-0.6b-v3-Q8_0.gguf"));
+        assert!(!whisper::is_english_only_model(
+            "parakeet-tdt-0.6b-v3-Q8_0.gguf"
+        ));
     }
 
     #[test]
@@ -6096,18 +6780,25 @@ mod tests {
             split_sentences("One. Two! Three? Four"),
             vec!["One.", "Two!", "Three?", "Four"]
         );
-        assert_eq!(split_sentences("No punctuation here"), vec!["No punctuation here"]);
+        assert_eq!(
+            split_sentences("No punctuation here"),
+            vec!["No punctuation here"]
+        );
     }
 
     #[test]
     fn detects_voice_commands() {
         assert!(matches!(
             detect_voice_command("make this professional"),
-            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional))
+            Some(VoiceCommand::Transform(
+                text_enhancement::TransformPreset::Professional
+            ))
         ));
         assert!(matches!(
             detect_voice_command("summarize this"),
-            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize))
+            Some(VoiceCommand::Transform(
+                text_enhancement::TransformPreset::Summarize
+            ))
         ));
         assert!(matches!(
             detect_voice_command("translate this to Hindi"),
@@ -6125,7 +6816,10 @@ mod tests {
             detect_voice_command("I want to make this professional report look better for the client meeting tomorrow"),
             None
         );
-        assert_eq!(detect_voice_command("The summary of this quarter is strong"), None);
+        assert_eq!(
+            detect_voice_command("The summary of this quarter is strong"),
+            None
+        );
     }
 
     #[test]
@@ -6199,7 +6893,10 @@ mod tests {
         use custom_models::{detect_model_kind, CustomModelKind};
         // whisper.cpp GGML → STT
         assert_eq!(
-            detect_model_kind("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin").unwrap(),
+            detect_model_kind(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+            )
+            .unwrap(),
             CustomModelKind::Stt
         );
         // Parakeet GGUF → STT
@@ -6213,8 +6910,13 @@ mod tests {
             CustomModelKind::Enhance
         );
         // Ambiguous GGUF → error
-        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/mystery.gguf").is_err());
+        assert!(
+            detect_model_kind("https://huggingface.co/foo/bar/resolve/main/mystery.gguf").is_err()
+        );
         // Unsupported extension → error
-        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/model.safetensors").is_err());
+        assert!(
+            detect_model_kind("https://huggingface.co/foo/bar/resolve/main/model.safetensors")
+                .is_err()
+        );
     }
 }

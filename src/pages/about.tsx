@@ -72,7 +72,7 @@ export function AboutPage() {
     <div className="h-full overflow-hidden bg-background">
 
       <ScrollArea className="h-full">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
+        <div className="page-shell">
           <section className="rounded-2xl border border-border bg-card">
             <div className="flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:justify-between lg:p-8">
               <div className="min-w-0 max-w-2xl">

@@ -46,6 +46,7 @@ async function migrate(db: Database) {
   await db.execute("ALTER TABLE transcripts ADD COLUMN duration_seconds INTEGER").catch(() => {});
   await db.execute("ALTER TABLE transcripts ADD COLUMN raw_text TEXT").catch(() => {});
   await db.execute("ALTER TABLE transcripts ADD COLUMN language TEXT").catch(() => {});
+  await db.execute("ALTER TABLE transcripts ADD COLUMN engine TEXT").catch(() => {});
 
   // snippets table — voice-triggered text expansion
   await db.execute(`
@@ -56,6 +57,21 @@ async function migrate(db: Database) {
       created_at INTEGER NOT NULL
     )
   `);
+
+  // corrections table — vocabulary corrections applied to dictations
+  // ("shad can" → "shadcn"), one row per applied pair (spec §13/§17).
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS corrections (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      source     TEXT NOT NULL,
+      canonical  TEXT NOT NULL,
+      app_name   TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `);
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_corrections_pair ON corrections (source, canonical)"
+  );
 
   // notes table — scratchpad / voice notes
   await db.execute(`
@@ -98,6 +114,8 @@ export interface TranscriptRow {
   duration_seconds: number | null;
   raw_text: string | null;
   language: string | null;
+  /** ASR engine that produced the transcript ("whisper", "parakeet", …). */
+  engine: string | null;
   created_at: number;
 }
 
@@ -107,19 +125,20 @@ export async function saveTranscript(
   appName?: string | null,
   durationSeconds?: number | null,
   rawText?: string | null,
-  language?: string | null
+  language?: string | null,
+  engine?: string | null
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
-    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, raw_text, language, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, rawText ?? null, language ?? null, Date.now()]
+    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, raw_text, language, engine, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, rawText ?? null, language ?? null, engine ?? null, Date.now()]
   );
 }
 
 export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
   const db = await getDb();
   return db.select<TranscriptRow[]>(
-    "SELECT id, text, audio_path, app_name, duration_seconds, raw_text, language, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
+    "SELECT id, text, audio_path, app_name, duration_seconds, raw_text, language, engine, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
     [limit]
   );
 }
@@ -248,4 +267,75 @@ export async function updateSnippet(id: number, trigger: string, expansion: stri
 export async function deleteSnippet(id: number): Promise<void> {
   const db = await getDb();
   await db.execute("DELETE FROM snippets WHERE id = $1", [id]);
+}
+
+// ── Vocabulary correction helpers ──────────────────────────────────────────────
+
+export interface CorrectionPair {
+  source: string;
+  canonical: string;
+}
+
+/** Persist one or more corrections the vocabulary engine applied. */
+export async function saveCorrections(
+  corrections: CorrectionPair[],
+  appName?: string | null
+): Promise<void> {
+  if (corrections.length === 0) return;
+  const db = await getDb();
+  const now = Date.now();
+  for (const correction of corrections) {
+    if (!correction.source.trim() || !correction.canonical.trim()) continue;
+    await db.execute(
+      "INSERT INTO corrections (source, canonical, app_name, created_at) VALUES ($1, $2, $3, $4)",
+      [correction.source.trim(), correction.canonical.trim(), appName ?? null, now]
+    );
+  }
+}
+
+/** One aggregated correction: how often the app heard X and wrote Y. */
+export interface CorrectionRow {
+  source: string;
+  canonical: string;
+  count: number;
+  last_used_at: number;
+}
+
+export async function getCorrections(): Promise<CorrectionRow[]> {
+  const db = await getDb();
+  return db.select<CorrectionRow[]>(
+    `SELECT source, canonical, COUNT(*) AS count, MAX(created_at) AS last_used_at
+     FROM corrections
+     GROUP BY source, canonical
+     ORDER BY last_used_at DESC
+     LIMIT 200`
+  );
+}
+
+export async function deleteCorrectionPair(source: string, canonical: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM corrections WHERE source = $1 AND canonical = $2", [
+    source,
+    canonical,
+  ]);
+}
+
+export async function getCorrectionsStats(): Promise<{
+  totalCorrections: number;
+  dictationsImproved: number;
+  distinctTerms: number;
+}> {
+  const db = await getDb();
+  const pairRows = await db.select<{ total: number; terms: number }[]>(
+    `SELECT COUNT(*) AS total, COUNT(DISTINCT canonical) AS terms FROM corrections`
+  );
+  const improved = await db.select<{ count: number }[]>(
+    `SELECT COUNT(*) AS count FROM transcripts
+     WHERE raw_text IS NOT NULL AND TRIM(raw_text) != '' AND TRIM(raw_text) != TRIM(text)`
+  );
+  return {
+    totalCorrections: pairRows[0]?.total ?? 0,
+    distinctTerms: pairRows[0]?.terms ?? 0,
+    dictationsImproved: improved[0]?.count ?? 0,
+  };
 }

@@ -1,46 +1,7 @@
 /**
- * Personal dictionary helpers: parsing/serializing the free-text dictionary
- * string, deduplication, and auto-learning words from transcript corrections.
+ * Correction-pair extraction for the Vocabulary Packs learner (spec §17):
+ * position-aligned word diffs between a raw transcript and the user's edit.
  */
-
-export interface DictionaryEntry {
-  word: string;
-  hint: string;
-  category: string;
-}
-
-export function parseDictionaryEntries(dictionary: string): DictionaryEntry[] {
-  return dictionary
-    .split("\n")
-    .flatMap((line) => {
-      const parts = line.split("|").map((part) => part.trim());
-      if (parts.length > 1) {
-        return [{ word: parts[0], hint: parts[1] ?? "", category: parts[2] || "General" }];
-      }
-      return line
-        .split(",")
-        .map((word) => word.trim())
-        .filter(Boolean)
-        .map((word) => ({ word, hint: "", category: "General" }));
-    })
-    .filter((entry) => entry.word);
-}
-
-export function serializeDictionaryEntries(entries: DictionaryEntry[]): string {
-  return entries
-    .map((entry) => [entry.word, entry.hint, entry.category].join(" | "))
-    .join("\n");
-}
-
-export function dedupeDictionaryEntries(entries: DictionaryEntry[]): DictionaryEntry[] {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    const key = entry.word.toLocaleLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 /** Common English words that should never be auto-learned. */
 const COMMON_WORDS = new Set([
@@ -152,19 +113,31 @@ const COMMON_WORDS = new Set([
 
 /** Words that appear in the corrected text but not the original, filtered to
  * meaningful, learnable terms (technical words, names, product names). */
-export function wordsToLearn(original: string, corrected: string): string[] {
-  const originalWords = new Set(tokenize(original));
+/**
+ * Position-aligned (source → canonical) correction pairs for the Vocabulary
+ * Packs learner (spec §17). Only pairs where the corrected word is learnable
+ * are returned; ordering follows the corrected text.
+ */
+export function correctionPairs(
+  original: string,
+  corrected: string
+): Array<{ source: string; canonical: string }> {
+  const originalWords = tokenize(original);
   const correctedWords = tokenize(corrected);
+  const pairs: Array<{ source: string; canonical: string }> = [];
   const seen = new Set<string>();
-  const learned: string[] = [];
-  for (const word of correctedWords) {
-    if (originalWords.has(word)) continue;
-    if (!isLearnable(word)) continue;
-    if (seen.has(word)) continue;
-    seen.add(word);
-    learned.push(word);
+  const length = Math.min(originalWords.length, correctedWords.length);
+  for (let i = 0; i < length; i++) {
+    const before = originalWords[i];
+    const after = correctedWords[i];
+    if (before === after) continue;
+    if (!isLearnable(after) || !isLearnable(before)) continue;
+    const key = `${before}\u0000${after}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ source: before, canonical: after });
   }
-  return learned;
+  return pairs;
 }
 
 function tokenize(text: string): string[] {

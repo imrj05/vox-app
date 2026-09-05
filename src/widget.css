@@ -97,7 +97,7 @@ body,
     min-width: 0;
 }
 
-/* Theme-aware Vox logo. Default (dark) shows the dark mark; light overrides. */
+
 .widget-logo-wrap {
     position: relative;
     z-index: 1;
@@ -116,21 +116,6 @@ body,
     flex-shrink: 0;
 }
 
-.widget-logo-dark {
-    display: block;
-}
-
-.widget-logo-light {
-    display: none;
-}
-
-:root[data-theme="light"] .widget-logo-dark {
-    display: none;
-}
-
-:root[data-theme="light"] .widget-logo-light {
-    display: block;
-}
 
 /* Soft radial glow behind the content, scales with audio level */
 .widget-glow {

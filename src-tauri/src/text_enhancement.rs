@@ -1,8 +1,10 @@
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
@@ -227,7 +229,9 @@ pub fn enhance_text_with_level(
     let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
     let path = resolve_model_path(models_dir, model_name)?;
     if !path.exists() {
-        return Err(format!("Download {model_name} before cleaning up transcripts"));
+        return Err(format!(
+            "Download {model_name} before cleaning up transcripts"
+        ));
     }
 
     let prompt = cleanup_prompt(text, level, style);
@@ -357,17 +361,174 @@ fn clean_model_output(output: String) -> String {
         .to_string()
 }
 
-#[derive(Serialize)]
-struct SidecarRequest {
-    model_path: String,
-    prompt: String,
+// ── Persistent sidecar session ─────────────────────────────────────...
+// The sidecar stays alive in `--serve` mode with the GGUF model (and compiled
+// Metal kernels) kept warm, which removes the per-request model-load cost —
+// seconds per call when spawning a fresh process each time. One global session
+// serializes requests; an exited sidecar is transparently respawned once.
+struct EnhanceServeSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_request_id: u64,
 }
 
-#[derive(Deserialize)]
-struct SidecarResponse {
-    ok: bool,
-    text: Option<String>,
-    error: Option<String>,
+fn serve_session_cell() -> &'static Mutex<Option<EnhanceServeSession>> {
+    static SERVE_SESSION: OnceLock<Mutex<Option<EnhanceServeSession>>> = OnceLock::new();
+    SERVE_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+fn spawn_serve_session() -> Result<EnhanceServeSession, String> {
+    let sidecar = sidecar_path()?;
+    let mut child = Command::new(&sidecar)
+        .arg("--serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start text enhancement sidecar: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Text enhancement sidecar stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Text enhancement sidecar stdout unavailable".to_string())?;
+    Ok(EnhanceServeSession {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        next_request_id: 0,
+    })
+}
+
+fn stop_serve_session(session: EnhanceServeSession) {
+    let mut session = session;
+    let _ = session.child.kill();
+    let _ = session.child.wait();
+}
+
+/// Kills the persistent sidecar process, if one is running. Called on app exit
+/// so the child is not orphaned.
+pub fn shutdown_serve_session() {
+    let lock = serve_session_cell();
+    if let Ok(mut guard) = lock.lock() {
+        if let Some(session) = guard.take() {
+            stop_serve_session(session);
+        }
+    }
+}
+
+/// Sends one enhancement request over the persistent session. `Ok(response)`
+/// includes application-level errors (`ok: false`); a transport-level `Err`
+/// means the sidecar is gone and the request never completed.
+fn request_enhancement(
+    session: &mut EnhanceServeSession,
+    model_path: &str,
+    prompt: &str,
+) -> Result<serde_json::Value, String> {
+    session.next_request_id += 1;
+    let id = session.next_request_id;
+    let request = serde_json::json!({
+        "id": id,
+        "model_path": model_path,
+        "prompt": prompt,
+    });
+    let mut line = serde_json::to_string(&request)
+        .map_err(|error| format!("Text enhancement request encoding failed: {error}"))?;
+    line.push('\n');
+
+    session
+        .stdin
+        .write_all(line.as_bytes())
+        .map_err(|error| format!("Text enhancement sidecar stopped accepting requests: {error}"))?;
+    session
+        .stdin
+        .flush()
+        .map_err(|error| format!("Text enhancement sidecar stopped accepting requests: {error}"))?;
+
+    loop {
+        let mut response = String::new();
+        let bytes = session
+            .stdout
+            .read_line(&mut response)
+            .map_err(|error| format!("Text enhancement sidecar failed: {error}"))?;
+        if bytes == 0 {
+            return Err("Text enhancement sidecar exited unexpectedly".to_string());
+        }
+        let parsed: serde_json::Value = match serde_json::from_str(response.trim()) {
+            Ok(value) => value,
+            Err(_) => continue, // diagnostics line from the sidecar — skip
+        };
+        if parsed.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+            return Ok(parsed);
+        }
+        // A response for an older attempt — skip.
+    }
+}
+
+fn sidecar_output(response: serde_json::Value) -> Result<String, String> {
+    if response
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return response
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "Text enhancement sidecar returned no text".to_string());
+    }
+    Err(response
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Text enhancement sidecar failed")
+        .to_string())
+}
+
+/// Runs one enhancement request against the persistent sidecar session.
+/// A dead sidecar is transparently respawned and the request retried once.
+fn run_sidecar(model_path: &Path, prompt: &str) -> Result<String, String> {
+    let started = Instant::now();
+    let lock = serve_session_cell();
+    // A poisoned lock only matters if a panic happened mid-request; recover so
+    // enhancement never gets permanently wedged.
+    let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let model_arg = model_path.to_string_lossy().into_owned();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        if guard.is_none() {
+            *guard = Some(spawn_serve_session()?);
+        }
+        let session = guard.as_mut().unwrap();
+        match request_enhancement(session, &model_arg, prompt) {
+            Ok(response) => {
+                let result = sidecar_output(response);
+                // First cold request includes process spawn + model load; log
+                // it so warm vs cold requests are distinguishable in logs.
+                eprintln!(
+                    "[VOX][AI] text-enhance request finished in {}ms (attempt {})",
+                    started.elapsed().as_millis(),
+                    attempts
+                );
+                return result;
+            }
+            Err(transport_error) => {
+                if let Some(session) = guard.take() {
+                    stop_serve_session(session);
+                }
+                if attempts >= 2 {
+                    return Err(format!(
+                        "Text enhancement sidecar failed: {transport_error}"
+                    ));
+                }
+                eprintln!("[VOX][AI] text-enhance session died ({transport_error}); respawning");
+            }
+        }
+    }
 }
 
 fn sidecar_path() -> Result<PathBuf, String> {
@@ -403,56 +564,4 @@ fn find_sidecar_in_dir(dir: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn run_sidecar(model_path: &Path, prompt: &str) -> Result<String, String> {
-    let sidecar = sidecar_path()?;
-    let request = SidecarRequest {
-        model_path: model_path.to_string_lossy().into_owned(),
-        prompt: prompt.to_string(),
-    };
-    let input = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-
-    let mut child = Command::new(&sidecar)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Failed to start text enhancement sidecar: {error}"))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|error| format!("Failed to write to text enhancement sidecar: {error}"))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Failed to run text enhancement sidecar: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let message = if stderr.is_empty() {
-            format!(
-                "Text enhancement sidecar exited with status {}",
-                output.status
-            )
-        } else {
-            stderr
-        };
-        return Err(message);
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("Text enhancement sidecar returned invalid UTF-8: {error}"))?;
-    let response: SidecarResponse = serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("Text enhancement sidecar returned invalid JSON: {error}"))?;
-    if response.ok {
-        response
-            .text
-            .ok_or_else(|| "Text enhancement sidecar returned no text".to_string())
-    } else {
-        Err(response
-            .error
-            .unwrap_or_else(|| "Text enhancement sidecar failed".to_string()))
-    }
 }

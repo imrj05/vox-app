@@ -25,4 +25,18 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // Vendored registry charts (bklit) — not held to app-level strictness,
+    // same policy as src/components/ui.
+    files: ['src/components/charts/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off',
+      'react-hooks/exhaustive-deps': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      'no-useless-assignment': 'off',
+    },
+  },
 ])

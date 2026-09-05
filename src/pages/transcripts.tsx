@@ -14,6 +14,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { correctionPairs } from "@/lib/dictionary";
+import { recordVocabularyCorrection } from "@/lib/vocabulary";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
@@ -21,12 +23,6 @@ import { deleteTranscript, getTranscripts, pruneTranscripts, updateTranscriptTex
 import { resolveAppIcon } from "@/lib/native";
 import { openExternalLink } from "@/lib/external-link";
 import { useAppStore } from "@/store/app-store";
-import {
-  dedupeDictionaryEntries,
-  parseDictionaryEntries,
-  serializeDictionaryEntries,
-  wordsToLearn,
-} from "@/lib/dictionary";
 
 const TRANSCRIPT_LIBRARY_LIMIT = 1000;
 
@@ -38,7 +34,6 @@ export function TranscriptsPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
-  const [learnedMessage, setLearnedMessage] = useState<string | null>(null);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
@@ -114,17 +109,10 @@ export function TranscriptsPage() {
     const next = editDraft.trim();
     if (!next) return;
     await updateTranscriptText(item.id, next);
-    // Auto-learn corrected words into the personal dictionary (Wispr-style).
-    const learned = wordsToLearn(item.text, next);
-    if (learned.length > 0) {
-      const store = useAppStore.getState();
-      const entries = dedupeDictionaryEntries([
-        ...parseDictionaryEntries(store.dictionary),
-        ...learned.map((word) => ({ word, hint: "", category: "Learned" })),
-      ]);
-      await store.setDictionary(serializeDictionaryEntries(entries));
-      setLearnedMessage(`Learned ${learned.length} ${learned.length === 1 ? "word" : "words"} into your dictionary.`);
-      window.setTimeout(() => setLearnedMessage(null), 3000);
+    // Vocabulary Packs learning (spec §17): feed word-level corrections to the
+    // local vocabulary engine so repeated corrections rank higher. Best-effort.
+    for (const pair of correctionPairs(item.text, next)) {
+      void recordVocabularyCorrection(pair.source, pair.canonical).catch(() => undefined);
     }
     setHistory((items) =>
       items.map((entry) => (entry.id === item.id ? { ...entry, text: next } : entry))
@@ -167,7 +155,7 @@ export function TranscriptsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="page-shell max-w-5xl">
+        <div className="page-shell">
           <header className="page-header">
             <div>
               <h1 className="page-title">Transcript Library</h1>
@@ -195,12 +183,6 @@ export function TranscriptsPage() {
             <LibraryStat label="Words" value={history.reduce((sum, item) => sum + countWords(item.text), 0).toLocaleString()} />
           </div>
 
-          {learnedMessage && (
-            <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-primary">
-              {learnedMessage}
-            </div>
-          )}
-
           {loading ? (
             <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
               <Spinner className="size-4" />
@@ -226,6 +208,11 @@ export function TranscriptsPage() {
                         {item.language ? (
                           <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
                             {item.language}
+                          </Badge>
+                        ) : null}
+                        {item.engine ? (
+                          <Badge variant="outline" className="h-4 capitalize px-1.5 text-[10px] font-normal">
+                            {item.engine}
                           </Badge>
                         ) : null}
                         {hasAiCleanup(item) ? (

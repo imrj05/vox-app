@@ -20,7 +20,6 @@ import {
   setGlobalShortcut,
   setEditableFocusContext,
   setCleanupLevel,
-  setNativeDictionary,
   setNativeEnhanceIconEnabled,
   setNativeEnhancementModel,
   setNativeErrorReporting,
@@ -30,6 +29,9 @@ import {
   setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
+  setTranscriptionEngine,
+  setEngineFallback,
+  setPreferredEngineFallback,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 import { pruneTranscripts } from "@/lib/db";
@@ -38,6 +40,7 @@ import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
+const CorrectionsPage = lazy(() => import("@/pages/corrections").then(({ CorrectionsPage }) => ({ default: CorrectionsPage })));
 const NotesPage = lazy(() => import("@/pages/notes").then(({ NotesPage }) => ({ default: NotesPage })));
 const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
@@ -59,7 +62,6 @@ function App() {
     onboardingComplete,
     hotkey,
     triggerMode,
-    dictionary,
     theme,
     widgetEnabled,
     enhanceIconEnabled,
@@ -71,6 +73,9 @@ function App() {
     language,
     voiceCommandsEnabled,
     whisperMode,
+    engine,
+    engineFallbackEnabled,
+    preferredEngineFallback,
     hydrate,
     loadSnippets,
     authStatus,
@@ -172,10 +177,6 @@ function App() {
     if (!triggerMode) return;
     void setTriggerMode(triggerMode).catch(() => {});
   }, [triggerMode]);
-  // Sync dictionary for background hotkey transcriptions handled in Rust
-  useEffect(() => {
-    void setNativeDictionary(dictionary).catch(() => {});
-  }, [dictionary]);
   // Sync dictation language for background hotkey transcriptions handled in Rust
   useEffect(() => {
     void setNativeLanguage(language).catch(() => {});
@@ -194,6 +195,17 @@ function App() {
   useEffect(() => {
     void setCleanupLevel(cleanupLevel).catch(() => {});
   }, [cleanupLevel]);
+  // Sync engine selection + fallback so background hotkey transcriptions are
+  // routed with the user's preferences (spec §6–§8).
+  useEffect(() => {
+    void setTranscriptionEngine(engine).catch(() => {});
+  }, [engine]);
+  useEffect(() => {
+    void setEngineFallback(engineFallbackEnabled).catch(() => {});
+  }, [engineFallbackEnabled]);
+  useEffect(() => {
+    void setPreferredEngineFallback(preferredEngineFallback).catch(() => {});
+  }, [preferredEngineFallback]);
   useEffect(() => {
     void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
   }, [widgetEnabled]);
@@ -273,6 +285,8 @@ function App() {
         return <HomePage />;
       case "transcripts":
         return <TranscriptsPage />;
+      case "corrections":
+        return <CorrectionsPage />;
       case "notes":
         return <NotesPage />;
       case "models":

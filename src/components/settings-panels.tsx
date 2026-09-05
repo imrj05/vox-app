@@ -1,29 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   ArrowCounterClockwise,
   BookOpenText,
   Check,
   CheckCircle2,
-  Cpu,
   Database,
-  Download,
   ExternalLink,
   Github,
   Globe,
@@ -43,6 +27,7 @@ import {
   XCircle,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { SectionHeader, SettingsCard, SettingRow } from "@/components/settings-primitives";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,16 +42,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AppToast } from "@/components/app-toast";
-import { ABOUT_LINKS } from "@/lib/about";
-import { openExternalLink } from "@/lib/external-link";
 import {
   cleanupRecordings,
-  deleteWhisperModel,
   formatShortcut,
-  listWhisperModels,
   setGlobalShortcut,
   checkAccessibilityPermission,
-  checkMicrophonePermission,
+  microphoneAuthorizationStatus,
+  openSystemSettings,
   checkInputMonitoringPermission,
   getHotkeyDiagnostics,
   getNativeStatus,
@@ -80,17 +62,7 @@ import {
   wipeLocalAppFiles,
 } from "@/lib/native";
 import { HotkeyPicker } from "@/components/hotkey-picker";
-import {
-  settingsSections,
-  type SettingsSection,
-} from "@/components/settings-sections";
 import { clearAppData, clearTranscripts } from "@/lib/db";
-import {
-  dedupeDictionaryEntries,
-  parseDictionaryEntries,
-  serializeDictionaryEntries,
-  type DictionaryEntry,
-} from "@/lib/dictionary";
 import { useAppStore } from "@/store/app-store";
 import { getPocketBase } from "@/lib/pocketbase";
 import type {
@@ -101,76 +73,6 @@ import type {
   TranscriptRetention,
   TriggerMode,
 } from "@/store/app-store";
-interface SettingsModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}
-function SectionHeader({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div>
-      <h2 className="text-lg font-semibold tracking-tight text-foreground">
-        {title}
-      </h2>
-      <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-        {description}
-      </p>
-    </div>
-  );
-}
-function SettingsCard({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-2xl border border-border bg-card p-4",
-        className
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-function SettingRow({
-  icon,
-  title,
-  description,
-  action,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  action: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">
-            {title}
-          </p>
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            {description}
-          </p>
-        </div>
-      </div>
-      {action}
-    </div>
-  );
-}
 export function GeneralSection() {
   const {
     soundEnabled,
@@ -232,7 +134,7 @@ export function GeneralSection() {
       <div>
         <SectionHeader
           title="General"
-          description="Keep the everyday Vox behaviors here. Advanced or inactive preferences have been removed."
+          description="Appearance, sound, formatting, and language for everyday dictation."
         />
       </div>
       <SettingsCard className="space-y-4">
@@ -556,411 +458,6 @@ const languageOptions: Array<{
   },
 ];
 
-function formatModelBytes(bytes: number) {
-  const gb = bytes / 1024 / 1024 / 1024;
-  if (gb >= 1) return `~${gb.toFixed(2).replace(/\.?0+$/, "")} GB`;
-  return `~${Math.round(bytes / 1024 / 1024)} MB`;
-}
-
-export function ModelsSection() {
-  const {
-    selectedModel,
-    setSelectedModel,
-    downloadingModels,
-    pausedModels,
-    modelDownloadProgress,
-    downloadModel,
-    pauseModel,
-    resumeModel,
-    cancelModel,
-  } = useAppStore();
-  const [models, setModels] = useState<Awaited<ReturnType<typeof listWhisperModels>>>([]);
-  const [loading, setLoading] = useState(true);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void listWhisperModels()
-      .then((m) => {
-        if (active) setModels(m);
-      })
-      .catch(() => {
-        if (active) {
-          setModels([]);
-          setError("Model management is only available in the Tauri desktop app.");
-        }
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const refresh = async () => {
-    setModels(await listWhisperModels());
-  };
-
-  const handleDownload = async (modelName: string) => {
-    setError(null);
-    try {
-      await downloadModel(modelName);
-      await refresh();
-      if (!selectedModel || selectedModel === "base.en") {
-        await setSelectedModel(modelName);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!message.toLowerCase().includes("cancelled")) {
-        setError(message);
-      }
-    }
-  };
-
-  const handleSetActive = async (modelName: string) => {
-    setError(null);
-    try {
-      await setSelectedModel(modelName);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handleDelete = async (modelName: string) => {
-    setDeleting(modelName);
-    setError(null);
-    try {
-      await deleteWhisperModel(modelName);
-      await refresh();
-      if (selectedModel === modelName) {
-        await setSelectedModel("base.en");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeleting(null);
-    }
-  };
-
-  const activeModel = models.find((model) => model.name === selectedModel);
-  const orderedModels = [...models].sort((a, b) => {
-    if (a.name === selectedModel) return -1;
-    if (b.name === selectedModel) return 1;
-    return 0;
-  });
-
-  return (
-    <div className="space-y-5">
-      <SectionHeader
-        title="Models"
-        description="Download, compare, and manage the local speech-to-text models used for dictation."
-      />
-      <SettingsCard className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Cpu className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">Active model</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {activeModel?.displayName ?? selectedModel}
-              </p>
-            </div>
-          </div>
-          <Badge variant="secondary" className="shrink-0">
-            {activeModel?.downloaded ? "Ready" : "Not downloaded"}
-          </Badge>
-        </div>
-        {error && (
-          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </p>
-        )}
-      </SettingsCard>
-
-      {loading ? (
-        <SettingsCard className="flex items-center gap-3 bg-muted/35 px-4 py-4">
-          <Spinner className="size-4" />
-          <div>
-            <p className="text-sm font-medium text-foreground">Loading models</p>
-            <p className="text-xs text-muted-foreground">Checking local model availability.</p>
-          </div>
-        </SettingsCard>
-      ) : models.length > 0 ? (
-        <SettingsCard className="space-y-2">
-          {orderedModels.map((model) => {
-            const isDownloading = downloadingModels.includes(model.name);
-            const isPaused = pausedModels.includes(model.name);
-            const isDeleting = deleting === model.name;
-            const isActive = selectedModel === model.name;
-            const dl = modelDownloadProgress[model.name];
-            const pct =
-              isDownloading && dl && dl.total > 0
-                ? Math.round((dl.downloaded / dl.total) * 100)
-                : null;
-            return (
-              <div
-                key={model.name}
-                className="flex flex-col gap-3 rounded-xl border border-border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-medium text-foreground">
-                      {model.displayName}
-                    </p>
-                    {isActive && (
-                      <Badge variant="secondary" className="h-5 bg-primary/10 text-primary">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Active
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                    <span className="font-mono tabular-nums">
-                      {formatModelBytes(model.size)}
-                    </span>
-                    <span className="font-mono">
-                      {model.downloaded ? "Downloaded" : "Not downloaded"}
-                    </span>
-                    {model.name.startsWith("parakeet") && (
-                      <span className="font-medium uppercase tracking-[0.08em]">Parakeet</span>
-                    )}
-                  </div>
-                  {isDownloading && (
-                    <div className="mt-2 space-y-1">
-                      <div className="h-1.5 overflow-hidden rounded-full bg-border">
-                        {pct !== null ? (
-                          <div
-                            className="h-full rounded-full bg-primary transition-[width] duration-150"
-                            style={{ width: `${pct}%` }}
-                          />
-                        ) : (
-                          <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
-                        )}
-                      </div>
-                      <p className="text-[10px] text-muted-foreground">
-                        {pct !== null ? `${pct}% downloaded` : "Connecting…"}
-                      </p>
-                    </div>
-                  )}
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  {model.downloaded ? (
-                    <>
-                      {!isActive && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void handleSetActive(model.name)}
-                          disabled={isDeleting}
-                        >
-                          Set active
-                        </Button>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => void handleDelete(model.name)}
-                        disabled={isDeleting || downloadingModels.length > 0}
-                      >
-                        {isDeleting ? (
-                          <Spinner className="size-3.5" />
-                        ) : (
-                          <Trash2 className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </>
-                  ) : (
-                    <div className="flex shrink-0 gap-2">
-                      {isDownloading ? (
-                        <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              void (isPaused
-                                ? resumeModel(model.name)
-                                : pauseModel(model.name))
-                            }
-                          >
-                            {isPaused ? "Resume" : "Pause"}
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => void cancelModel(model.name)}
-                          >
-                            Cancel
-                          </Button>
-                        </>
-                      ) : (
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => void handleDownload(model.name)}
-                          disabled={downloadingModels.length > 0}
-                        >
-                          <Download className="h-4 w-4" />
-                          Download
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </SettingsCard>
-      ) : (
-        <SettingsCard className="px-4 py-6 text-center">
-          <p className="text-sm font-medium text-foreground">No models available</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Open the desktop app to load local model availability.
-          </p>
-        </SettingsCard>
-      )}
-    </div>
-  );
-}
-export function DictionarySection() {
-  const { dictionary, setDictionary } = useAppStore();
-  const [wordInput, setWordInput] = useState("");
-  const [hintInput, setHintInput] = useState("");
-  const [categoryInput, setCategoryInput] = useState("General");
-  const entries = parseDictionaryEntries(dictionary);
-  const saveEntries = (nextEntries: DictionaryEntry[]) => {
-    void setDictionary(serializeDictionaryEntries(nextEntries));
-  };
-  const handleAddEntries = () => {
-    const words = wordInput
-      .split(",")
-      .map((word) => word.trim())
-      .filter(Boolean);
-    if (words.length === 0) return;
-    const nextEntries = [
-      ...entries,
-      ...words.map((word) => ({
-        word,
-        hint: hintInput.trim(),
-        category: categoryInput,
-      })),
-    ];
-    saveEntries(dedupeDictionaryEntries(nextEntries));
-    setWordInput("");
-    setHintInput("");
-  };
-  const handleRemoveEntry = (entry: DictionaryEntry) => {
-    saveEntries(entries.filter((item) => dictionaryEntryKey(item) !== dictionaryEntryKey(entry)));
-  };
-  return (
-    <div className="space-y-5">
-      <SectionHeader
-        title="Dictionary"
-        description="Add specialized words so transcription recognizes names, jargon, acronyms, and product terms accurately."
-      />
-      <SettingsCard className="space-y-3 p-5">
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-          <Input
-            value={wordInput}
-            onChange={(event) => setWordInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") handleAddEntries();
-            }}
-            placeholder="e.g. names, company terms, acronyms, product names"
-            className="h-11 rounded-xl bg-background px-4"
-          />
-          <Button
-            onClick={handleAddEntries}
-            disabled={!wordInput.trim()}
-            className="h-11 rounded-xl px-5"
-          >
-            <Plus className="h-4 w-4" />
-            Add
-          </Button>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
-          <Input
-            value={hintInput}
-            onChange={(event) => setHintInput(event.target.value)}
-            placeholder="Pronunciation hint (optional)"
-            className="h-11 rounded-xl bg-background px-4"
-          />
-          <Select
-            value={categoryInput}
-            onValueChange={setCategoryInput}
-          >
-            <SelectTrigger className="h-11 w-full rounded-xl bg-background px-4">
-              <SelectValue placeholder="Category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="General">Category</SelectItem>
-              <SelectItem value="People">People</SelectItem>
-              <SelectItem value="Product">Product</SelectItem>
-              <SelectItem value="Technical">Technical</SelectItem>
-              <SelectItem value="Company">Company</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Separate multiple words with commas to add them at once.
-        </p>
-      </SettingsCard>
-      <SettingsCard className="min-h-48 p-5">
-        {entries.length === 0 ? (
-          <div className="flex min-h-40 flex-col items-center justify-center text-center">
-            <BookOpenText className="h-10 w-10 text-muted-foreground/45" />
-            <p className="mt-4 text-sm font-medium text-muted-foreground">
-              No words yet.
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground/80">
-              Add your first word above to improve transcription accuracy.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {entries.map((entry) => (
-              <div
-                key={dictionaryEntryKey(entry)}
-                className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {entry.word}
-                    </p>
-                    <Badge variant="secondary" className="h-5">
-                      {entry.category}
-                    </Badge>
-                  </div>
-                  {entry.hint && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Pronunciation: {entry.hint}
-                    </p>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleRemoveEntry(entry)}
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-            <p className="pt-2 text-xs text-muted-foreground">
-              {entries.length} {entries.length === 1 ? "entry" : "entries"} used as transcription context.
-            </p>
-          </div>
-        )}
-      </SettingsCard>
-    </div>
-  );
-}
-
 export function SnippetsSection() {
   const { snippets, addSnippet, updateSnippet, removeSnippet } = useAppStore();
   const [triggerInput, setTriggerInput] = useState("");
@@ -1263,9 +760,7 @@ export function AccountSection() {
 
 export function DataSection() {
   const {
-    errorReportingEnabled,
     resetAppState,
-    setErrorReportingEnabled,
   } = useAppStore();
   const [busyAction, setBusyAction] = useState<"history" | "recordings" | "app" | null>(null);
   const [diagnostics, setDiagnostics] = useState<Awaited<
@@ -1349,19 +844,6 @@ export function DataSection() {
             Recordings: <span className="font-mono">{diagnostics?.recordingsDir ?? "Checking"}</span>
           </p>
         </div>
-        <div className="h-px bg-border" />
-        <SettingRow
-          icon={<ShieldCheck className="h-4 w-4" />}
-          title="Error reporting"
-          description="Send anonymous crash and error reports to Vox Server. Vox does not send transcripts, audio, or personal identity."
-          action={
-            <Switch
-              checked={errorReportingEnabled}
-              onCheckedChange={(checked) => void setErrorReportingEnabled(checked)}
-              aria-label="Toggle anonymous error reporting"
-            />
-          }
-        />
         <div className="h-px bg-border" />
         <SettingRow
           icon={<Trash2 className="h-4 w-4" />}
@@ -1568,9 +1050,6 @@ function ConfirmDataAction({
     </AlertDialog>
   );
 }
-function dictionaryEntryKey(entry: DictionaryEntry) {
-  return `${entry.word}|${entry.hint}|${entry.category}`;
-}
 type PermissionStatus = "checking" | "granted" | "denied";
 type PlatformKind = "macos" | "windows" | "linux" | "unknown";
 interface PermissionRowProps {
@@ -1708,6 +1187,7 @@ export function PermissionsSection() {
   const [accessibilityStatus, setAccessibilityStatus] =
     useState<PermissionStatus>("checking");
   const [micStatus, setMicStatus] = useState<PermissionStatus>("checking");
+  const [micState, setMicState] = useState<number | null>(null);
   const [inputMonitoringStatus, setInputMonitoringStatus] =
     useState<PermissionStatus>("checking");
   const [accessibilityBusy, setAccessibilityBusy] = useState(false);
@@ -1720,6 +1200,10 @@ export function PermissionsSection() {
     accessibilityStatus === "checking" ||
     micStatus === "checking" ||
     (isMacos && inputMonitoringStatus === "checking");
+  const applyMicState = (state: number) => {
+    setMicState(state);
+    setMicStatus(state === 3 ? "granted" : "denied");
+  };
   // Check permissions on mount
   useEffect(() => {
     void getNativeStatus()
@@ -1728,8 +1212,8 @@ export function PermissionsSection() {
     void checkAccessibilityPermission().then((trusted) => {
       setAccessibilityStatus(trusted ? "granted" : "denied");
     });
-    void checkMicrophonePermission()
-      .then((granted) => setMicStatus(granted ? "granted" : "denied"))
+    void microphoneAuthorizationStatus()
+      .then(applyMicState)
       .catch(() => setMicStatus("denied"));
     void checkInputMonitoringPermission()
       .then((granted) => setInputMonitoringStatus(granted ? "granted" : "denied"))
@@ -1747,6 +1231,33 @@ export function PermissionsSection() {
     }, 1500);
     return () => clearInterval(interval);
   }, [accessibilityStatus]);
+  // Poll microphone while denied — the user may answer the native prompt late
+  // or grant via System Settings (the recovery path this page recommends).
+  // Without this, the card stays "denied" after a grant until a full remount.
+  useEffect(() => {
+    if (micStatus !== "denied") return;
+    const interval = setInterval(async () => {
+      const state = await microphoneAuthorizationStatus();
+      if (state === 3) {
+        applyMicState(state);
+        clearInterval(interval);
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [micStatus]);
+  // Poll Input Monitoring while denied — after the prompt, macOS adds the app
+  // to the list DISABLED and the user must flip the toggle in System Settings.
+  useEffect(() => {
+    if (inputMonitoringStatus !== "denied") return;
+    const interval = setInterval(async () => {
+      const granted = await checkInputMonitoringPermission();
+      if (granted) {
+        setInputMonitoringStatus("granted");
+        clearInterval(interval);
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [inputMonitoringStatus]);
   const handleGrantAccessibility = async () => {
     setAccessibilityBusy(true);
     try {
@@ -1760,8 +1271,20 @@ export function PermissionsSection() {
   const handleGrantMic = async () => {
     setMicBusy(true);
     try {
+      if (isMacos && micState !== null && micState !== 0) {
+        // Denied (2) or restricted (1): macOS suppresses the native prompt
+        // forever after a refusal — deep-link into the Microphone privacy
+        // pane instead of silently doing nothing. The poller above picks up
+        // the grant as soon as the toggle flips.
+        await openSystemSettings("microphone");
+        return;
+      }
+      // Not yet determined (or non-macOS): trigger the native prompt.
       await requestMicrophonePermission();
-      setMicStatus("granted");
+      const state = await microphoneAuthorizationStatus();
+      applyMicState(state);
+      // If the native prompt is still open, the polling effect above picks up
+      // the grant as soon as the user answers.
     } catch {
       setMicStatus("denied");
     } finally {
@@ -1773,6 +1296,8 @@ export function PermissionsSection() {
     try {
       const granted = await requestInputMonitoringPermission();
       setInputMonitoringStatus(granted ? "granted" : "denied");
+      // After the prompt, macOS lists the app disabled — the poller above
+      // reflects the toggle flip when the user enables it in System Settings.
     } catch {
       setInputMonitoringStatus("denied");
     } finally {
@@ -1811,9 +1336,13 @@ export function PermissionsSection() {
         <PermissionRow
           icon={<Mic className="h-4 w-4" />}
           title="Microphone"
-          description={copy.microphoneDescription}
+          description={
+            isMacos && micState === 2
+              ? "Vox was denied earlier, so macOS won't prompt again. Enable it in System Settings → Privacy & Security → Microphone — this card updates automatically."
+              : copy.microphoneDescription
+          }
           status={micStatus}
-          actionLabel="Allow"
+          actionLabel={isMacos && micState === 2 ? "Open Settings" : "Allow"}
           onAction={handleGrantMic}
           busy={micBusy}
         />
@@ -2167,120 +1696,5 @@ export function ShortcutsSection() {
         <AppToast title={toast.title} detail={toast.detail} tone={toast.tone} />
       )}
     </div>
-  );
-}
-export function AboutSection() {
-  return (
-    <div className="space-y-5">
-      <SectionHeader
-        title="About"
-        description="App details, project links, and contact information for Vox."
-      />
-      <SettingsCard className="space-y-4 p-5">
-        <div className="rounded-2xl border border-border bg-muted/35 p-5">
-          <p className="text-lg font-semibold text-foreground">Vox</p>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Local voice dictation with a focused desktop workflow for fast transcription,
-            private processing, and a clean desktop-first experience.
-          </p>
-        </div>
-        {ABOUT_LINKS.map((item) => (
-          <div
-            key={item.label}
-            className="flex flex-col gap-3 rounded-xl border border-border bg-background px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">{item.label}</p>
-              <p className="break-all text-xs text-muted-foreground sm:truncate">{item.value}</p>
-            </div>
-            {item.href ? (
-              <a
-                href={item.href}
-                target={item.href.startsWith("mailto:") ? undefined : "_blank"}
-                rel={item.href.startsWith("mailto:") ? undefined : "noreferrer"}
-                onClick={(event) => {
-                  event.preventDefault();
-                  openExternalLink(item.href);
-                }}
-                className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-border bg-card px-3 py-2 text-xs text-foreground transition-colors hover:bg-muted"
-              >
-                {item.action}
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            ) : (
-              <span className="font-mono text-xs text-muted-foreground">{item.value}</span>
-            )}
-          </div>
-        ))}
-      </SettingsCard>
-    </div>
-  );
-}
-export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
-  const [activeSection, setActiveSection] =
-    useState<SettingsSection>("general");
-  const renderContent = () => {
-    switch (activeSection) {
-      case "general":
-        return <GeneralSection />;
-      case "account":
-        return <AccountSection />;
-      case "models":
-        return <ModelsSection />;
-      case "dictionary":
-        return <DictionarySection />;
-      case "snippets":
-        return <SnippetsSection />;
-      case "data":
-        return <DataSection />;
-      case "privacy":
-        return <PrivacySection />;
-      case "permissions":
-        return <PermissionsSection />;
-      case "shortcuts":
-        return <ShortcutsSection />;
-      case "about":
-        return <AboutSection />;
-    }
-  };
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="h-[460px] min-w-150 max-w-200 overflow-hidden p-0">
-        <DialogTitle className="sr-only">Settings</DialogTitle>
-        <DialogDescription className="sr-only">
-          Configure voice-to-text settings
-        </DialogDescription>
-        <div className="absolute inset-0 flex overflow-hidden rounded-xl">
-          <nav className="w-[190px] shrink-0 overflow-hidden border-r border-border bg-sidebar px-2 py-4">
-            <p className="px-3 pb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Settings
-            </p>
-            <div className="space-y-0.5">
-              {settingsSections.map((section) => {
-                const Icon = section.icon;
-                return (
-                  <button
-                    key={section.id}
-                    onClick={() => setActiveSection(section.id)}
-                    className={cn(
-                      "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
-                      activeSection === section.id
-                        ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-                    )}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span>{section.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </nav>
-          <ScrollArea className="flex-1">
-            <div className="p-6">{renderContent()}</div>
-          </ScrollArea>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }

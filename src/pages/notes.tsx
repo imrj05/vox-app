@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import {
   deleteNote,
   getNotes,
+  saveCorrections,
   saveNote,
   updateNote,
   type Note,
@@ -23,7 +24,10 @@ import { useAppStore } from "@/store/app-store";
 const AUTOSAVE_DELAY_MS = 600;
 
 export function NotesPage() {
-  const { selectedModel, dictionary } = useAppStore();
+  const { selectedModel, engine } = useAppStore();
+  // Same rule as home: the pinned model only applies for the Whisper engine
+  // (spec §7 — explicit engine selection is honored).
+  const requestedModel = engine === "whisper" ? selectedModel : undefined;
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
@@ -141,14 +145,14 @@ export function NotesPage() {
         if (status.path) {
           const result = await transcribeRecording(
             status.path,
-            selectedModel,
-            dictionary,
+            requestedModel,
             status.appName,
             status.windowTitle
           );
           const nextContent = content.trim()
             ? `${content.trim()}\n\n${result.text}`
             : result.text;
+          await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
           setContent(nextContent);
           scheduleSave(title, nextContent);
         }

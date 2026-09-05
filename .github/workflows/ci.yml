@@ -1,9 +1,21 @@
 name: CI
 on:
+  # Push runs only on the default branch: feature branches are covered by
+  # their pull_request run, so the same commit never builds twice.
   push:
-    branches-ignore:
-      - "release/v*"
+    branches:
+      - main
   pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+# Cancel superseded in-progress runs when new commits land on the same
+# branch/PR, so rapid pushes don't stack up duplicate macOS desktop builds.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -40,12 +52,6 @@ jobs:
           - name: macOS
             runner: macos-latest
             bundles: app
-          - name: Windows
-            runner: windows-latest
-            bundles: nsis
-          - name: Linux
-            runner: ubuntu-22.04
-            bundles: deb
     env:
       VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
       GGML_NATIVE: "OFF"
@@ -55,24 +61,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Install Linux system dependencies
-        if: matrix.platform.name == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            curl \
-            file \
-            libasound2-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            pkg-config \
-            wget
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -101,29 +89,10 @@ jobs:
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
       - name: Upload macOS artifacts
-        if: matrix.platform.name == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: vox-${{ matrix.platform.name }}-desktop
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/**/*.app
-      - name: Upload Windows artifacts
-        if: matrix.platform.name == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vox-${{ matrix.platform.name }}-desktop
-          if-no-files-found: error
-          path: |
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.msi
-      - name: Upload Linux artifacts
-        if: matrix.platform.name == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vox-${{ matrix.platform.name }}-desktop
-          if-no-files-found: error
-          path: |
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
+

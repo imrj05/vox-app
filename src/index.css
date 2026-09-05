@@ -41,6 +41,27 @@
     --sidebar-accent-foreground: #201d1d;
     --sidebar-border: rgba(15, 0, 0, 0.12);
     --sidebar-ring: #201d1d;
+    --chart-background: var(--card);
+    --chart-foreground: var(--foreground);
+    --chart-foreground-muted: var(--muted-foreground);
+    --chart-line-primary: var(--foreground);
+    --chart-line-secondary: color-mix(in oklab, var(--foreground) 45%, var(--background));
+    --chart-crosshair: var(--border);
+    --chart-grid: var(--border);
+    --chart-brush-border: var(--chart-grid);
+    --chart-tooltip-background: color-mix(in oklab, var(--foreground) 88%, transparent);
+    --chart-tooltip-foreground: var(--background);
+    --chart-tooltip-muted: color-mix(in oklab, var(--background) 70%, var(--foreground));
+    --chart-marker-background: var(--card);
+    --chart-marker-border: var(--border);
+    --chart-marker-foreground: var(--foreground);
+    --chart-label: var(--muted-foreground);
+    --chart-scale-01: var(--secondary);
+    --chart-scale-02: color-mix(in oklab, var(--primary) 22%, var(--background));
+    --chart-scale-03: color-mix(in oklab, var(--primary) 45%, var(--background));
+    --chart-scale-04: color-mix(in oklab, var(--primary) 70%, var(--background));
+    --chart-scale-05: var(--primary);
+    --chart-scale-pattern-color: var(--background);
 }
 
 .dark {
@@ -77,6 +98,27 @@
     --sidebar-accent-foreground: #f7ede8;
     --sidebar-border: rgba(247, 237, 232, 0.12);
     --sidebar-ring: #f7ede8;
+    --chart-background: var(--card);
+    --chart-foreground: var(--foreground);
+    --chart-foreground-muted: var(--muted-foreground);
+    --chart-line-primary: var(--foreground);
+    --chart-line-secondary: color-mix(in oklab, var(--foreground) 45%, var(--background));
+    --chart-tooltip-background: color-mix(in oklab, var(--foreground) 88%, transparent);
+    --chart-tooltip-foreground: var(--background);
+    --chart-tooltip-muted: color-mix(in oklab, var(--background) 70%, var(--foreground));
+    --chart-crosshair: var(--border);
+    --chart-grid: var(--border);
+    --chart-brush-border: var(--chart-grid);
+    --chart-marker-background: var(--card);
+    --chart-marker-border: var(--border);
+    --chart-marker-foreground: var(--foreground);
+    --chart-label: var(--muted-foreground);
+    --chart-scale-01: var(--secondary);
+    --chart-scale-02: color-mix(in oklab, var(--primary) 22%, var(--background));
+    --chart-scale-03: color-mix(in oklab, var(--primary) 45%, var(--background));
+    --chart-scale-04: color-mix(in oklab, var(--primary) 70%, var(--background));
+    --chart-scale-05: var(--primary);
+    --chart-scale-pattern-color: var(--background);
 }
 
 @theme inline {
@@ -120,6 +162,27 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    --color-chart-scale-pattern-color: var(--chart-scale-pattern-color);
+    --color-chart-scale-05: var(--chart-scale-05);
+    --color-chart-scale-04: var(--chart-scale-04);
+    --color-chart-scale-03: var(--chart-scale-03);
+    --color-chart-scale-02: var(--chart-scale-02);
+    --color-chart-scale-01: var(--chart-scale-01);
+    --color-chart-label: var(--chart-label);
+    --color-chart-marker-foreground: var(--chart-marker-foreground);
+    --color-chart-marker-border: var(--chart-marker-border);
+    --color-chart-marker-background: var(--chart-marker-background);
+    --color-chart-tooltip-muted: var(--chart-tooltip-muted);
+    --color-chart-tooltip-foreground: var(--chart-tooltip-foreground);
+    --color-chart-tooltip-background: var(--chart-tooltip-background);
+    --chart-brush-border: var(--chart-brush-border);
+    --color-chart-grid: var(--chart-grid);
+    --color-chart-crosshair: var(--chart-crosshair);
+    --chart-line-secondary: var(--chart-line-secondary);
+    --chart-line-primary: var(--chart-line-primary);
+    --color-chart-foreground-muted: var(--chart-foreground-muted);
+    --color-chart-foreground: var(--chart-foreground);
+    --color-chart-background: var(--chart-background);
 }
 
 @layer base {
@@ -168,7 +231,7 @@
     }
 
     .page-shell {
-        @apply mx-auto flex min-h-full w-full max-w-6xl flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
+        @apply flex min-h-full w-full flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
     }
 
     .page-header {

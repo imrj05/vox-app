@@ -35,6 +35,29 @@ export interface TranscriptionResult {
   rawText?: string | null;
   /** Language actually used for transcription (auto-detected or pinned). */
   language?: string | null;
+  /** Engine that produced the raw transcript ("whisper" | "parakeet" | …). */
+  engine?: string | null;
+  /** Vocabulary corrections applied to the final text ("shad can" → "shadcn"). */
+  corrections?: { source: string; canonical: string }[];
+}
+
+/** Hardware awareness (spec §25): what this Mac can comfortably run. */
+export interface HardwareInfo {
+  platform: string;
+  arch: string;
+  appleSilicon: boolean;
+  totalMemoryBytes: number;
+  cpuCores: number;
+  tier: "fast" | "balanced" | "accurate";
+  maxRecommendedModelBytes: number;
+}
+
+/** Availability info for one registered transcription engine (spec §3). */
+export interface TranscriptionEngineStatus {
+  id: string;
+  displayName: string;
+  available: boolean;
+  reason?: string | null;
 }
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
@@ -91,12 +114,32 @@ export async function getNativeStatus() {
   return invoke<NativeStatus>("native_status");
 }
 
+/** Hardware capabilities + recommendation tier for this machine. */
+export async function getHardwareInfo() {
+  return invoke<HardwareInfo>("get_hardware_info");
+}
+
+/** Availability info for one registered transcription engine (spec §3). */
+export async function getTranscriptionEngines() {
+  return invoke<TranscriptionEngineStatus[]>("get_transcription_engines");
+}
+
 export async function requestMicrophonePermission() {
   return invoke<void>("request_microphone_permission");
 }
 
 export async function checkMicrophonePermission() {
   return invoke<boolean>("check_microphone_permission");
+}
+
+/** Raw macOS mic authorization: 0 not-determined, 1 restricted, 2 denied, 3 authorized. */
+export async function microphoneAuthorizationStatus() {
+  return invoke<number>("microphone_authorization_status");
+}
+
+/** Deep-link into a macOS System Settings privacy pane. */
+export function openSystemSettings(pane: "microphone" | "accessibility" | "input_monitoring") {
+  return invoke<void>("open_system_settings", { pane });
 }
 
 export async function transcribeSample() {
@@ -118,14 +161,12 @@ export async function stopRecording() {
 export async function transcribeRecording(
   audioPath: string,
   modelName?: string,
-  dictionary?: string,
   contextAppName?: string | null,
   contextWindowTitle?: string | null
 ) {
   return invoke<TranscriptionResult>("transcribe_recording", {
     audioPath,
     modelName,
-    dictionary,
     contextAppName,
     contextWindowTitle,
   });
@@ -231,12 +272,21 @@ export async function setTriggerMode(mode: "toggle" | "pushToTalk" | "handsFree"
   return invoke<void>("set_trigger_mode", { mode });
 }
 
-export async function setNativeDictionary(dictionary: string) {
-  return invoke<void>("set_dictionary", { dictionary });
-}
 
 export async function setNativeLanguage(language: string) {
   return invoke<void>("set_language", { language });
+}
+
+export async function setTranscriptionEngine(engine: string) {
+  return invoke<void>("set_transcription_engine", { engine });
+}
+
+export async function setEngineFallback(enabled: boolean) {
+  return invoke<void>("set_engine_fallback", { enabled });
+}
+
+export async function setPreferredEngineFallback(engine: string) {
+  return invoke<void>("set_engine_fallback_target", { engine });
 }
 
 export async function setNativeVoiceCommandsEnabled(enabled: boolean) {

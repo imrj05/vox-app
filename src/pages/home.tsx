@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Check, CheckCircle2, Copy, Mic, Pencil, Trash2, Wand2 } from "@/components/icons";
+import { Check, Copy, Mic, Pencil, Trash2, Wand2 } from "@/components/icons";
 import {
   deleteRecordingFile,
   getNativeStatus,
@@ -15,8 +15,10 @@ import {
   type RecordingStatus,
   type TranscriptionResult,
 } from "@/lib/native";
+import { activeModelLabel } from "@/lib/model-label";
 import { AppToast } from "@/components/app-toast";
 import {
+  saveCorrections,
   saveTranscript,
   getTranscripts,
   deleteTranscript,
@@ -32,13 +34,19 @@ import { useAppStore } from "@/store/app-store";
 
 const HISTORY_LOAD_TIMEOUT_MS = 5000;
 const ANALYTICS_HISTORY_LIMIT = 1000;
+// How long a deleted transcript can still be undone from the toast.
+const UNDO_WINDOW_MS = 6000;
 
 const AnalyticsPanels = lazy(() =>
   import("@/pages/home-analytics").then(({ AnalyticsPanels }) => ({ default: AnalyticsPanels }))
 );
 
 export function HomePage() {
-  const { hotkey, setHotkey, selectedModel, dictionary, triggerMode } = useAppStore();
+  const { hotkey, setHotkey, selectedModel, triggerMode, engine } = useAppStore();
+  // The pinned model only applies when the Whisper engine is selected (spec
+  // §7: an explicit engine choice is honored — the stale "active model" pin
+  // must never silently override Apple Speech / Parakeet).
+  const requestedModel = engine === "whisper" ? selectedModel : undefined;
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [recordingStatus, setRecordingStatus] =
     useState<RecordingStatus | null>(null);
@@ -54,17 +62,39 @@ export function HomePage() {
   const [transcribing, setTranscribing] = useState(false);
   const [hotkeyPickerOpen, setHotkeyPickerOpen] = useState(false);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
+  // A transcript whose deletion is pending so the toast can undo it. The row
+  // leaves the UI immediately; the database delete commits only after the
+  // undo window expires without a click.
+  const [pendingDelete, setPendingDelete] = useState<TranscriptRow | null>(null);
   const [toast, setToast] = useState<{
     title: string;
     detail?: string;
     tone?: "success" | "warning";
+    duration?: number;
+    action?: { label: string; onClick: () => void };
   } | null>(null);
 
   useEffect(() => {
     if (!toast) return;
-    const timeout = window.setTimeout(() => setToast(null), 2600);
+    const timeout = window.setTimeout(() => setToast(null), toast.duration ?? 2600);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  // Verify the native engine on mount so recording is ready without requiring
+  // the user to discover a manual check first.
+  useEffect(() => {
+    let ignore = false;
+    void getNativeStatus()
+      .then((status) => {
+        if (!ignore) setNativeStatus(status);
+      })
+      .catch(() => {
+        if (!ignore) setNativeStatus(null);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const saveHotkey = async (shortcut: string) => {
     await setGlobalShortcut(shortcut);
@@ -79,7 +109,8 @@ export function HomePage() {
 
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
     setTranscriptionResult(result);
-    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.language ?? "en");
+    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.language ?? "en", result.engine ?? null);
+    await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
     await deleteRecordingFile(result.audioPath).catch(() => {});
     setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
   };
@@ -141,6 +172,48 @@ export function HomePage() {
     };
   }, []);
 
+  // Engine switches (spec §8: never silently change engines). Warn when a
+  // fallback fired and inform when the router picked a different engine.
+  useEffect(() => {
+    let unlistenFallback: (() => void) | undefined;
+    let unlistenChanged: (() => void) | undefined;
+
+    void listen<{ from?: string; to?: string; reason?: string }>(
+      "transcription_engine_fallback",
+      (event) => {
+        const { from, to, reason } = event.payload;
+        const reasonText =
+          reason === "model_unavailable"
+            ? "the model was unavailable"
+            : "the engine failed";
+        setToast({
+          title: "Transcription engine switched",
+          detail: `${engineDisplayName(from) ?? "The engine"} fell back to ${engineDisplayName(to)} — ${reasonText}.`,
+          tone: "warning",
+        });
+      }
+    ).then((cleanup) => {
+      unlistenFallback = cleanup;
+    });
+
+    void listen<{ from?: string; to?: string }>("transcription_engine_changed", (event) => {
+      const { from, to } = event.payload;
+      if (!to) return;
+      setToast({
+        title: `Engine changed to ${engineDisplayName(to)}`,
+        detail: `Previous transcription ran on ${engineDisplayName(from) ?? "a different engine"}.`,
+        tone: "success",
+      });
+    }).then((cleanup) => {
+      unlistenChanged = cleanup;
+    });
+
+    return () => {
+      unlistenFallback?.();
+      unlistenChanged?.();
+    };
+  }, []);
+
   // Surface background-flow transcription failures (hotkey path) with a retry
   // path so the user can re-run transcription on the kept recording file.
   useEffect(() => {
@@ -186,11 +259,14 @@ export function HomePage() {
       rawText?: string | null;
       appName?: string | null;
       language?: string | null;
+      engine?: string | null;
+      corrections?: { source: string; canonical: string }[];
     }>("vox-hands-free-segment", async (event) => {
-      const { text, rawText, appName, language } = event.payload;
+      const { text, rawText, appName, language, engine, corrections } = event.payload;
       if (!text?.trim()) return;
       try {
-        await saveTranscript(text, undefined, appName ?? null, null, rawText ?? null, language ?? "en");
+        await saveTranscript(text, undefined, appName ?? null, null, rawText ?? null, language ?? "en", engine ?? null);
+        await saveCorrections(corrections ?? [], appName ?? null).catch(() => {});
         setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
       } catch {
         // DB errors are non-fatal; the text was already inserted.
@@ -212,7 +288,7 @@ export function HomePage() {
       setNativeStatus(await getNativeStatus());
     } catch {
       setNativeStatus(null);
-      setError("Run the desktop app with `pnpm desktop:dev` to use recording.");
+      setError("Recording isn't available right now. Restart the Vox app and try again.");
     } finally {
       setChecking(false);
     }
@@ -234,8 +310,7 @@ export function HomePage() {
           setTranscribing(true);
           const result = await transcribeRecording(
             status.path,
-            selectedModel,
-            dictionary,
+            requestedModel,
             status.appName,
             status.windowTitle
           );
@@ -273,8 +348,7 @@ export function HomePage() {
     try {
       const result = await transcribeRecording(
         recordingStatus.path,
-        selectedModel,
-        dictionary,
+        requestedModel,
         recordingStatus.appName,
         recordingStatus.windowTitle
       );
@@ -300,8 +374,7 @@ export function HomePage() {
     try {
       const result = await transcribeRecording(
         retryPath,
-        selectedModel,
-        dictionary,
+        requestedModel,
         recordingStatus?.appName ?? null,
         recordingStatus?.windowTitle ?? null
       );
@@ -333,28 +406,82 @@ export function HomePage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const deleteRowFromDb = async (id: number) => {
     try {
       await deleteTranscript(id);
-      setHistory((prev) => prev.filter((t) => t.id !== id));
     } catch {
       // non-fatal
     }
   };
 
-  const totalWords = history.reduce((sum, item) => sum + countWords(item.text), 0);
-  const totalDurationSeconds = history.reduce(
-    (sum, item) => sum + (item.duration_seconds ?? 0),
-    0
-  );
-  const timeSavedMinutes = Math.round(totalWords / 40);
-  const activityDays = buildActivityDays(history);
-  const { currentStreak, longestStreak } = calculateStreaks(history);
-  const activitySummary = buildActivitySummary(history);
-  const hourlyActivity = buildHourlyActivity(history);
-  const usageTrend = buildUsageTrend(history);
-  const topApps = buildTopApps(history);
-  const dailyWordTrend = buildDailyWordTrend(history);
+  const handleDelete = (id: number) => {
+    const row = history.find((t) => t.id === id);
+    if (!row) return;
+    // Only one deletion can be undone at a time — commit any earlier one now.
+    if (pendingDelete && pendingDelete.id !== id) {
+      void deleteRowFromDb(pendingDelete.id);
+    }
+    setHistory((prev) => prev.filter((t) => t.id !== id));
+    setPendingDelete(row);
+    setToast({
+      title: "Transcript deleted",
+      detail: "Removed from your history.",
+      tone: "warning",
+      duration: UNDO_WINDOW_MS,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setHistory((prev) =>
+            [...prev, row].sort((a, b) => b.created_at - a.created_at)
+          );
+          setPendingDelete(null);
+          setToast(null);
+        },
+      },
+    });
+  };
+
+  // Commit the pending delete once the undo window closes.
+  useEffect(() => {
+    if (!pendingDelete) return;
+    const timeout = window.setTimeout(() => {
+      void deleteRowFromDb(pendingDelete.id);
+      setPendingDelete(null);
+    }, UNDO_WINDOW_MS);
+    return () => window.clearTimeout(timeout);
+  }, [pendingDelete]);
+
+  const analytics = useMemo(() => {
+    const totalWords = history.reduce((sum, item) => sum + countWords(item.text), 0);
+    const totalDurationSeconds = history.reduce(
+      (sum, item) => sum + (item.duration_seconds ?? 0),
+      0
+    );
+    return {
+      totalWords,
+      totalDurationSeconds,
+      timeSavedMinutes: Math.round(totalWords / 40),
+      activityDays: buildActivityDays(history),
+      streaks: calculateStreaks(history),
+      activitySummary: buildActivitySummary(history),
+      hourlyActivity: buildHourlyActivity(history),
+      usageTrend: buildUsageTrend(history),
+      topApps: buildTopApps(history),
+      dailyWordTrend: buildDailyWordTrend(history),
+    };
+  }, [history]);
+  const {
+    totalWords,
+    totalDurationSeconds,
+    timeSavedMinutes,
+    activityDays,
+    streaks: { currentStreak, longestStreak },
+    activitySummary,
+    hourlyActivity,
+    usageTrend,
+    topApps,
+    dailyWordTrend,
+  } = analytics;
   const lastDuration = recordingStatus?.durationSeconds ?? 0;
 
   useEffect(() => {
@@ -409,6 +536,7 @@ export function HomePage() {
 
         <CommandCenterCard
           hotkey={hotkey}
+          engine={engine}
           selectedModel={selectedModel}
           nativeStatus={nativeStatus}
           recordingStatus={recordingStatus}
@@ -420,6 +548,49 @@ export function HomePage() {
           onTranscribe={transcribe}
           onEditHotkey={() => setHotkeyPickerOpen(true)}
         />
+
+        {error && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="min-w-0">{error}</span>
+              {retryPath && !transcribing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void retryTranscription()}
+                  className="shrink-0"
+                >
+                  <Wand2 className="h-4 w-4" />
+                  Retry transcription
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {transcriptionResult && (
+          <section className="panel p-5">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Latest transcript
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(transcriptionResult.text);
+                  setToast({ title: "Copied to clipboard" });
+                }}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Copy
+              </button>
+            </div>
+            <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
+              {transcriptionResult.text}
+            </p>
+          </section>
+        )}
 
         <section aria-label="Dictation summary" className="stat-strip divide-y divide-border sm:grid-cols-2 sm:divide-x sm:divide-y-0 md:grid-cols-4">
           <InsightStat label="Words dictated" value={totalWords.toLocaleString()} />
@@ -459,22 +630,26 @@ export function HomePage() {
             <p className="mb-4 text-sm font-semibold text-foreground">Current setup</p>
             <div className="grid gap-2 text-sm">
               <div className="flex items-center justify-between gap-3 border-b border-border py-2">
-                <span className="text-muted-foreground">Model</span>
-                <span className="font-mono text-xs text-foreground">{selectedModel}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-b border-border py-2">
-                <span className="text-muted-foreground">Shortcut</span>
-                <button
-                  onClick={() => setHotkeyPickerOpen(true)}
-                  className="font-mono text-xs text-primary transition-colors hover:text-foreground"
-                >
-                  {formatShortcut(hotkey)}
-                </button>
+                <span className="text-muted-foreground">Engine</span>
+                <span className="flex items-center gap-2">
+                  <span className="font-mono text-xs capitalize text-foreground">
+                    {engine === "auto" ? "Automatic" : engine}
+                  </span>
+                  <span
+                    className={
+                      nativeStatus
+                        ? "rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                        : "text-[11px] text-muted-foreground"
+                    }
+                  >
+                    {nativeStatus ? "Ready" : checking ? "Checking…" : "Not checked"}
+                  </span>
+                </span>
               </div>
               <div className="flex items-center justify-between gap-3 py-2">
-                <span className="text-muted-foreground">Engine</span>
-                <span className="text-xs font-medium text-foreground">
-                  {nativeStatus ? "Ready" : checking ? "Checking" : "Not checked"}
+                <span className="text-muted-foreground">Model</span>
+                <span className="font-mono text-xs text-foreground">
+                  {activeModelLabel(engine, selectedModel)}
                 </span>
               </div>
             </div>
@@ -506,36 +681,6 @@ export function HomePage() {
             onDelete={handleDelete}
           />
         </section>
-
-        {error && (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="min-w-0">{error}</span>
-              {retryPath && !transcribing && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void retryTranscription()}
-                  className="shrink-0"
-                >
-                  <Wand2 className="h-4 w-4" />
-                  Retry transcription
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {transcriptionResult && (
-          <section className="panel p-5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              Latest transcript
-            </p>
-            <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
-              {transcriptionResult.text}
-            </p>
-          </section>
-        )}
       </div>
 
       <HotkeyPicker
@@ -545,7 +690,12 @@ export function HomePage() {
         onCancel={() => setHotkeyPickerOpen(false)}
       />
       {toast && (
-        <AppToast title={toast.title} detail={toast.detail} tone={toast.tone} />
+        <AppToast
+          title={toast.title}
+          detail={toast.detail}
+          tone={toast.tone}
+          action={toast.action}
+        />
       )}
     </ScrollArea>
   );
@@ -553,6 +703,19 @@ export function HomePage() {
 
 function countWords(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function engineDisplayName(engine?: string | null) {
+  switch (engine) {
+    case "whisper":
+      return "Whisper";
+    case "parakeet":
+      return "Parakeet";
+    case "apple":
+      return "Apple Speech";
+    default:
+      return engine ? engine.charAt(0).toUpperCase() + engine.slice(1) : null;
+  }
 }
 
 function dayKey(timestamp: number) {
@@ -684,13 +847,14 @@ function buildUsageTrend(history: TranscriptRow[]) {
 }
 
 function buildDailyWordTrend(history: TranscriptRow[]) {
-  const buckets = new Map<string, { label: string; words: number; sessions: number }>();
+  const buckets = new Map<string, { key: string; label: string; words: number; sessions: number }>();
 
   for (let index = 13; index >= 0; index -= 1) {
     const date = new Date();
     date.setDate(date.getDate() - index);
     const key = dayKey(date.getTime());
     buckets.set(key, {
+      key,
       label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
       words: 0,
       sessions: 0,
@@ -735,6 +899,7 @@ function AnalyticsLoading() {
 
 function CommandCenterCard({
   hotkey,
+  engine,
   selectedModel,
   nativeStatus,
   recordingStatus,
@@ -747,6 +912,7 @@ function CommandCenterCard({
   onEditHotkey,
 }: {
   hotkey: string;
+  engine: string;
   selectedModel: string;
   nativeStatus: NativeStatus | null;
   recordingStatus: RecordingStatus | null;
@@ -767,14 +933,14 @@ function CommandCenterCard({
         ? "Working"
         : nativeStatus
           ? "Ready"
-          : "Check engine";
+          : "Recording unavailable";
   const helperText = isRecording
     ? "Listening locally. Press stop when you are done."
     : transcribing
       ? "Converting your audio into text."
       : nativeStatus
         ? "Start a local dictation session from here or use the global shortcut."
-        : "Verify the native engine before recording.";
+        : "Recording isn't ready. Restart Vox, or recheck the engine below.";
 
   return (
     <section className="surface-depth overflow-hidden rounded-xl border border-primary/20 bg-card p-5">
@@ -793,25 +959,30 @@ function CommandCenterCard({
               </span>
             </div>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{helperText}</p>
-            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <button
                 onClick={onEditHotkey}
-                className="rounded-md bg-background/75 px-2.5 py-1 font-mono transition-colors hover:bg-muted hover:text-foreground"
+                className="cursor-pointer rounded-md bg-background/75 px-2.5 py-1 font-mono transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {formatShortcut(hotkey)}
               </button>
               <span className="px-1 font-mono">
-                {selectedModel}
+                {activeModelLabel(engine, selectedModel)}
               </span>
+              {!nativeStatus && (
+                <button
+                  onClick={onCheckEngine}
+                  disabled={checking}
+                  className="cursor-pointer rounded-md px-2.5 py-1 font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                >
+                  {checking ? "Checking…" : "Recheck"}
+                </button>
+              )}
             </div>
           </div>
         </div>
 
         <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
-          <Button variant="secondary" onClick={onCheckEngine} disabled={checking || recordingBusy || transcribing}>
-            <CheckCircle2 className="h-4 w-4" />
-            {checking ? "Checking…" : nativeStatus ? "Engine Ready" : "Check Engine"}
-          </Button>
           <Button onClick={onToggleRecording} disabled={!nativeStatus || recordingBusy || transcribing}>
             <Mic className="h-4 w-4" />
             {isRecording ? "Stop Recording" : "Start Recording"}
@@ -943,17 +1114,17 @@ function TranscriptCard({
             <p className="text-[11px] text-muted-foreground">{formatTranscriptDate(item.created_at)}</p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <button
             onClick={() => void copyTranscript()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Copy transcript"
           >
             {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
           <button
             onClick={() => onDelete(item.id)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Delete transcript"
           >
             <Trash2 className="h-3.5 w-3.5" />

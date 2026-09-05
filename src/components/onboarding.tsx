@@ -176,9 +176,19 @@ export function Onboarding() {
     setBusy(true);
     setError(null);
     try {
+      // Triggers the native prompt. The command cannot report the real
+      // TCC state, so verify before advancing — the 2s poller below catches
+      // a late prompt answer or a System Settings grant automatically.
       await requestMicrophonePermission();
-      setPermissionReady(true);
-      setStep("model");
+      const granted = await checkMicrophonePermission();
+      if (granted) {
+        setPermissionReady(true);
+        setStep("model");
+      } else {
+        setError(
+          "Microphone access wasn't granted yet. Choose Allow on the prompt, or open System Settings → Privacy & Security → Microphone and enable Vox — this screen updates automatically."
+        );
+      }
     } catch {
       setError(
         "Microphone access was denied. Open System Settings → Privacy & Security → Microphone and enable Vox."

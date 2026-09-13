@@ -30,7 +30,7 @@
                 "title": "Vox Widget",
                 "url": "widget.html",
                 "width": 300,
-                "height": 72,
+                "height": 96,
                 "resizable": false,
                 "fullscreen": false,
                 "decorations": false,

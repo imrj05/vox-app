@@ -77,15 +77,17 @@ const MODELS: &[TextEnhancementModelInfo] = &[
     TextEnhancementModelInfo {
         name: DEFAULT_TEXT_ENHANCEMENT_MODEL,
         display_name: "Qwen2.5 1.5B Instruct Q4",
-        size: 986_000_000,
+        // Exact upstream file size so the download progress bar and the
+        // post-download sanity check are accurate.
+        size: 1_117_320_736,
         url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
         downloaded: false,
         recommended: true,
     },
     TextEnhancementModelInfo {
         name: "qwen2.5-0.5b-instruct-q4_k_m",
-        display_name: "Qwen2.5 0.5B Instruct Q4",
-        size: 397_000_000,
+        display_name: "Qwen2.5 0.5B Instruct Q4 (faster, lower quality)",
+        size: 491_400_032,
         url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
         downloaded: false,
         recommended: false,
@@ -93,7 +95,7 @@ const MODELS: &[TextEnhancementModelInfo] = &[
     TextEnhancementModelInfo {
         name: "qwen2.5-3b-instruct-q4_k_m",
         display_name: "Qwen2.5 3B Instruct Q4",
-        size: 1_980_000_000,
+        size: 2_104_932_768,
         url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         downloaded: false,
         recommended: false,
@@ -140,12 +142,15 @@ pub async fn download_model(
         ));
     }
 
-    let total = response
+    // Prefer the server's Content-Length: it drives the progress bar and the
+    // post-download sanity check, so the hardcoded sizes are only a fallback
+    // for servers that omit the header.
+    let server_size = response
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(model.size);
+        .and_then(|value| value.parse::<u64>().ok());
+    let total = server_size.unwrap_or(model.size);
 
     let mut file = File::create(&tmp_path)
         .await
@@ -166,7 +171,12 @@ pub async fn download_model(
     let downloaded_size = fs::metadata(&tmp_path)
         .map_err(|error| error.to_string())?
         .len();
-    if downloaded_size < model.size / 2 {
+    // Compare against the size the server actually advertised (falling back
+    // to the hardcoded upstream size), so a truncated download is caught even
+    // if the upstream file size changed. Allow a small tolerance for
+    // chunk-boundary rounding.
+    let expected_size = server_size.unwrap_or(model.size);
+    if downloaded_size < expected_size - expected_size / 10 {
         let _ = fs::remove_file(&tmp_path);
         return Err("Downloaded enhancement model is unexpectedly small".to_string());
     }

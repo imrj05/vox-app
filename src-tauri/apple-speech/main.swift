@@ -239,12 +239,185 @@ func serve() {
     exit(0)
 }
 
+// MARK: - Live mode (streaming partial transcription while recording)
+//
+// Runs SFSpeechAudioBufferRecognitionRequest against a live AVAudioEngine mic
+// tap, emitting partial results as JSON lines on stdout:
+//   {"type":"partial","text":"..."}
+//   {"type":"final","text":"..."}
+//   {"type":"error","message":"..."}
+// Requests arrive on stdin as JSON lines:
+//   {"type":"start","locale":"en-US"}   (optional locale; default = system)
+//   {"type":"stop"}
+// stdin EOF exits the process. This is a preview channel only — the parent
+// app keeps capturing its own recording for the final transcription.
+
+let liveStdoutLock = NSLock()
+
+func writeLiveLine(_ payload: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          let line = String(data: data, encoding: .utf8) else { return }
+    liveStdoutLock.lock()
+    print(line)
+    fflush(stdout)
+    liveStdoutLock.unlock()
+}
+
+final class LiveTranscriber {
+    private let engine = AVAudioEngine()
+    private var speechRecognizer: SFSpeechRecognizer?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    /// Finalized text from earlier recognition cycles (tasks auto-restart
+    /// every ~45 s: Speech requests are best kept under a minute).
+    private var accumulated = ""
+    private var cycleStartedAt = Date()
+    private let stateLock = NSLock()
+    private var stopping = false
+
+    func start(locale: Locale) {
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            writeLiveLine(["type": "error", "message": "speech recognition permission not granted"])
+            return
+        }
+        guard let resolvedRecognizer = recognizer(for: locale) else {
+            writeLiveLine(["type": "error", "message": "no recognizer for \(locale.identifier)"])
+            return
+        }
+        self.speechRecognizer = resolvedRecognizer
+
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0 else {
+            writeLiveLine(["type": "error", "message": "no microphone input available"])
+            return
+        }
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+            // Real-time audio thread: only cheap, non-blocking work here.
+            self?.stateLock.lock()
+            let request = self?.request
+            self?.stateLock.unlock()
+            request?.append(buffer)
+        }
+
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            writeLiveLine(["type": "error", "message": "audio engine failed: \(error.localizedDescription)"])
+            return
+        }
+        startCycle()
+        diag("live preview started (locale \(locale.identifier))")
+    }
+
+    private func startCycle() {
+        stateLock.lock()
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        // Privacy: live preview never leaves the device.
+        request.requiresOnDeviceRecognition = true
+        request.taskHint = .dictation
+        self.request = request
+        cycleStartedAt = Date()
+        stateLock.unlock()
+
+        task = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
+            guard let self = self else { return }
+            if let error = error, !self.stopping {
+                writeLiveLine(["type": "error", "message": error.localizedDescription])
+                return
+            }
+            guard let result = result else { return }
+            let text = result.bestTranscription.formattedString
+            let full = self.accumulated.isEmpty ? text : self.accumulated + " " + text
+            if self.stopping {
+                if result.isFinal {
+                    writeLiveLine(["type": "final", "text": full])
+                }
+                return
+            }
+            if !text.isEmpty {
+                writeLiveLine(["type": "partial", "text": full])
+            }
+            // Restart long-running recognition cycles so no single request
+            // exceeds Speech's practical ~1-minute task length.
+            if Date().timeIntervalSince(self.cycleStartedAt) > 45 {
+                self.accumulated = full
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.restartCycle()
+                }
+            }
+        }
+    }
+
+    private func restartCycle() {
+        stateLock.lock()
+        guard !stopping else { stateLock.unlock(); return }
+        let oldRequest = request
+        let oldTask = task
+        request = nil
+        stateLock.unlock()
+        oldTask?.finish()
+        oldRequest?.endAudio()
+        startCycle()
+    }
+
+    /// Stops the mic tap and recognition; waits (on a background queue) for
+    /// the final result, then reports it. Never blocks the caller.
+    func stop() {
+        stateLock.lock()
+        stopping = true
+        let request = self.request
+        let task = self.task
+        self.request = nil
+        stateLock.unlock()
+
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        task?.finish()
+        request?.endAudio()
+    }
+}
+
+func liveServe() {
+    let transcriber = LiveTranscriber()
+    while let line = readLine() {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { continue }
+        guard let data = trimmed.data(using: .utf8),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            writeLiveLine(["type": "error", "message": "malformed live request line"])
+            continue
+        }
+        switch (json["type"] as? String, json["locale"] as? String) {
+        case ("start"?, let localeCode?):
+            transcriber.start(locale: Locale(identifier: localeCode))
+        case ("start"?, _):
+            transcriber.start(locale: .current)
+        case ("stop"?, _):
+            transcriber.stop()
+            // Give the final result a moment to arrive, then exit.
+            Thread.sleep(forTimeInterval: 1.5)
+            diag("live preview stopped")
+            exit(0)
+        default:
+            writeLiveLine(["type": "error", "message": "unknown live request type"])
+        }
+    }
+    // stdin closed — parent is gone; exit cleanly.
+    diag("stdin closed, exiting live mode")
+    exit(0)
+}
+
 // MARK: - Argument parsing
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 var language: String?
 var statusOnly = false
 var serveMode = false
+var liveMode = false
+var checkPermissionOnly = false
 var audioPath: String?
 
 var index = 0
@@ -259,8 +432,10 @@ while index < arguments.count {
         language = arguments[index]
     case "--status":
         statusOnly = true
-    case "--serve":
-        serveMode = true
+    case "--live":
+        liveMode = true
+    case "--check-permission":
+        checkPermissionOnly = true
     default:
         guard !argument.hasPrefix("-") else {
             fail(2, "unknown option: \(argument)")
@@ -268,6 +443,34 @@ while index < arguments.count {
         audioPath = argument
     }
     index += 1
+}
+
+// MARK: - Permission probe (never triggers a TCC prompt)
+
+if checkPermissionOnly {
+    switch SFSpeechRecognizer.authorizationStatus() {
+    case .authorized:
+        print("status: granted")
+        exit(0)
+    case .denied, .restricted:
+        print("status: denied")
+        exit(4)
+    default:
+        print("status: not-determined")
+        exit(5)
+    }
+}
+
+// MARK: - Live mode
+
+if liveMode {
+    // The main thread only pumps the run loop so Speech callbacks delivered
+    // on the main queue never stall; stdin is consumed on a background queue.
+    DispatchQueue.global(qos: .userInitiated).async {
+        liveServe()
+    }
+    RunLoop.main.run()
+    exit(0)
 }
 
 // MARK: - Status mode (availability probe for the Rust engine)

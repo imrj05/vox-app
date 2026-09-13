@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Download, Mic, Plus, Sparkles, Square, Trash2, Wand2 } from "@/components/icons";
+import { Check, Download, Mic, Sparkles, Square, Trash2, Wand2 } from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,22 +12,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { saveCorrections, saveTranscript } from "@/lib/db";
 import {
-  addCustomModel,
-  deleteCustomModel,
   deleteRecordingFile,
   deleteTextEnhancementModel,
   deleteWhisperModel,
@@ -35,14 +25,11 @@ import {
   getHardwareInfo,
   getNativeStatus,
   getTranscriptionEngines,
-  listCustomModels,
   listTextEnhancementModels,
   listWhisperModels,
   startRecording,
   stopRecording,
   transcribeRecording,
-  type CustomModel,
-  type CustomModelKind,
   type HardwareInfo,
   type NativeStatus,
   type RecordingStatus,
@@ -136,13 +123,6 @@ export function ModelsPage() {
   const [enhancementDeleting, setEnhancementDeleting] = useState<string | null>(null);
   const [enhancementDownloading, setEnhancementDownloading] = useState<string | null>(null);
   const [enhancementProgress, setEnhancementProgress] = useState<{ downloaded: number; total: number } | null>(null);
-  const [customModels, setCustomModels] = useState<CustomModel[]>([]);
-  const [customModelUrl, setCustomModelUrl] = useState("");
-  const [customModelKind, setCustomModelKind] = useState<"auto" | CustomModelKind>("auto");
-  const [customModelAdding, setCustomModelAdding] = useState(false);
-  const [customModelDeleting, setCustomModelDeleting] = useState<string | null>(null);
-  const [customModelDownloading, setCustomModelDownloading] = useState<string | null>(null);
-  const [customModelProgress, setCustomModelProgress] = useState<{ downloaded: number; total: number } | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [engines, setEngines] = useState<TranscriptionEngineStatus[]>([]);
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
@@ -238,32 +218,6 @@ export function ModelsPage() {
     };
   }, []);
 
-  // Load custom models and track their download progress.
-  useEffect(() => {
-    let active = true;
-    void listCustomModels()
-      .then((models) => { if (active) setCustomModels(models); })
-      .catch(() => { if (active) setCustomModels([]); });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<{ modelName: string; downloaded: number; total: number }>(
-      "vox-custom-model-download-progress",
-      (event) => {
-        const { modelName, downloaded, total } = event.payload;
-        setCustomModelDownloading(modelName);
-        setCustomModelProgress({ downloaded, total });
-      }
-    ).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
   const handleDownload = async (modelName: string) => {
     setError(null);
     try {
@@ -346,50 +300,6 @@ export function ModelsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setEnhancementDeleting(null);
-    }
-  };
-
-  const handleAddCustomModel = async () => {
-    const url = customModelUrl.trim();
-    if (!url) return;
-    setCustomModelAdding(true);
-    setError(null);
-    try {
-      const model = await addCustomModel(url, customModelKind === "auto" ? undefined : customModelKind);
-      setCustomModelUrl("");
-      setCustomModelKind("auto");
-      setCustomModels(await listCustomModels());
-      // Auto-activate the new model in its pipeline.
-      if (model.kind === "stt") {
-        await setSelectedModel(model.name);
-      } else {
-        await setEnhancementModel(model.name);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCustomModelAdding(false);
-    }
-  };
-
-  const handleCustomModelSetActive = async (model: CustomModel) => {
-    if (model.kind === "stt") {
-      await setSelectedModel(model.name);
-    } else {
-      await setEnhancementModel(model.name);
-    }
-  };
-
-  const handleCustomModelDelete = async (name: string) => {
-    setCustomModelDeleting(name);
-    setError(null);
-    try {
-      await deleteCustomModel(name);
-      setCustomModels(await listCustomModels());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCustomModelDeleting(null);
     }
   };
 
@@ -932,165 +842,6 @@ export function ModelsPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open the desktop app to load local enhancement model availability.
                 </p>
-              </div>
-            )}
-          </section>
-
-          {/* 5 — Custom models — add any Hugging Face model URL */}
-          <section>
-            <div className="mb-3 flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-sidebar-accent text-primary">
-                <Download className="h-4 w-4" />
-              </span>
-              <div>
-                <p className="text-sm font-medium text-foreground">Custom models</p>
-                <p className="text-xs text-muted-foreground">
-                  Add any Hugging Face model URL. Vox detects whether it is for speech-to-text or text enhancement.
-                </p>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-border bg-card p-4">
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  aria-label="Hugging Face model URL"
-                  placeholder="https://huggingface.co/.../model.gguf"
-                  value={customModelUrl}
-                  onChange={(event) => setCustomModelUrl(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && customModelUrl.trim()) {
-                      event.preventDefault();
-                      void handleAddCustomModel();
-                    }
-                  }}
-                  className="flex-1"
-                />
-                <div className="flex shrink-0 gap-2">
-                  <Select
-                    value={customModelKind}
-                    onValueChange={(value) => setCustomModelKind(value as "auto" | CustomModelKind)}
-                  >
-                    <SelectTrigger className="h-9 w-[170px] bg-background" aria-label="Model type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">Auto-detect</SelectItem>
-                      <SelectItem value="stt">Speech-to-text</SelectItem>
-                      <SelectItem value="enhance">Text enhancement</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    size="sm"
-                    onClick={() => void handleAddCustomModel()}
-                    disabled={!customModelUrl.trim() || customModelAdding}
-                  >
-                    {customModelAdding ? <Spinner className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                    {customModelAdding ? "Adding…" : "Add model"}
-                  </Button>
-                </div>
-              </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Auto-detect uses the file extension and model family: <span className="font-mono">.bin</span>/
-                <span className="font-mono">.ggml</span> → speech-to-text, <span className="font-mono">.gguf</span> with an LLM
-                family (Qwen, Llama, Mistral…) → text enhancement, Parakeet → speech-to-text.
-              </p>
-            </div>
-            {customModels.length > 0 && (
-              <div className="panel mt-3 divide-y divide-border overflow-hidden">
-                {customModels.map((model) => {
-                  const isDownloading = customModelDownloading === model.name;
-                  const isDeleting = customModelDeleting === model.name;
-                  const isActive =
-                    (model.kind === "stt"
-                      ? selectedModel === model.name
-                      : enhancementModel === model.name) && model.downloaded;
-                  const pct =
-                    isDownloading && customModelProgress && customModelProgress.total > 0
-                      ? Math.round((customModelProgress.downloaded / customModelProgress.total) * 100)
-                      : null;
-                  const downloadedMB = customModelProgress ? Math.round(customModelProgress.downloaded / 1024 / 1024) : 0;
-                  const totalMB = customModelProgress ? Math.round(customModelProgress.total / 1024 / 1024) : 0;
-
-                  return (
-                    <article key={model.name} className="p-4 transition-colors hover:bg-muted/25">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0">
-                          <div className="mb-2 flex flex-wrap items-center gap-2">
-                            <p className="truncate font-mono text-sm font-medium text-foreground" title={model.name}>
-                              {model.name}
-                            </p>
-                            <Badge variant="secondary" className="text-[10px] uppercase tracking-[0.08em]">
-                              {model.kind === "stt" ? "STT" : "LLM"}
-                            </Badge>
-                            {isActive && <ActiveBadge />}
-                          </div>
-                          <p className="truncate text-[11px] text-muted-foreground" title={model.url}>
-                            {model.url}
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                            <span className="font-mono tabular-nums">
-                              {model.size > 0 ? formatBytes(model.size) : "—"}
-                            </span>
-                            <span className="font-mono">
-                              {isActive ? "Active" : model.downloaded ? "Downloaded" : "Not downloaded"}
-                            </span>
-                          </div>
-                          {!model.downloaded && !isDownloading && (
-                            <p className="mt-2 text-[11px] text-muted-foreground">
-                              The download didn't finish. Remove this model and add it again to retry.
-                            </p>
-                          )}
-                          {isDownloading && (
-                            <DownloadProgress pct={pct} downloadedMB={downloadedMB} totalMB={totalMB} />
-                          )}
-                        </div>
-                        <div className="flex shrink-0 gap-2">
-                          {!isActive && model.downloaded && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleCustomModelSetActive(model)}
-                              disabled={isDeleting}
-                            >
-                              Set active
-                            </Button>
-                          )}
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="Delete custom model"
-                                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                                disabled={isDeleting || isDownloading}
-                              >
-                                {isDeleting ? <Spinner className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete custom model?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  Remove <span className="font-medium text-foreground">{model.name}</span> and its downloaded file from this device.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction
-                                  variant="destructive"
-                                  onClick={() => {
-                                    void handleCustomModelDelete(model.name);
-                                  }}
-                                >
-                                  Delete model
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
               </div>
             )}
           </section>

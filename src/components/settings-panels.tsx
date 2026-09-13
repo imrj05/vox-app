@@ -15,17 +15,14 @@ import {
   ListBullet,
   LogIn,
   Mic,
-  Monitor,
-  Moon,
   Pencil,
   Plus,
   ShieldCheck,
   Sparkles,
-  Sun,
   Trash2,
-  Volume2,
   XCircle,
 } from "@/components/icons";
+import { AppearanceBlock } from "@/components/settings-appearance";
 import { Button } from "@/components/ui/button";
 import { SectionHeader, SettingsCard, SettingRow } from "@/components/settings-primitives";
 import {
@@ -66,7 +63,6 @@ import { clearAppData, clearTranscripts } from "@/lib/db";
 import { useAppStore } from "@/store/app-store";
 import { getPocketBase } from "@/lib/pocketbase";
 import type {
-  AppTheme,
   CleanupLevel,
   DictationLanguage,
   TranscriptFormattingMode,
@@ -75,14 +71,6 @@ import type {
 } from "@/store/app-store";
 export function GeneralSection() {
   const {
-    soundEnabled,
-    setSoundEnabled,
-    theme,
-    setTheme,
-    widgetEnabled,
-    setWidgetEnabled,
-    enhanceIconEnabled,
-    setEnhanceIconEnabled,
     transcriptFormattingMode,
     setTranscriptFormattingMode,
     cleanupLevel,
@@ -138,83 +126,7 @@ export function GeneralSection() {
         />
       </div>
       <SettingsCard className="space-y-4">
-        <div className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Monitor className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                Appearance
-              </p>
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Choose how Vox and the floating widget should look.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {themeOptions.map((option) => {
-              const Icon = option.icon;
-              return (
-                <button
-                  key={option.value}
-                  onClick={() => void setTheme(option.value)}
-                  className={cn(
-                    "flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition-colors",
-                    theme === option.value
-                      ? "border-primary bg-primary/10 text-foreground"
-                      : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                  <span className="font-medium">{option.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="h-px bg-border" />
-        <SettingRow
-          icon={<Volume2 className="h-4 w-4" />}
-          title="Sound cues"
-          description="Play a short cue when recording starts or stops."
-          action={
-            <Switch
-              id="sound-cues"
-              aria-label="Sound cues"
-              checked={soundEnabled}
-              onCheckedChange={(checked) => void setSoundEnabled(checked)}
-            />
-          }
-        />
-        <div className="h-px bg-border" />
-        <SettingRow
-          icon={<Monitor className="h-4 w-4" />}
-          title="Floating widget"
-          description="Show the small recording status window while Vox listens and transcribes."
-          action={
-            <Switch
-              id="floating-widget"
-              aria-label="Floating widget"
-              checked={widgetEnabled}
-              onCheckedChange={(checked) => void setWidgetEnabled(checked)}
-            />
-          }
-        />
-        <div className="h-px bg-border" />
-        <SettingRow
-          icon={<Sparkles className="h-4 w-4" />}
-          title="Enhance icon"
-          description="Show the Enhance action in the dictation widget after you dictate, so you can rewrite the text you just typed."
-          action={
-            <Switch
-              id="enhance-icon"
-              aria-label="Enhance icon"
-              checked={enhanceIconEnabled}
-              onCheckedChange={(checked) => void setEnhanceIconEnabled(checked)}
-            />
-          }
-        />
+        <AppearanceBlock />
         <div className="h-px bg-border" />
         <div className="space-y-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -373,15 +285,6 @@ export function GeneralSection() {
     </div>
   );
 }
-const themeOptions: Array<{
-  value: AppTheme;
-  label: string;
-  icon: typeof Monitor;
-}> = [
-  { value: "system", label: "System", icon: Monitor },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "dark", label: "Dark", icon: Moon },
-];
 const formattingModeOptions: Array<{
   value: TranscriptFormattingMode;
   label: string;

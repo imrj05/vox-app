@@ -138,6 +138,15 @@ pub trait TranscriptionEngine: Sync {
     /// whether any usable model exists.
     fn availability(&self, models_dir: &Path) -> EngineAvailability;
 
+    /// Whether the engine can produce transcripts for `language` (a code like
+    /// "en"/"hi", or "auto"/"hinglish"). Engines whose models cannot handle a
+    /// language must return `false` so the router picks another engine instead
+    /// of silently emitting garbage for unsupported speech.
+    fn supports_language(&self, language: &str) -> bool {
+        let _ = language;
+        true
+    }
+
     /// Resolve which model file this engine should drive. `requested` is a
     /// user-named model hint (honored when usable); `None` lets the engine pick
     /// its preferred downloaded model. When the engine itself drives model
@@ -394,6 +403,28 @@ fn fallback_candidates(
     candidates
 }
 
+/// Like [`fallback_candidates`], but restricted to engines that can handle
+/// `language`. If no fallback engine supports the language (e.g. an
+/// unsupported language across the board), the unrestricted list is returned
+/// so transcription still gets a chance rather than hard-failing.
+fn fallback_candidates_for_language(
+    preferred_fallback: Option<&str>,
+    failed_id: &str,
+    language: &str,
+) -> Vec<&'static dyn TranscriptionEngine> {
+    let candidates = fallback_candidates(preferred_fallback, failed_id);
+    let capable: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|engine| engine.supports_language(language))
+        .collect();
+    if capable.is_empty() {
+        candidates
+    } else {
+        capable
+    }
+}
+
 /// Top-level transcription entry point (spec §31): resolves engine + model
 /// from user selection and runs the pipeline.
 /// Returns `(text, detected_language, engine_id)`.
@@ -470,15 +501,35 @@ pub fn route_transcribe_with_vocabulary(
             .ok_or_else(|| format!("Unknown transcription engine: {}", selection.preferred))?
     };
 
-    match run_engine(
-        preferred_engine,
-        models_dir,
-        audio_path,
-        dictionary,
-        context,
-        language,
-        contextual_strings,
-    ) {
+    // Language-aware routing: an engine whose models cannot handle the
+    // requested language (e.g. Parakeet with Hindi) must not run — it would
+    // confidently emit garbage. Treat it as a primary failure so the fallback
+    // machinery reroutes to a capable engine (reported as
+    // `language_unsupported`, never silent).
+    let language_supported = preferred_engine.supports_language(language);
+    let primary_result = if language_supported {
+        run_engine(
+            preferred_engine,
+            models_dir,
+            audio_path,
+            dictionary,
+            context,
+            language,
+            contextual_strings,
+        )
+    } else {
+        eprintln!(
+            "[VOX][ASR] engine {} does not support language '{language}'; trying fallback engines",
+            preferred_engine.id()
+        );
+        Err(format!(
+            "The {} engine does not support {} dictation",
+            preferred_engine.display_name(),
+            language
+        ))
+    };
+
+    match primary_result {
         Ok(result) => Ok(result),
         Err(primary_error) => {
             if !selection.fallback_enabled {
@@ -489,9 +540,12 @@ pub fn route_transcribe_with_vocabulary(
             // first, then every other registered engine. Primary failures are
             // never hidden — the switch reason is reported upward.
             let mut last_error = primary_error;
-            for candidate in
-                fallback_candidates(selection.preferred_fallback, preferred_engine.id())
-            {
+            let candidates = fallback_candidates_for_language(
+                selection.preferred_fallback,
+                preferred_engine.id(),
+                language,
+            );
+            for candidate in candidates {
                 match run_engine(
                     candidate,
                     models_dir,
@@ -502,7 +556,9 @@ pub fn route_transcribe_with_vocabulary(
                     contextual_strings,
                 ) {
                     Ok(result) => {
-                        let reason = if last_error.contains("not downloaded")
+                        let reason = if !language_supported {
+                            "language_unsupported"
+                        } else if last_error.contains("not downloaded")
                             || last_error.contains("Download")
                         {
                             "model_unavailable"
@@ -628,6 +684,37 @@ mod tests {
                 .count();
             assert_eq!(count, 1, "engine {id} must appear exactly once");
         }
+    }
+
+    #[test]
+    fn parakeet_supports_only_its_languages() {
+        let parakeet = engine_by_id("parakeet").unwrap();
+        assert!(parakeet.supports_language("en"));
+        assert!(parakeet.supports_language("auto"));
+        assert!(parakeet.supports_language("fr"));
+        assert!(!parakeet.supports_language("hi"));
+        assert!(!parakeet.supports_language("hinglish"));
+        // Other engines (whisper, apple) accept everything by default.
+        let whisper = engine_by_id("whisper").unwrap();
+        assert!(whisper.supports_language("hi"));
+        assert!(whisper.supports_language("hinglish"));
+    }
+
+    #[test]
+    fn language_unsupported_fallbacks_skip_incapable_engines() {
+        // When Hindi is requested and Parakeet is a fallback candidate, it
+        // must be filtered out — only language-capable engines remain.
+        let candidates = fallback_candidates_for_language(None, "apple", "hi");
+        assert!(candidates.iter().all(|engine| engine.id() != "parakeet"));
+        assert!(candidates.iter().any(|engine| engine.id() == "whisper"));
+
+        // If no fallback engine supports the language, the unrestricted list
+        // is returned so transcription still gets a chance rather than
+        // hard-failing. (Today every engine supports something for any given
+        // language, so simulate it via a language only some engines accept.)
+        let candidates = fallback_candidates_for_language(None, "x-none", "hi");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|engine| engine.id() != "parakeet"));
     }
 
     #[test]

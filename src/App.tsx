@@ -32,6 +32,7 @@ import {
   setTranscriptionEngine,
   setEngineFallback,
   setPreferredEngineFallback,
+  setDockIcon,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 import { pruneTranscripts } from "@/lib/db";
@@ -246,10 +247,11 @@ function App() {
   useEffect(() => {
     const applyTheme = () => {
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.classList.toggle(
-        "dark",
-        theme === "dark" || (theme === "system" && prefersDark)
-      );
+      const dark = theme === "dark" || (theme === "system" && prefersDark);
+      document.documentElement.classList.toggle("dark", dark);
+      // Keep the Dock icon in sync: dark logo tile in dark mode, light tile
+      // in light mode. Fire-and-forget — a failed swap must never break theming.
+      void setDockIcon(dark).catch(() => {});
     };
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     applyTheme();

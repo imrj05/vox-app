@@ -160,9 +160,15 @@ function VoiceDots({
   return (
     <>
       <div className="widget-voice-container">
-        {/* Vox logo (single mark, legible on both themes) */}
+        {/* Vox logo — light tile by default, dark tile in dark mode */}
         <div className="widget-logo-wrap">
-          <img src="/logo.png" alt="" className="widget-logo" />
+          <img src="/logo-light.png" alt="" className="widget-logo" />
+          <img
+            src="/logo-dark.png"
+            alt=""
+            aria-hidden="true"
+            className="widget-logo widget-logo--dark"
+          />
         </div>
 
         <div className="widget-glow" style={{ opacity: glowAlpha }} />

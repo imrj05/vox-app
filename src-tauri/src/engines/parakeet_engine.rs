@@ -24,6 +24,15 @@ use super::{
 
 pub struct ParakeetEngine;
 
+/// Languages supported by Parakeet TDT 0.6B v3 (the 25 European languages it
+/// was trained on). v2 is English-only. Notably absent: Hindi and other Indic
+/// languages — dictating those through Parakeet produces garbage, so the
+/// router must reroute to Whisper/Apple Speech instead.
+const PARAKEET_V3_LANGUAGES: &[&str] = &[
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
+    "pl", "pt", "ro", "sk", "sl", "es", "sv", "uk", "ru",
+];
+
 // ── Persistent sidecar session ────────────────────────────────────────────────
 //
 // Same pattern as the Apple Speech engine's serve session. One global session
@@ -214,8 +223,37 @@ impl TranscriptionEngine for ParakeetEngine {
         let model_path = request
             .model_path
             .ok_or_else(|| "Parakeet engine requires a model file".to_string())?;
+        // Parakeet v2 is English-only. Fail fast with a helpful message (which
+        // triggers engine fallback) instead of garbage output for other
+        // languages — mirrors the whisper engine's `.en` model check.
+        let model_name = model_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if model_name.contains("-v2") {
+            let requested = request.language.map(str::trim).filter(|v| !v.is_empty());
+            if let Some(requested) = requested {
+                if requested != "auto" && requested != "en" {
+                    return Err(
+                        "The downloaded Parakeet v2 model is English-only. Switch to Whisper (or download Parakeet v3) to dictate in other languages."
+                            .to_string(),
+                    );
+                }
+            }
+        }
         let (text, _language) = transcribe_with_parakeet(model_path, request.audio_path)?;
         Ok(TranscriptionOutput::new("parakeet", text, None))
+    }
+
+    /// Parakeet v3 understands 25 European languages only. "auto" is allowed
+    /// (the model auto-detects among those), but explicit codes outside the
+    /// list — Hindi, Hinglish, etc. — are rejected so the router picks a
+    /// multilingual engine instead of emitting garbage.
+    fn supports_language(&self, language: &str) -> bool {
+        match language.trim().to_ascii_lowercase().as_str() {
+            "auto" => true,
+            code => PARAKEET_V3_LANGUAGES.contains(&code),
+        }
     }
 }
 

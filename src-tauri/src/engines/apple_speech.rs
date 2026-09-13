@@ -200,7 +200,7 @@ fn serve_transcribe(
 
 /// File-format mapping from Vox's language codes to BCP-47 recognizer locales.
 /// "auto"/"hinglish" use the system default recognizer.
-fn locale_code(language: Option<&str>) -> Option<String> {
+pub(crate) fn locale_code(language: Option<&str>) -> Option<String> {
     match language.map(str::trim).filter(|value| !value.is_empty()) {
         None | Some("auto") | Some("hinglish") => None,
         Some("en") => Some("en-US".to_string()),

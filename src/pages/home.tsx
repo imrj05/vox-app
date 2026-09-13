@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { GlowRecordButton } from "@/components/glow-record-button";
+import { cn } from "@/lib/utils";
 import { HotkeyPicker } from "@/components/hotkey-picker";
 import { withTimeout } from "@/lib/async";
 import { useAppStore } from "@/store/app-store";
@@ -525,12 +526,13 @@ export function HomePage() {
           <button
             type="button"
             onClick={() => setHotkeyPickerOpen(true)}
-            className="group flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+            className="group inline-flex shrink-0 items-center gap-2.5 rounded-full border border-border bg-card py-1.5 pl-4 pr-2 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span className="font-mono font-semibold tracking-widest">
+            <span className="font-medium">Global shortcut</span>
+            <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-[11px] font-semibold tracking-widest text-foreground">
               {formatShortcut(hotkey)}
-            </span>
-            <Pencil className="h-3 w-3 opacity-50 transition-opacity group-hover:opacity-100" />
+            </kbd>
+            <Pencil className="h-3 w-3 opacity-60 transition-opacity group-hover:opacity-100" />
           </button>
         </header>
 
@@ -569,18 +571,21 @@ export function HomePage() {
         )}
 
         {transcriptionResult && (
-          <section className="panel p-5">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                Latest transcript
-              </p>
+          <section className="rounded-2xl border border-border bg-card p-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Latest transcript
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => {
                   void navigator.clipboard.writeText(transcriptionResult.text);
                   setToast({ title: "Copied to clipboard" });
                 }}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Copy className="h-3.5 w-3.5" />
                 Copy
@@ -592,67 +597,67 @@ export function HomePage() {
           </section>
         )}
 
-        <section aria-label="Dictation summary" className="stat-strip divide-y divide-border sm:grid-cols-2 sm:divide-x sm:divide-y-0 md:grid-cols-4">
-          <InsightStat label="Words dictated" value={totalWords.toLocaleString()} />
-          <InsightStat label="Transcriptions" value={history.length.toLocaleString()} />
-          <InsightStat label="Time saved" value={`${timeSavedMinutes}m`} />
-          <InsightStat
+        <section aria-label="Dictation summary" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Words dictated" value={totalWords.toLocaleString()} />
+          <StatCard label="Transcriptions" value={history.length.toLocaleString()} />
+          <StatCard label="Time saved" value={`${timeSavedMinutes}m`} />
+          <StatCard
             label="Time spent"
             value={formatDurationCompact(totalDurationSeconds || lastDuration)}
           />
         </section>
 
-        <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="panel p-5">
+        <section className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-2xl border border-border bg-card p-5">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-6">
                 <div>
-                  <p className="font-mono text-4xl font-semibold text-primary">
+                  <p className="font-mono text-5xl font-semibold text-primary">
                     {currentStreak}
                   </p>
-                  <p className="text-sm text-muted-foreground">day streak</p>
+                  <p className="mt-1 text-sm text-muted-foreground">day streak</p>
                 </div>
                 <div className="h-12 w-px bg-border" />
                 <div>
                   <p className="text-sm text-muted-foreground">Longest streak</p>
-                  <p className="text-lg font-medium text-foreground">
+                  <p className="text-xl font-semibold text-foreground">
                     {longestStreak} {longestStreak === 1 ? "day" : "days"}
                   </p>
                 </div>
               </div>
-              <p className="hidden text-sm text-muted-foreground sm:block">
+              <p className="hidden shrink-0 text-sm text-muted-foreground sm:block">
                 {currentStreak > 0 ? "Keep it going." : "Start today."}
               </p>
             </div>
           </div>
 
-          <div className="panel p-5">
-            <p className="mb-4 text-sm font-semibold text-foreground">Current setup</p>
-            <div className="grid gap-2 text-sm">
-              <div className="flex items-center justify-between gap-3 border-b border-border py-2">
-                <span className="text-muted-foreground">Engine</span>
-                <span className="flex items-center gap-2">
+          <div className="rounded-2xl border border-border bg-card p-5">
+            <p className="mb-3 text-sm font-semibold text-foreground">Current setup</p>
+            <dl className="flex flex-col gap-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-muted-foreground">Engine</dt>
+                <dd className="flex items-center gap-2">
                   <span className="font-mono text-xs capitalize text-foreground">
                     {engine === "auto" ? "Automatic" : engine}
                   </span>
-                  <span
-                    className={
-                      nativeStatus
-                        ? "rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                        : "text-[11px] text-muted-foreground"
-                    }
-                  >
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    <span
+                      className={cn(
+                        "h-1 w-1 rounded-full",
+                        nativeStatus ? "bg-primary" : "bg-muted-foreground/60"
+                      )}
+                    />
                     {nativeStatus ? "Ready" : checking ? "Checking…" : "Not checked"}
                   </span>
-                </span>
+                </dd>
               </div>
-              <div className="flex items-center justify-between gap-3 py-2">
-                <span className="text-muted-foreground">Model</span>
-                <span className="font-mono text-xs text-foreground">
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-muted-foreground">Model</dt>
+                <dd className="font-mono text-xs text-foreground">
                   {activeModelLabel(engine, selectedModel)}
-                </span>
+                </dd>
               </div>
-            </div>
+            </dl>
           </div>
         </section>
 
@@ -672,7 +677,7 @@ export function HomePage() {
           </Suspense>
         </div>
 
-        <section className="panel p-5">
+        <section className="rounded-2xl border border-border bg-card p-5">
           <RecentTranscripts
             history={history}
             historyLoading={historyLoading}
@@ -941,39 +946,74 @@ function CommandCenterCard({
       : nativeStatus
         ? "Start a local dictation session from here or use the global shortcut."
         : "Recording isn't ready. Restart Vox, or recheck the engine below.";
+  const tone = isRecording
+    ? "recording"
+    : transcribing || recordingBusy
+      ? "busy"
+      : nativeStatus
+        ? "ready"
+        : "down";
+  const pillStyles: Record<string, string> = {
+    ready: "bg-primary/10 text-primary",
+    recording: "bg-destructive/10 text-destructive",
+    busy: "bg-muted text-muted-foreground",
+    down: "bg-muted text-muted-foreground",
+  };
+  const dotStyles: Record<string, string> = {
+    ready: "bg-primary",
+    recording: "bg-destructive",
+    busy: "bg-primary/70",
+    down: "bg-muted-foreground/60",
+  };
+  const animateDot = tone === "recording" || tone === "busy";
 
   return (
-    <section className="surface-depth overflow-hidden rounded-xl border border-primary/20 bg-card p-5">
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-4">
+    <section className="relative overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
+      <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between lg:p-7">
+        <div className="flex min-w-0 items-center gap-4 sm:gap-5">
           <GlowRecordButton
             isRecording={isRecording}
             disabled={!nativeStatus || recordingBusy || transcribing}
             onClick={onToggleRecording}
           />
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-lg font-semibold text-foreground">Start Dictating</p>
-              <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h2 className="text-xl font-semibold tracking-tight text-foreground">
+                Start dictating
+              </h2>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
+                  pillStyles[tone]
+                )}
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    dotStyles[tone],
+                    animateDot && "animate-pulse"
+                  )}
+                />
                 {statusLabel}
               </span>
             </div>
-            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{helperText}</p>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">{helperText}</p>
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px]">
               <button
                 onClick={onEditHotkey}
-                className="cursor-pointer rounded-md bg-background/75 px-2.5 py-1 font-mono transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {formatShortcut(hotkey)}
               </button>
-              <span className="px-1 font-mono">
+              <span className="rounded-lg border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
                 {activeModelLabel(engine, selectedModel)}
               </span>
               {!nativeStatus && (
                 <button
                   onClick={onCheckEngine}
                   disabled={checking}
-                  className="cursor-pointer rounded-md px-2.5 py-1 font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                  className="cursor-pointer rounded-lg px-2.5 py-1 font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
                 >
                   {checking ? "Checking…" : "Recheck"}
                 </button>
@@ -982,7 +1022,7 @@ function CommandCenterCard({
           </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row lg:items-end">
           <Button onClick={onToggleRecording} disabled={!nativeStatus || recordingBusy || transcribing}>
             <Mic className="h-4 w-4" />
             {isRecording ? "Stop Recording" : "Start Recording"}
@@ -1001,11 +1041,15 @@ function CommandCenterCard({
   );
 }
 
-function InsightStat({ label, value }: { label: string; value: string }) {
+function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="stat-cell">
-      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-foreground">
+        {value}
+      </p>
     </div>
   );
 }

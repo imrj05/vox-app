@@ -73,38 +73,45 @@ export function SettingsPage() {
           <div className="flex flex-col gap-6 lg:flex-row lg:gap-8">
             <nav
               aria-label="Settings sections"
-              className="flex shrink-0 gap-1 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:w-56 lg:flex-col lg:gap-0.5 lg:self-start lg:overflow-visible lg:border-r lg:border-border lg:pb-0 lg:pr-6"
+              className="flex shrink-0 gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:w-56 lg:flex-col lg:gap-6 lg:self-start lg:overflow-visible lg:border-r lg:border-border lg:pb-0 lg:pr-6"
             >
               {navGroups.map((group) => (
-                <div key={group.label} className="contents lg:block lg:pb-3 lg:last:pb-0">
-                  <p className="hidden px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground lg:block">
+                <div key={group.label} className="contents lg:block">
+                  <p className="hidden px-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground lg:mb-2 lg:block">
                     {group.label}
                   </p>
-                  {group.sections.map((id) => {
-                    const section = sectionMeta.get(id);
-                    if (!section) return null;
-                    const Icon = section.icon;
-                    const active = activeSection === id;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => setActiveSection(id)}
-                        aria-current={active ? "true" : undefined}
-                        className={cn(
-                          "flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:w-full lg:shrink",
-                          active
-                            ? "bg-secondary font-medium text-foreground"
-                            : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                        )}
-                      >
-                        <Icon className="h-4 w-4 shrink-0" />
-                        <span className="whitespace-nowrap">
-                          {section.label}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  <div className="contents lg:flex lg:flex-col lg:gap-1">
+                    {group.sections.map((id) => {
+                      const section = sectionMeta.get(id);
+                      if (!section) return null;
+                      const Icon = section.icon;
+                      const active = activeSection === id;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setActiveSection(id)}
+                          aria-current={active ? "true" : undefined}
+                          className={cn(
+                            "flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:w-full lg:shrink",
+                            active
+                              ? "bg-secondary font-medium text-foreground"
+                              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                          )}
+                        >
+                          <Icon
+                            className={cn(
+                              "h-4 w-4 shrink-0",
+                              active ? "text-primary" : "text-muted-foreground"
+                            )}
+                          />
+                          <span className="whitespace-nowrap">
+                            {section.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </nav>

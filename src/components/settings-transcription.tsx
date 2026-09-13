@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Switch } from "@/components/ui/switch";
-import { Mic, ShieldCheck, Cpu } from "@/components/icons";
+import { Mic, ShieldCheck, Cpu, TriangleAlertIcon } from "@/components/icons";
 import {
   SectionHeader,
   SettingRow,
@@ -62,6 +62,7 @@ export function TranscriptionSection() {
     setEngineFallbackEnabled,
     preferredEngineFallback,
     setPreferredEngineFallback,
+    language,
   } = useAppStore();
   const [engines, setEngines] = useState<TranscriptionEngineStatus[]>([]);
 
@@ -139,6 +140,22 @@ export function TranscriptionSection() {
           })}
         </div>
       </SettingsCard>
+      {engine === "parakeet" && (language === "hi" || language === "hinglish") ? (
+        <SettingsCard className="flex items-start gap-3 border-amber-500/40 bg-amber-500/5">
+          <TriangleAlertIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">
+              Parakeet doesn&rsquo;t support Hindi or Hinglish
+            </p>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Parakeet models only understand English and some European
+              languages. Vox will automatically transcribe your Hindi
+              dictation with Whisper instead — or switch the engine to
+              Whisper/Automatic for the best results.
+            </p>
+          </div>
+        </SettingsCard>
+      ) : null}
       <SettingsCard className="space-y-3">
         <SettingRow
           icon={<ShieldCheck className="h-4 w-4" />}

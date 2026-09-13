@@ -66,7 +66,7 @@ export function GithubLogin() {
           <div className="mt-7">
             <Button
               size="lg"
-              className="w-full gap-2.5 bg-[#24292f] text-white hover:bg-[#24292f]/90 dark:bg-[#f7ede8] dark:text-[#0d0a0a] dark:hover:bg-[#f7ede8]/90"
+              className="w-full gap-2.5 bg-[#24292f] text-white hover:bg-[#24292f]/90 dark:bg-[#f0f1f2] dark:text-[#101214] dark:hover:bg-[#f0f1f2]/90"
               onClick={() => void handleSignIn()}
               disabled={busy}
             >

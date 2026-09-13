@@ -1,9 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  disable as disableAutostart,
-  enable as enableAutostart,
-  isEnabled as isAutostartEnabled,
-} from "@tauri-apps/plugin-autostart";
 
 export interface NativeStatus {
   platform: string;
@@ -367,16 +362,16 @@ export async function resolveAppIcon(appName: string) {
 }
 
 export async function getStartAtLogin() {
-  return isAutostartEnabled();
+  return invoke<boolean>("is_login_item_enabled");
+}
+
+/// Swap the macOS Dock icon between the light and dark logo tiles.
+export async function setDockIcon(dark: boolean) {
+  return invoke<void>("set_dock_icon", { theme: dark ? "dark" : "light" });
 }
 
 export async function setStartAtLogin(enabled: boolean) {
-  if (enabled) {
-    await enableAutostart();
-    return;
-  }
-
-  await disableAutostart();
+  return invoke<void>("set_login_item", { enabled });
 }
 
 const EVENT_TAP_ONLY_SHORTCUTS = new Set([

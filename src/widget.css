@@ -116,6 +116,18 @@ body,
     flex-shrink: 0;
 }
 
+.widget-logo--dark {
+    display: none;
+}
+
+:root[data-theme="dark"] .widget-logo--dark {
+    display: block;
+}
+
+:root[data-theme="dark"] .widget-logo:not(.widget-logo--dark) {
+    display: none;
+}
+
 
 /* Soft radial glow behind the content, scales with audio level */
 .widget-glow {

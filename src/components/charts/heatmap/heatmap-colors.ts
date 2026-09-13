@@ -93,7 +93,7 @@ export function heatmapLevelPatternRenderOptions(style: HeatmapLevelStyle) {
     color:
       style.patternColor?.trim() ||
       (preset === "accent"
-        ? "#e879f9"
+        ? "var(--color-atlassian-blue)"
         : heatmapPatternStrokeFallback(style.color)),
     tileBackground: style.patternTileBackground?.trim() || style.color,
     scale: style.patternScale ?? defaultScale,

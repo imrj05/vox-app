@@ -39,6 +39,13 @@ tauri-plugin-single-instance = "2"
 core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["highsierra"] }
 objc = "0.2"
+# SMAppService: registers the app itself as a login item (macOS 13+) so
+# System Settings shows "Vox" instead of the signing team name that legacy
+# LaunchAgents get grouped under.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+objc2-service-management = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 whisper-rs = { version = "0.15.1", features = ["metal"] }
 # Converts the floating widget/enhance windows to NSPanels so they can be
 # drawn over other apps' full-screen Spaces (plain NSWindows cannot).

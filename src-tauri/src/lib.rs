@@ -73,9 +73,56 @@ extern "C" {
 
 mod custom_models;
 #[cfg(target_os = "macos")]
+mod dock_icon;
+#[cfg(target_os = "macos")]
 mod event_tap;
+#[cfg(target_os = "macos")]
+mod live_transcript;
+#[cfg(target_os = "macos")]
+mod login_item;
 mod text_enhancement;
 pub mod vocabulary;
+
+#[cfg(not(target_os = "macos"))]
+mod live_transcript {
+    /// No live preview off macOS (no Apple Speech sidecar).
+    pub fn start(_app: &tauri::AppHandle, _language: &str) {}
+    pub fn stop() {}
+}
+
+#[cfg(not(target_os = "macos"))]
+mod dock_icon {
+    /// The Dock icon is macOS-only; other platforms use the bundled icon.
+    pub fn apply(_app: &tauri::AppHandle, _theme: &str) {}
+}
+
+#[cfg(not(target_os = "macos"))]
+mod login_item {
+    // "Start at login" off macOS is delegated to the autostart plugin
+    // directly (no SMAppService or LaunchAgent-grouping concerns).
+    use tauri::Manager;
+
+    pub fn set_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+        let manager = app
+            .try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+            .ok_or_else(|| "Autostart service is unavailable".to_string())?;
+        if enabled {
+            manager.enable().map_err(|error| error.to_string())
+        } else {
+            manager.disable().map_err(|error| error.to_string())
+        }
+    }
+
+    pub fn is_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+        app.try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+            .ok_or_else(|| "Autostart service is unavailable".to_string())?
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Nothing to migrate off macOS — there is no legacy LaunchAgent path.
+    pub fn migrate_legacy_agent() {}
+}
 
 #[cfg(not(target_os = "macos"))]
 mod event_tap {
@@ -1170,6 +1217,15 @@ fn start_recording_inner(
         spawn_hands_free_monitor(app.clone());
     }
 
+    // Best-effort live transcript preview for the widget. Uses the Apple
+    // Speech sidecar's own mic tap; the cpal recording above is unaffected.
+    // Never fails the recording.
+    let language = app
+        .try_state::<LanguageState>()
+        .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
+        .unwrap_or_else(|| "auto".to_string());
+    live_transcript::start(app, &language);
+
     Ok(RecordingStatus {
         is_recording: true,
         path: Some(path.to_string_lossy().to_string()),
@@ -1211,6 +1267,10 @@ fn stop_recording_inner(state: &RecorderState) -> Result<RecordingStatus, String
     if let Ok(mut bars) = state.audio_bars.lock() {
         *bars = [0.0; 7];
     }
+
+    // End the live preview (if any) — the real transcript comes from the
+    // selected engine over the recorded file.
+    live_transcript::stop();
 
     Ok(RecordingStatus {
         is_recording: false,
@@ -2571,6 +2631,23 @@ fn vocabulary_record_correction(
 }
 
 #[tauri::command]
+fn set_login_item(app: AppHandle, enabled: bool) -> Result<(), String> {
+    login_item::set_enabled(&app, enabled)
+}
+
+/// Switch the Dock icon with the active theme: dark theme → the dark logo,
+/// light theme → the light logo. Applied on the main thread (AppKit).
+#[tauri::command]
+fn set_dock_icon(app: AppHandle, theme: String) {
+    dock_icon::apply(&app, &theme);
+}
+
+#[tauri::command]
+fn is_login_item_enabled(app: AppHandle) -> Result<bool, String> {
+    login_item::is_enabled(&app)
+}
+
+#[tauri::command]
 fn set_language(language: String, state: State<'_, LanguageState>) -> Result<(), String> {
     let language = language.trim().to_ascii_lowercase();
     if language.is_empty() {
@@ -2869,6 +2946,10 @@ pub fn run() {
 
             create_tray_menu(app)?;
 
+            // One-time migration: legacy LaunchAgent login item → SMAppService
+            // (shows "Vox" instead of the signing team in System Settings).
+            login_item::migrate_legacy_agent();
+
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
             app.global_shortcut().register(transform_shortcut)?;
@@ -2939,6 +3020,9 @@ pub fn run() {
             get_trigger_mode,
             set_trigger_mode,
             set_language,
+            set_login_item,
+            is_login_item_enabled,
+            set_dock_icon,
             set_transcription_engine,
             set_engine_fallback,
             set_engine_fallback_target,

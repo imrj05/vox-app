@@ -1,19 +1,23 @@
 interface LogoProps {
-  className?: string
-  alt?: string
+  className?: string;
+  alt?: string;
 }
 
 /**
- * Vox logo mark (`public/logo.png`, 512×512 with transparency). A single
- * asset is used for both light and dark themes — the mark's glow and white
- * accents keep it legible on either background.
+ * Vox logo mark, theme-aware. Renders the light tile on light surfaces and the
+ * dark tile on dark surfaces via the `.dark` class the app toggles on `<html>`.
  */
 export function Logo({ className = "h-8 w-8", alt = "Vox" }: LogoProps) {
+  const base = `object-contain ${className}`;
   return (
-    <img
-      src="/logo.png"
-      alt={alt}
-      className={`object-contain ${className}`}
-    />
-  )
+    <>
+      <img src="/logo-light.png" alt={alt} className={`${base} dark:hidden`} />
+      <img
+        src="/logo-dark.png"
+        alt={alt}
+        aria-hidden="true"
+        className={`${base} hidden dark:block`}
+      />
+    </>
+  );
 }

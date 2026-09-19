@@ -1683,6 +1683,42 @@ fn hide_widget(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the floating widget window to hug the glass capsule (the window
+/// *is* the capsule, so macOS vibrancy shows through exactly its pill
+/// shape) and re-anchor it to the bottom-right corner. The vibrancy corner
+/// radius is kept at half the capsule height so the blur mask matches the
+/// pill at any content size.
+#[tauri::command]
+fn widget_set_size(window: tauri::WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 {
+        return Ok(());
+    }
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+
+    // Position from the requested size: the native resize is dispatched
+    // asynchronously, so outer_size() may still report the old bounds.
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_w = (width * scale).round() as i32;
+    let win_h = (height * scale).round() as i32;
+    position_widget_with_size(&window, win_w, win_h);
+
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+        let _ = window.set_effects(Some(
+            EffectsBuilder::new()
+                .effect(Effect::Sidebar)
+                .state(EffectState::Active)
+                .radius(height / 2.0)
+                .build(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn capture_selected_text(app: AppHandle) -> Result<String, String> {
     let original = Clipboard::new()
@@ -3173,6 +3209,7 @@ pub fn run() {
             delete_custom_model,
             enhance_focused_input_now,
             hide_widget,
+            widget_set_size,
             set_transcript_formatting_mode,
             get_cleanup_level,
             set_cleanup_level,
@@ -3224,19 +3261,17 @@ pub fn run() {
 fn create_tray_menu(app: &App) -> tauri::Result<()> {
     let menu = build_tray_menu(app.handle(), false)?;
 
-    let mut tray = TrayIconBuilder::with_id("main")
+    // Monochrome mic glyph (2x of the tray's fixed 18pt height) rendered as
+    // an NSImage template: AppKit masks it from the alpha channel and tints
+    // it automatically, so it reads correctly on both light and dark menu
+    // bars.
+    let tray = TrayIconBuilder::with_id("main")
         .tooltip("Vox")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(handle_tray_menu_event);
-
-    if let Some(icon) = app.default_window_icon() {
-        // The bundled app icon is full-color and includes an opaque white
-        // rounded background. Marking it as an NSImage template turns that
-        // entire background into the menu-bar mask, which renders as a blank
-        // white icon. Keep it as a normal color tray image instead.
-        tray = tray.icon(icon.clone()).icon_as_template(false);
-    }
+        .on_menu_event(handle_tray_menu_event)
+        .icon(tauri::include_image!("icons/menubar-icon.png"))
+        .icon_as_template(true);
 
     tray.build(app)?;
     Ok(())
@@ -3605,7 +3640,7 @@ fn stop_and_transcribe(app: AppHandle) {
                             }
                         }
 
-                        let text = result.text.clone();
+                        let text = ensure_trailing_space(&result.text);
                         show_widget(&app, "done", "Pasting transcript…");
                         let _ = app.emit("vox-transcription-complete", result);
                         eprintln!("[vox] stop_and_transcribe: emitted completion event");
@@ -3786,7 +3821,7 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
     match transcribe_recording_inner(&app, path_str, None, app_name, window_title, None) {
         Ok(result) => {
             if !is_blank_transcription(&result.text) {
-                let text = result.text.clone();
+                let text = ensure_trailing_space(&result.text);
                 let _ = app.emit(
                     "vox-hands-free-segment",
                     serde_json::json!({
@@ -3815,6 +3850,22 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
             let _ = fs::remove_file(&path);
         }
     }
+}
+
+/// Append a space when the transcript ends with sentence punctuation, so the
+/// cursor in the target app never sits flush against a full stop and the next
+/// typed or dictated word starts cleanly (matches system dictation behavior).
+fn ensure_trailing_space(text: &str) -> String {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() || text.ends_with(' ') {
+        return text.to_string();
+    }
+    // A closing quote after the punctuation still ends the sentence.
+    let core = trimmed.trim_end_matches(['"', '\'', '”', '’']);
+    if core.ends_with(['.', '!', '?', ',', ';', ':']) {
+        return format!("{text} ");
+    }
+    text.to_string()
 }
 
 /// Type `text` at the current cursor position.
@@ -6323,6 +6374,13 @@ fn show_enhance_overlay_state(app: &AppHandle, mode: &'static str, message: &str
 }
 
 fn position_widget_bottom_right(window: &WebviewWindow) {
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+    position_widget_with_size(window, window_size.width as i32, window_size.height as i32);
+}
+
+fn position_widget_with_size(window: &WebviewWindow, window_width: i32, window_height: i32) {
     const MARGIN: i32 = 24;
 
     // current_monitor() returns None when called from a background thread on macOS.
@@ -6338,14 +6396,10 @@ fn position_widget_bottom_right(window: &WebviewWindow) {
         return;
     };
 
-    let Ok(window_size) = window.outer_size() else {
-        return;
-    };
-
     let monitor_position = monitor.position();
     let monitor_size = monitor.size();
-    let x = monitor_position.x + monitor_size.width as i32 - window_size.width as i32 - MARGIN;
-    let y = monitor_position.y + monitor_size.height as i32 - window_size.height as i32 - MARGIN;
+    let x = monitor_position.x + monitor_size.width as i32 - window_width - MARGIN;
+    let y = monitor_position.y + monitor_size.height as i32 - window_height - MARGIN;
 
     let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
 }
@@ -7056,6 +7110,23 @@ mod tests {
             split_sentences("No punctuation here"),
             vec!["No punctuation here"]
         );
+    }
+
+    #[test]
+    fn ensure_trailing_space_after_final_punctuation() {
+        assert_eq!(ensure_trailing_space("20.09.2026."), "20.09.2026. ");
+        assert_eq!(ensure_trailing_space("Great!"), "Great! ");
+        assert_eq!(
+            ensure_trailing_space("He said \"stop.\""),
+            "He said \"stop.\" "
+        );
+        assert_eq!(ensure_trailing_space("plain words"), "plain words");
+        assert_eq!(
+            ensure_trailing_space("already spaced. "),
+            "already spaced. "
+        );
+        assert_eq!(ensure_trailing_space("1. one\n2. two"), "1. one\n2. two");
+        assert_eq!(ensure_trailing_space(""), "");
     }
 
     #[test]

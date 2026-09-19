@@ -232,6 +232,10 @@ export async function hideWidget() {
   return invoke<void>("hide_widget");
 }
 
+export async function setWidgetSize(width: number, height: number) {
+  return invoke<void>("widget_set_size", { width, height });
+}
+
 export async function deleteRecordingFile(audioPath: string) {
   return invoke<void>("delete_recording_file", { audioPath });
 }

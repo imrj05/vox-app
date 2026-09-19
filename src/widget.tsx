@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
-import { hideWidget } from "@/lib/native";
+import { hideWidget, setWidgetSize } from "@/lib/native";
 import { X } from "@/components/icons";
 import "./widget.css";
 
@@ -325,6 +325,35 @@ export function Widget() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
   const prevMode = useRef<WidgetMode>("idle");
+  const capsuleRef = useRef<HTMLDivElement>(null);
+
+  // The window *is* the capsule: report its layout size so Rust can resize
+  // the (transparent, vibrancy-backed) window to hug the pill exactly.
+  useEffect(() => {
+    const el = capsuleRef.current;
+    if (!el) return;
+    let frame = 0;
+    let last = "";
+    const report = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const key = `${w}x${h}`;
+        if (w >= 1 && h >= 1 && key !== last) {
+          last = key;
+          void setWidgetSize(w, h).catch(() => {});
+        }
+      });
+    };
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    report();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -408,6 +437,7 @@ export function Widget() {
   return (
     <div className="widget-root">
       <div
+        ref={capsuleRef}
         className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"} ${isRecording && contextLabel ? "widget-has-context" : ""}`}
       >
         <VoiceDots

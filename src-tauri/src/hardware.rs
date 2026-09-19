@@ -2,6 +2,8 @@
 //! and translate it into simple recommendations — Fast / Balanced / Accurate —
 //! instead of asking users to reason about model internals.
 
+use std::sync::OnceLock;
+
 use serde::Serialize;
 
 /// Public tier computation, unit-testable. Thresholds are conservative rules
@@ -42,7 +44,7 @@ pub struct HardwareInfo {
 }
 
 pub fn detect() -> HardwareInfo {
-    let total_memory_bytes = total_memory_bytes();
+    let total_memory_bytes = total_memory_bytes_cached();
     let tier = tier_for(total_memory_bytes);
     let arch = std::env::consts::ARCH.to_string();
     HardwareInfo {
@@ -56,6 +58,14 @@ pub fn detect() -> HardwareInfo {
         tier,
         max_recommended_model_bytes: max_recommended_model_bytes(tier),
     }
+}
+
+/// Physical memory, read once per process. `detect()` is called from model
+/// listing and recommendation paths, so the platform probe (a `sysctl` spawn on
+/// macOS) should not repeat on every call.
+pub fn total_memory_bytes_cached() -> u64 {
+    static CACHE: OnceLock<u64> = OnceLock::new();
+    *CACHE.get_or_init(total_memory_bytes)
 }
 
 /// Cross-platform physical memory without external dependencies.

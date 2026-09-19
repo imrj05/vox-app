@@ -104,15 +104,33 @@ const SILENCE_PEAK_THRESHOLD: f32 = 0.002;
 /// holds the device — transcribing such input wastes several seconds and ends
 /// in an empty/blank result with no hint about the real cause.
 pub(crate) fn detect_silent_recording(audio_path: &Path) -> Option<String> {
-    // Only a decode error means "cannot judge" — the engine layer surfaces
-    // any real problem; silence detection is best-effort.
-    let samples = read_wav_as_16khz_mono(audio_path).ok()?;
-    if samples.len() < 8_000 {
+    // Silence detection only needs the raw PCM peak. Do not decode, downmix,
+    // and resample the entire recording here — the selected engine will do its
+    // own normalization when it actually needs it. This keeps Apple Speech on
+    // its original WAV path and avoids a second full-file pass for Whisper and
+    // Parakeet.
+    let mut reader = hound::WavReader::open(audio_path).ok()?;
+    let spec = reader.spec();
+    if spec.bits_per_sample != 16 || spec.channels == 0 {
+        return None; // the engine layer surfaces unsupported audio formats
+    }
+
+    let frames = u64::from(reader.duration()) / u64::from(spec.channels);
+    if frames < 8_000 {
         return None; // too short to judge; engines reject short input themselves
     }
-    let peak = samples
-        .iter()
-        .fold(0.0f32, |max, sample| max.max(sample.abs()));
+
+    let mut peak = 0.0f32;
+    let mut sample_count = 0usize;
+    for sample in reader.samples::<i16>() {
+        let sample = sample.ok()?;
+        sample_count += 1;
+        peak = peak.max((sample as f32 / i16::MAX as f32).abs());
+    }
+    if sample_count == 0 {
+        return None;
+    }
+
     (peak < SILENCE_PEAK_THRESHOLD).then(|| {
         "The recording contains only silence — the microphone delivered no signal. Check that the correct microphone is selected in System Settings → Sound → Input and that its level meter moves when you speak."
             .to_string()

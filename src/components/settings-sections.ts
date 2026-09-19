@@ -1,4 +1,4 @@
-import { BookOpenText, Database, Github, Keyboard, ListBullet, Mic, Settings, ShieldCheck } from "@/components/icons";
+import { BookOpenText, Database, Github, Keyboard, ListBullet, Mic, Settings, ShieldAlert, ShieldCheck } from "@/components/icons";
 
 export const settingsSections = [
   { id: "general", label: "General", icon: Settings },
@@ -8,7 +8,7 @@ export const settingsSections = [
   { id: "snippets", label: "Snippets", icon: ListBullet },
   { id: "data", label: "Data", icon: Database },
   { id: "privacy", label: "Privacy", icon: ShieldCheck },
-  { id: "permissions", label: "Permissions", icon: ShieldCheck },
+  { id: "permissions", label: "Permissions", icon: ShieldAlert },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
 ] as const;
 

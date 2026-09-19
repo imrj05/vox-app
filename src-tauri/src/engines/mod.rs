@@ -285,7 +285,7 @@ fn timed_transcribe(
     let started = Instant::now();
     let result = engine.transcribe(request);
     eprintln!(
-        "[VOX][ASR] engine {} took {}ms ({} | {}s audio)",
+        "[VOX][ASR] engine {} took {}ms ({} | {} audio)",
         engine.id(),
         started.elapsed().as_millis(),
         if result.is_ok() { "ok" } else { "failed" },

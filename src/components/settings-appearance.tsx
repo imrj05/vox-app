@@ -1,9 +1,8 @@
 import { useAppStore } from "@/store/app-store";
 import type { AppTheme } from "@/store/app-store";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { SettingRow } from "@/components/settings-primitives";
+import { SettingGroupHeader, SettingRow } from "@/components/settings-primitives";
 import { Check, Monitor, Moon, Sparkles, Sun, Volume2 } from "@/components/icons";
 
 interface Palette {
@@ -151,22 +150,11 @@ export function AppearanceBlock() {
   return (
     <div className="space-y-4">
       {/* Heading */}
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-          <Monitor className="h-4 w-4" />
-        </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-medium text-foreground">Appearance</p>
-            <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
-              Theme
-            </Badge>
-          </div>
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-            Choose how Vox and the floating widget should look.
-          </p>
-        </div>
-      </div>
+      <SettingGroupHeader
+        icon={<Monitor className="h-4 w-4" />}
+        title="Appearance"
+        description="Choose how Vox and the floating widget should look."
+      />
 
       {/* Theme picker */}
       <div role="radiogroup" aria-label="Appearance theme" className="grid gap-2.5 sm:grid-cols-3">

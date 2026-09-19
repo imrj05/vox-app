@@ -24,6 +24,7 @@ import {
   setNativeEnhancementModel,
   setNativeErrorReporting,
   setNativeLanguage,
+  setNativeSelectedModel,
   setNativeVoiceCommandsEnabled,
   setNativeWhisperMode,
   setNativeWidgetEnabled,
@@ -72,6 +73,7 @@ function App() {
     errorReportingEnabled,
     transcriptRetention,
     language,
+    selectedModel,
     voiceCommandsEnabled,
     whisperMode,
     engine,
@@ -182,6 +184,11 @@ function App() {
   useEffect(() => {
     void setNativeLanguage(language).catch(() => {});
   }, [language]);
+  // Keep the global hotkey path on the same Whisper pin as page-based
+  // transcription. Apple Speech and Parakeet ignore this state.
+  useEffect(() => {
+    void setNativeSelectedModel(selectedModel).catch(() => {});
+  }, [selectedModel]);
   // Sync voice-command toggle for background hotkey transcriptions handled in Rust
   useEffect(() => {
     void setNativeVoiceCommandsEnabled(voiceCommandsEnabled).catch(() => {});

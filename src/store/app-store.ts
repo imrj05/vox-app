@@ -4,7 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting, getSnippets, saveSnippet, updateSnippet, deleteSnippet, type Snippet } from "@/lib/db";
 import { migrateLegacyDictionary } from "@/lib/vocabulary";
-import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets } from "@/lib/native";
+import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets, getRecommendedEnhancementModel } from "@/lib/native";
 import {
   initAuth as initPocketBaseAuth,
   signInWithGithub as signInWithGithubOAuth,
@@ -290,6 +290,17 @@ export const useAppStore = create<AppState>((set) => ({
       );
       const resolvedWidgetEnabled = parseBooleanSetting(widgetEnabled, true);
       const resolvedEnhanceIconEnabled = parseBooleanSetting(enhanceIconEnabled, true);
+      // A fresh install (no pinned model) gets the model that fits this
+      // machine, so low-memory hardware defaults to the faster 0.5B. Once the
+      // user pins a model, the stored value always wins.
+      let resolvedEnhancementModel = enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL;
+      if (enhancementModel === null) {
+        try {
+          resolvedEnhancementModel = await getRecommendedEnhancementModel();
+        } catch {
+          // Native bridge unavailable — keep the static default.
+        }
+      }
       // Sync to localStorage so the widget window can read it without IPC
       localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
       localStorage.setItem(THEME_KEY, resolvedTheme);
@@ -303,7 +314,7 @@ export const useAppStore = create<AppState>((set) => ({
         theme: resolvedTheme,
         widgetEnabled: resolvedWidgetEnabled,
         enhanceIconEnabled: resolvedEnhanceIconEnabled,
-        enhancementModel: enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL,
+        enhancementModel: resolvedEnhancementModel,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
         cleanupLevel: parseCleanupLevelSetting(cleanupLevel),
         errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),

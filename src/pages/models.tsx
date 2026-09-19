@@ -189,7 +189,9 @@ export function ModelsPage() {
           useAppStore.getState();
         const pinnedInfo = m.find((model) => model.name === pinned);
         if (pinnedInfo && !pinnedInfo.downloaded) {
-          const fallback = m.find((model) => model.downloaded);
+          const fallback =
+            m.find((model) => model.downloaded && model.recommended) ??
+            m.find((model) => model.downloaded);
           if (fallback) {
             void setPin(fallback.name);
           }
@@ -291,7 +293,9 @@ export function ModelsPage() {
       // downloaded model so the Enhance feature keeps working (mirrors the
       // Whisper delete fallback to base.en).
       if (enhancementModel === modelName) {
-        const fallback = updated.find((m) => m.downloaded);
+        const fallback =
+          updated.find((m) => m.downloaded && m.recommended) ??
+          updated.find((m) => m.downloaded);
         if (fallback) {
           await setEnhancementModel(fallback.name);
         }
@@ -338,7 +342,8 @@ export function ModelsPage() {
             status.path,
             (engine as string) === "whisper" ? selectedModel : undefined,
             status.appName,
-            status.windowTitle
+            status.windowTitle,
+            status.previewText
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;

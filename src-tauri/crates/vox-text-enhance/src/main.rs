@@ -7,13 +7,24 @@ use std::{
 
 use encoding_rs::UTF_8;
 use llama_cpp_2::{
-    context::params::LlamaContextParams,
+    context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::{params::LlamaModelParams, AddBos, LlamaModel},
     sampling::LlamaSampler,
+    token::LlamaToken,
 };
+use self_cell::self_cell;
 use serde::{Deserialize, Serialize};
+
+/// Context window shared by every request. The prompt and the generated tokens
+/// must both fit inside this.
+const N_CTX: u32 = 2048;
+/// Extra output tokens allowed beyond the input length, so a faithful rewrite
+/// has room to grow slightly without letting the model ramble.
+const OUTPUT_HEADROOM: usize = 128;
+/// Hard ceiling on generated tokens regardless of input length.
+const MAX_NEW_TOKENS: usize = 768;
 
 #[derive(Deserialize)]
 struct SidecarRequest {
@@ -23,6 +34,10 @@ struct SidecarRequest {
     id: Option<u64>,
     model_path: String,
     prompt: String,
+    /// Load the model and initialize the backend without generating output.
+    /// Used to move cold-start work off the first visible enhancement action.
+    #[serde(default)]
+    warm: bool,
 }
 
 #[derive(Serialize)]
@@ -95,9 +110,22 @@ fn write_response(response: SidecarResponse) {
 // responses go back as line-delimited JSON on stdout. The model is reloaded
 // lazily only when the requested path differs from the loaded one.
 
+self_cell!(
+    /// A loaded GGUF model together with its persistent llama context. Every
+    /// prompt is prefilled into the same context, so the KV cache for the
+    /// shared system instruction survives across requests. The context borrows
+    /// the model, so the two are stored and dropped as one unit.
+    pub struct LoadedModel {
+        owner: LlamaModel,
+        #[covariant]
+        dependent: LlamaContext,
+    }
+);
+
 struct ServeState {
     backend: LlamaBackend,
-    model: Option<(String, LlamaModel)>,
+    /// `(model path, warm model + context, prompt tokens held in the KV cache)`.
+    model: Option<(String, LoadedModel, Vec<LlamaToken>)>,
 }
 
 fn run_serve() -> Result<(), String> {
@@ -135,13 +163,18 @@ fn run_serve() -> Result<(), String> {
             });
             continue;
         }
-        let result = state
-            .model
-            .as_ref()
-            .ok_or_else(|| "Model failed to load".to_string())
-            .and_then(|(_, model)| generate_with_model(&state.backend, model, &request.prompt));
+        let result = if request.warm {
+            Ok(None)
+        } else {
+            match state.model.as_mut() {
+                Some((_, loaded, cached)) => {
+                    generate_with_model(loaded, cached, &request.prompt).map(Some)
+                }
+                None => Err("Model failed to load".to_string()),
+            }
+        };
         let (ok, text, error) = match result {
-            Ok(text) => (true, Some(text), None),
+            Ok(text) => (true, text, None),
             Err(error) => (false, None, Some(error)),
         };
         write_response(SidecarResponse {
@@ -158,42 +191,59 @@ fn run_serve() -> Result<(), String> {
 /// the warm model (the whole point of serve mode). A load failure leaves the
 /// cache empty so a later request can retry (e.g. after a re-download).
 fn ensure_model_loaded(state: &mut ServeState, model_path: &str) -> Result<(), String> {
-    if state
+    let model_file = Path::new(model_path);
+    if !model_file.is_file() {
+        return Err(format!("enhancement model file not found: {model_path}"));
+    }
+
+    let already_loaded = state
         .model
         .as_ref()
-        .map(|(loaded_path, _)| loaded_path.as_str())
-        != Some(model_path)
-    {
-        let started = std::time::Instant::now();
-        let model = LlamaModel::load_from_file(
-            &state.backend,
-            Path::new(model_path),
-            &LlamaModelParams::default(),
-        )
-        .map_err(|error| error.to_string())?;
-        eprintln!(
-            "model {model_path} loaded in {}ms",
-            started.elapsed().as_millis()
-        );
-        state.model = Some((model_path.to_string(), model));
+        .is_some_and(|(loaded_path, _, _)| loaded_path == model_path);
+    if already_loaded {
+        return Ok(());
     }
+
+    let started = std::time::Instant::now();
+    let model =
+        LlamaModel::load_from_file(&state.backend, model_file, &LlamaModelParams::default())
+            .map_err(|error| error.to_string())?;
+
+    let backend = &state.backend;
+    let loaded = LoadedModel::try_new(model, |model| {
+        model
+            .new_context(backend, context_params())
+            .map_err(|error| error.to_string())
+    })?;
+
+    eprintln!(
+        "model {model_path} loaded in {}ms",
+        started.elapsed().as_millis()
+    );
+    state.model = Some((model_path.to_string(), loaded, Vec::new()));
     Ok(())
 }
 
+fn context_params() -> LlamaContextParams {
+    LlamaContextParams::default()
+        .with_n_ctx(Some(NonZeroU32::new(N_CTX).expect("N_CTX is non-zero")))
+}
+
 fn generate_with_model(
-    backend: &LlamaBackend,
-    model: &LlamaModel,
+    loaded: &mut LoadedModel,
+    cached_tokens: &mut Vec<LlamaToken>,
     prompt: &str,
 ) -> Result<String, String> {
-    let mut context = model
-        .new_context(
-            backend,
-            LlamaContextParams::default().with_n_ctx(Some(
-                NonZeroU32::new(2048)
-                    .ok_or_else(|| "Invalid enhancement context size".to_string())?,
-            )),
-        )
-        .map_err(|error| error.to_string())?;
+    loaded
+        .with_dependent_mut(|_model, context| generate_with_context(context, cached_tokens, prompt))
+}
+
+fn generate_with_context(
+    context: &mut LlamaContext,
+    cached_tokens: &mut Vec<LlamaToken>,
+    prompt: &str,
+) -> Result<String, String> {
+    let model = context.model;
     let tokens = model
         .str_to_token(prompt, AddBos::Always)
         .map_err(|error| error.to_string())?;
@@ -201,16 +251,46 @@ fn generate_with_model(
         return Err("Enhancement prompt was empty".to_string());
     }
 
-    let max_tokens = (tokens.len() + 384).min(2048);
-    if tokens.len() >= max_tokens {
+    let n_ctx = context.n_ctx() as usize;
+    if tokens.len() + 8 >= n_ctx {
         return Err("Input is too long to enhance with the local model".to_string());
     }
 
-    let mut batch = LlamaBatch::new(512, 1);
-    let last_index = tokens.len().saturating_sub(1) as i32;
-    for (index, token) in (0_i32..).zip(tokens.into_iter()) {
+    // Reuse the KV cache for the longest shared prefix. Prompts for the same
+    // cleanup level and style share the entire system instruction, so only the
+    // changing user text is prefilled on the second and later requests.
+    let shared = cached_tokens
+        .iter()
+        .zip(tokens.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    // Always leave at least one token to decode so the sampler has logits.
+    let shared = shared.min(tokens.len().saturating_sub(1));
+
+    let cache_ready = matches!(
+        context.clear_kv_cache_seq(Some(0), Some(shared as u32), None),
+        Ok(true)
+    );
+    let (start, to_decode): (usize, &[LlamaToken]) = if cache_ready {
+        (shared, &tokens[shared..])
+    } else {
+        context.clear_kv_cache();
+        (0, &tokens[..])
+    };
+
+    let available = n_ctx - tokens.len();
+    let max_new = tokens
+        .len()
+        .saturating_add(OUTPUT_HEADROOM)
+        .min(MAX_NEW_TOKENS)
+        .min(available);
+    let limit = tokens.len() + max_new;
+
+    let mut batch = LlamaBatch::new(to_decode.len().max(1), 1);
+    let last = to_decode.len().saturating_sub(1);
+    for (offset, token) in to_decode.iter().enumerate() {
         batch
-            .add(token, index, &[0], index == last_index)
+            .add(*token, (start + offset) as i32, &[0], offset == last)
             .map_err(|error| error.to_string())?;
     }
     context
@@ -224,10 +304,10 @@ fn generate_with_model(
         LlamaSampler::greedy(),
     ]);
     let mut output = String::new();
-    let mut cursor = batch.n_tokens();
+    let mut cursor = tokens.len();
 
-    while (cursor as usize) <= max_tokens {
-        let token = sampler.sample(&context, batch.n_tokens() - 1);
+    while cursor < limit {
+        let token = sampler.sample(context, batch.n_tokens() - 1);
         sampler.accept(token);
         if model.is_eog_token(token) {
             break;
@@ -243,12 +323,24 @@ fn generate_with_model(
 
         batch.clear();
         batch
-            .add(token, cursor, &[0], true)
+            .add(token, cursor as i32, &[0], true)
             .map_err(|error| error.to_string())?;
         cursor += 1;
         context
             .decode(&mut batch)
             .map_err(|error| error.to_string())?;
+    }
+
+    // Keep only the prompt in the cache so the next request can extend the same
+    // prefix; the generated tokens are discarded.
+    if matches!(
+        context.clear_kv_cache_seq(Some(0), Some(tokens.len() as u32), None),
+        Ok(true)
+    ) {
+        *cached_tokens = tokens;
+    } else {
+        context.clear_kv_cache();
+        cached_tokens.clear();
     }
 
     Ok(output)
@@ -260,5 +352,9 @@ fn generate(model_path: &Path, prompt: &str) -> Result<String, String> {
     let backend = LlamaBackend::init().map_err(|error| error.to_string())?;
     let model = LlamaModel::load_from_file(&backend, model_path, &LlamaModelParams::default())
         .map_err(|error| error.to_string())?;
-    generate_with_model(&backend, &model, prompt)
+    let mut context = model
+        .new_context(&backend, context_params())
+        .map_err(|error| error.to_string())?;
+    let mut cached_tokens = Vec::new();
+    generate_with_context(&mut context, &mut cached_tokens, prompt)
 }

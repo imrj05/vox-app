@@ -73,6 +73,21 @@ fn stop_serve_session(session: ServeSession) {
     let _ = session.child.wait();
 }
 
+/// Starts the persistent sidecar without sending a recognition request. This
+/// moves process startup off the first dictation's critical path; authorization
+/// and recognizer creation still happen lazily on the first real request.
+pub fn warm_serve_session() -> Result<(), String> {
+    let lock = serve_session_cell();
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "Apple Speech session state unavailable".to_string())?;
+    if guard.is_none() {
+        *guard = Some(spawn_serve_session()?);
+        eprintln!("[VOX][ASR] apple-speech session prewarmed");
+    }
+    Ok(())
+}
+
 /// Kills the persistent sidecar process, if one is running. Called on app exit
 /// so the child is not orphaned.
 pub fn shutdown_serve_session() {

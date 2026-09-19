@@ -6,26 +6,39 @@
 //! is unaffected) and emits partial results as JSON lines on stdout, which are
 //! relayed to the widget as `vox-live-transcript` events.
 //!
-//! This is strictly best-effort preview: the final transcript always comes
-//! from the user's selected engine over the recorded file. Any failure here
-//! (missing sidecar, permission not granted, engine error) is silently ignored
-//! so recording is never affected.
+//! This is best-effort preview/final support: when Apple Speech is selected,
+//! a final live result may be reused instead of recognizing the recorded file
+//! again. Any failure here (missing sidecar, permission not granted, engine
+//! error) falls back to the normal file-based transcription path.
 
 #![cfg(target_os = "macos")]
 
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use tauri::{AppHandle, Emitter};
 
 use crate::engines::apple_speech::locale_code;
 
+#[derive(Default)]
+struct LiveResultState {
+    final_text: Option<String>,
+    finished: bool,
+}
+
+struct LiveResult {
+    state: Mutex<LiveResultState>,
+    ready: Condvar,
+}
+
 struct LiveSession {
     child: Child,
     stdin: ChildStdin,
+    result: Arc<LiveResult>,
 }
 
 fn live_session_cell() -> &'static Mutex<Option<LiveSession>> {
@@ -129,8 +142,16 @@ fn start_inner(app: &AppHandle, language: &str) -> Result<(), String> {
         return Err(format!("Live preview sidecar refused start: {error}"));
     }
 
-    // Reader thread: partials arrive continuously while the user speaks.
+    let result = Arc::new(LiveResult {
+        state: Mutex::new(LiveResultState::default()),
+        ready: Condvar::new(),
+    });
+
+    // Reader thread: partials arrive continuously while the user speaks. The
+    // final result is retained so a selected Apple Speech transcription can
+    // reuse it instead of recognizing the same recording a second time.
     let emitter = app.clone();
+    let result_for_reader = Arc::clone(&result);
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
@@ -148,6 +169,12 @@ fn start_inner(app: &AppHandle, language: &str) -> Result<(), String> {
                         .to_string();
                     let is_final =
                         payload.get("type").and_then(serde_json::Value::as_str) == Some("final");
+                    if is_final && !text.is_empty() {
+                        if let Ok(mut state) = result_for_reader.state.lock() {
+                            state.final_text = Some(text.clone());
+                            result_for_reader.ready.notify_all();
+                        }
+                    }
                     let _ = emitter.emit(
                         "vox-live-transcript",
                         serde_json::json!({ "text": text, "isFinal": is_final }),
@@ -163,56 +190,92 @@ fn start_inner(app: &AppHandle, language: &str) -> Result<(), String> {
                 _ => {}
             }
         }
-        // Sidecar exited (stdin dropped or crash) — nothing to do; the
-        // recording pipeline is independent.
+        if let Ok(mut state) = result_for_reader.state.lock() {
+            state.finished = true;
+            result_for_reader.ready.notify_all();
+        }
+        // Sidecar exited (stdin dropped or crash) — the recording pipeline
+        // will fall back to file recognition if no final result was received.
     });
 
-    *session = Some(LiveSession { child, stdin });
+    *session = Some(LiveSession {
+        child,
+        stdin,
+        result,
+    });
     Ok(())
 }
 
-/// Stop the live preview. Called when recording ends; the preview is preview
-/// only, so the sidecar is told to stop and reaped without waiting long.
-pub fn stop() {
+/// Stop the live preview and return its final result when one arrived before
+/// the short grace period. A missing result is normal and tells the caller to
+/// use the recorded-file fallback.
+pub fn stop() -> Option<String> {
     let session = live_session_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
 
-    if let Some(session) = session {
-        let LiveSession {
-            mut stdin,
-            mut child,
-        } = session;
+    let Some(LiveSession {
+        mut stdin,
+        mut child,
+        result,
+    }) = session
+    else {
+        return None;
+    };
 
-        // Tell the sidecar to stop gracefully; drop stdin afterwards so the
-        // process exits even if it misses the message.
-        let _ = writeln!(stdin, "{{\"type\":\"stop\"}}");
-        let _ = stdin.flush();
-        drop(stdin);
+    // Tell the sidecar to stop gracefully. The Swift sidecar emits its final
+    // result asynchronously after this request.
+    let _ = writeln!(stdin, "{{\"type\":\"stop\"}}");
+    let _ = stdin.flush();
 
-        // Reap on a background thread: the grace-period wait (up to 800 ms)
-        // must never block recording teardown on the caller.
-        std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
-            while child
-                .try_wait()
-                .map(|status| status.is_none())
-                .unwrap_or(false)
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+    let deadline = Instant::now() + Duration::from_millis(600);
+    let final_text = {
+        let mut state = result
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.final_text.is_none() && !state.finished {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let (next_state, timed_out) = result
+                .ready
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if timed_out.timed_out() {
+                break;
             }
-            if child
-                .try_wait()
-                .map(|status| status.is_none())
-                .unwrap_or(false)
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        });
-    }
+        }
+        state.final_text.take()
+    };
+    drop(stdin);
+
+    // Reap on a background thread. The sidecar deliberately has a longer
+    // shutdown grace period so its final callback can arrive without keeping
+    // the transcription command blocked after the result was captured.
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while child
+            .try_wait()
+            .map(|status| status.is_none())
+            .unwrap_or(false)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if child
+            .try_wait()
+            .map(|status| status.is_none())
+            .unwrap_or(false)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    });
+
+    final_text
 }
 
 #[cfg(test)]
@@ -221,7 +284,7 @@ mod tests {
 
     #[test]
     fn stop_without_session_is_safe() {
-        stop();
-        stop();
+        assert!(stop().is_none());
+        assert!(stop().is_none());
     }
 }

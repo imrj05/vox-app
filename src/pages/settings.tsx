@@ -93,7 +93,7 @@ export function SettingsPage() {
                           onClick={() => setActiveSection(id)}
                           aria-current={active ? "true" : undefined}
                           className={cn(
-                            "flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:w-full lg:shrink",
+                            "flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm outline-none transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-ring/50 lg:w-full lg:shrink",
                             active
                               ? "bg-secondary font-medium text-foreground"
                               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -116,7 +116,10 @@ export function SettingsPage() {
               ))}
             </nav>
 
-            <main className="min-w-0 flex-1 pb-8">
+            <main
+              key={activeSection}
+              className="min-w-0 flex-1 animate-in fade-in-0 slide-in-from-bottom-1 space-y-5 pb-8 duration-200 ease-out"
+            >
               <ActiveSection />
             </main>
           </div>

@@ -147,7 +147,8 @@ export function NotesPage() {
             status.path,
             requestedModel,
             status.appName,
-            status.windowTitle
+            status.windowTitle,
+            status.previewText
           );
           const nextContent = content.trim()
             ? `${content.trim()}\n\n${result.text}`

@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     io::BufWriter,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -87,7 +87,9 @@ pub mod vocabulary;
 mod live_transcript {
     /// No live preview off macOS (no Apple Speech sidecar).
     pub fn start(_app: &tauri::AppHandle, _language: &str) {}
-    pub fn stop() {}
+    pub fn stop() -> Option<String> {
+        None
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -653,6 +655,10 @@ struct LanguageState {
 /// cannot produce a transcript.
 struct EngineSelectionState {
     engine: Mutex<String>,
+    /// The Whisper pin used by background hotkey transcriptions. The UI path
+    /// already passes this explicitly; keeping it here keeps both paths fast
+    /// and consistent.
+    selected_model: Mutex<String>,
     fallback_enabled: AtomicBool,
     preferred_fallback: Mutex<String>,
     /// Engine used by the previous transcription — used to emit
@@ -664,6 +670,7 @@ impl Default for EngineSelectionState {
     fn default() -> Self {
         Self {
             engine: Mutex::new("auto".to_string()),
+            selected_model: Mutex::new("base.en".to_string()),
             fallback_enabled: AtomicBool::new(true),
             preferred_fallback: Mutex::new("whisper".to_string()),
             last_engine: Mutex::new(String::new()),
@@ -751,6 +758,9 @@ struct RecordingStatus {
     app_name: Option<String>,
     window_title: Option<String>,
     duration_seconds: Option<u64>,
+    /// Final Apple Speech live result, when available. The selected Apple
+    /// engine can reuse it instead of recognizing the recorded WAV again.
+    preview_text: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1110,6 +1120,7 @@ fn recording_status(state: State<'_, RecorderState>) -> Result<RecordingStatus, 
             app_name: session.app_name.clone(),
             window_title: session.window_title.clone(),
             duration_seconds: Some(session.started_at.elapsed().as_secs()),
+            preview_text: None,
         },
         None => RecordingStatus {
             is_recording: false,
@@ -1117,6 +1128,7 @@ fn recording_status(state: State<'_, RecorderState>) -> Result<RecordingStatus, 
             app_name: None,
             window_title: None,
             duration_seconds: None,
+            preview_text: None,
         },
     })
 }
@@ -1217,14 +1229,23 @@ fn start_recording_inner(
         spawn_hands_free_monitor(app.clone());
     }
 
-    // Best-effort live transcript preview for the widget. Uses the Apple
-    // Speech sidecar's own mic tap; the cpal recording above is unaffected.
-    // Never fails the recording.
-    let language = app
-        .try_state::<LanguageState>()
-        .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
+    // Apple Speech is also the live-preview implementation. For an explicit
+    // Apple selection, its final live result can be reused by the final
+    // pipeline, avoiding a second recognition pass. Hands-free segments keep
+    // the file path because one live result cannot represent each segment.
+    let preview_engine = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| state.engine.lock().ok().map(|engine| engine.clone()))
         .unwrap_or_else(|| "auto".to_string());
-    live_transcript::start(app, &language);
+    if !hands_free && preview_engine == "apple" {
+        let language = app
+            .try_state::<LanguageState>()
+            .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
+            .unwrap_or_else(|| "auto".to_string());
+        live_transcript::start(app, &language);
+    } else {
+        let _ = live_transcript::stop();
+    }
 
     Ok(RecordingStatus {
         is_recording: true,
@@ -1232,6 +1253,7 @@ fn start_recording_inner(
         app_name,
         window_title,
         duration_seconds: Some(0),
+        preview_text: None,
     })
 }
 
@@ -1268,9 +1290,9 @@ fn stop_recording_inner(state: &RecorderState) -> Result<RecordingStatus, String
         *bars = [0.0; 7];
     }
 
-    // End the live preview (if any) — the real transcript comes from the
-    // selected engine over the recorded file.
-    live_transcript::stop();
+    // Capture the live final before disposing of the session. Apple can reuse
+    // it; all other engines continue through their normal file path.
+    let preview_text = live_transcript::stop();
 
     Ok(RecordingStatus {
         is_recording: false,
@@ -1278,6 +1300,7 @@ fn stop_recording_inner(state: &RecorderState) -> Result<RecordingStatus, String
         app_name,
         window_title,
         duration_seconds: Some(duration_seconds),
+        preview_text,
     })
 }
 
@@ -1460,6 +1483,15 @@ fn text_enhancement_models(app: AppHandle) -> Result<Vec<TextEnhancementModelInf
     Ok(text_enhancement::list_models(&models_dir))
 }
 
+/// The enhancement model a fresh install should use (spec §25): the hardware
+/// recommendation, or the best already-downloaded model. Used only until the
+/// user pins a model.
+#[tauri::command]
+fn recommended_enhancement_model(app: AppHandle) -> Result<String, String> {
+    let models_dir = text_enhancement_models_dir(&app)?;
+    Ok(text_enhancement::resolve_recommended_model(&models_dir))
+}
+
 #[tauri::command]
 async fn download_text_enhancement_model(
     app: AppHandle,
@@ -1515,11 +1547,25 @@ fn set_enhancement_model(
     state: State<'_, EnhancePreferencesState>,
     model_name: String,
 ) -> Result<(), String> {
+    let model_name = model_name.trim().to_string();
+    if model_name.is_empty() {
+        return Err("Enhancement model cannot be empty".to_string());
+    }
     *state
         .model_name
         .lock()
-        .map_err(|_| "Enhance preferences unavailable".to_string())? = model_name;
+        .map_err(|_| "Enhance preferences unavailable".to_string())? = model_name.clone();
     refresh_selected_enhancement_model_availability(&app);
+
+    // Load the selected GGUF and initialize the backend in the background so
+    // the first visible Enhance/AI-cleanup action does not pay cold-start cost.
+    if let Ok(models_dir) = text_enhancement_models_dir(&app) {
+        std::thread::spawn(move || {
+            if let Err(error) = text_enhancement::warm_model(&models_dir, &model_name) {
+                eprintln!("[VOX][AI] text-enhance prewarm skipped: {error}");
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1989,6 +2035,7 @@ fn transcribe_recording(
     model_name: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
+    preview_text: Option<String>,
 ) -> Result<TranscriptionResult, String> {
     transcribe_recording_inner(
         &app,
@@ -1996,6 +2043,7 @@ fn transcribe_recording(
         model_name,
         context_app_name,
         context_window_title,
+        preview_text,
     )
 }
 
@@ -2005,7 +2053,9 @@ fn transcribe_recording_inner(
     model_name: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
+    preview_text: Option<String>,
 ) -> Result<TranscriptionResult, String> {
+    let pipeline_started = Instant::now();
     let audio_path = PathBuf::from(audio_path);
     if !audio_path.exists() {
         return Err(format!(
@@ -2027,10 +2077,20 @@ fn transcribe_recording_inner(
 
     // A full-length file can still be all zeros when macOS routes the stream
     // to the wrong (or muted) input device. Fail before spending seconds on a
-    // hopeless transcription pass.
+    // hopeless transcription pass. The check scans raw PCM only; engines do
+    // their own normalization later when it is actually required.
+    let audio_check_started = Instant::now();
     if let Some(reason) = engines::audio::detect_silent_recording(&audio_path) {
+        eprintln!(
+            "[VOX][ASR] audio preflight: {}ms (silent)",
+            audio_check_started.elapsed().as_millis()
+        );
         return Err(reason);
     }
+    eprintln!(
+        "[VOX][ASR] audio preflight: {}ms",
+        audio_check_started.elapsed().as_millis()
+    );
 
     let models_dir = whisper_models_dir(&app)?;
     let context_dictionary =
@@ -2071,14 +2131,16 @@ fn transcribe_recording_inner(
     let transcribe_started = std::time::Instant::now();
 
     // Engine selection + fallback come from user settings (spec §6–§8).
-    let (engine_pref, fallback_enabled, fallback_target, last_engine) = app
+    let (engine_pref, selected_model, fallback_enabled, fallback_target, last_engine) = app
         .try_state::<EngineSelectionState>()
         .and_then(|state| {
             let engine = state.engine.lock().ok().map(|e| e.clone())?;
+            let selected_model = state.selected_model.lock().ok().map(|m| m.clone())?;
             let fallback = state.preferred_fallback.lock().ok().map(|f| f.clone())?;
             let last_engine = state.last_engine.lock().ok().map(|e| e.clone())?;
             Some((
                 engine,
+                selected_model,
                 state.fallback_enabled.load(Ordering::Relaxed),
                 fallback,
                 last_engine,
@@ -2087,29 +2149,68 @@ fn transcribe_recording_inner(
         .unwrap_or_else(|| {
             (
                 "auto".to_string(),
+                "base.en".to_string(),
                 true,
                 "whisper".to_string(),
                 String::new(),
             )
         });
+    // Keep the global hotkey path aligned with the UI's Whisper pin. Apple
+    // Speech and Parakeet intentionally continue to choose their own models.
+    let requested_model =
+        model_name.or_else(|| (engine_pref == "whisper").then_some(selected_model));
     let fallback_report: Mutex<Option<engines::EngineFallback>> = Mutex::new(None);
-    let (text, detected_language, engine) = engines::route_transcribe_with_vocabulary(
-        &models_dir,
-        &audio_path,
-        model_name.as_deref(),
-        context_dictionary.as_deref(),
-        context_prompt.as_deref(),
-        Some(&language),
-        engines::EngineSelection {
-            preferred: &engine_pref,
-            fallback_enabled,
-            preferred_fallback: Some(&fallback_target),
-        },
-        |from, to, reason| {
-            *fallback_report.lock().unwrap() = Some(engines::EngineFallback { from, to, reason });
-        },
-        &contextual_strings,
-    )?;
+    let live_preview = preview_text
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (text, detected_language, engine) = if engine_pref == "apple" {
+        if let Some(text) = live_preview {
+            eprintln!("[VOX][ASR] apple-speech: reused live final transcript");
+            let detected_language = match language.as_str() {
+                "auto" | "hinglish" => None,
+                code => Some(code.to_string()),
+            };
+            (text, detected_language, "apple")
+        } else {
+            engines::route_transcribe_with_vocabulary(
+                &models_dir,
+                &audio_path,
+                requested_model.as_deref(),
+                context_dictionary.as_deref(),
+                context_prompt.as_deref(),
+                Some(&language),
+                engines::EngineSelection {
+                    preferred: &engine_pref,
+                    fallback_enabled,
+                    preferred_fallback: Some(&fallback_target),
+                },
+                |from, to, reason| {
+                    *fallback_report.lock().unwrap() =
+                        Some(engines::EngineFallback { from, to, reason });
+                },
+                &contextual_strings,
+            )?
+        }
+    } else {
+        engines::route_transcribe_with_vocabulary(
+            &models_dir,
+            &audio_path,
+            requested_model.as_deref(),
+            context_dictionary.as_deref(),
+            context_prompt.as_deref(),
+            Some(&language),
+            engines::EngineSelection {
+                preferred: &engine_pref,
+                fallback_enabled,
+                preferred_fallback: Some(&fallback_target),
+            },
+            |from, to, reason| {
+                *fallback_report.lock().unwrap() =
+                    Some(engines::EngineFallback { from, to, reason });
+            },
+            &contextual_strings,
+        )?
+    };
     if let Some(fallback) = fallback_report.into_inner().unwrap_or(None) {
         // Engine switches must never be silent (spec §8/§26).
         eprintln!(
@@ -2150,6 +2251,7 @@ fn transcribe_recording_inner(
         wav_duration_seconds(&audio_path).unwrap_or(0.0),
         transcribe_started.elapsed().as_millis()
     );
+    let postprocess_started = Instant::now();
     let formatting_mode = app
         .try_state::<TranscriptFormattingState>()
         .and_then(|state| state.mode.lock().ok().map(|mode| *mode))
@@ -2340,6 +2442,12 @@ fn transcribe_recording_inner(
             final_text = expanded;
         }
     }
+
+    eprintln!(
+        "[VOX][ASR] postprocess: {}ms | total: {}ms",
+        postprocess_started.elapsed().as_millis(),
+        pipeline_started.elapsed().as_millis()
+    );
 
     Ok(TranscriptionResult {
         audio_path: audio_path.to_string_lossy().to_string(),
@@ -2671,10 +2779,39 @@ fn set_transcription_engine(
     if !VALID_ENGINES.contains(&engine.as_str()) {
         return Err(format!("Unknown transcription engine: {engine}"));
     }
+    #[cfg(target_os = "macos")]
+    let should_warm_apple = engine == "apple";
     *state
         .engine
         .lock()
         .map_err(|_| "Engine selection state unavailable".to_string())? = engine;
+
+    #[cfg(target_os = "macos")]
+    if should_warm_apple {
+        // Sidecar startup must never delay settings hydration or the UI.
+        std::thread::spawn(|| {
+            if let Err(error) = engines::apple_speech::warm_serve_session() {
+                eprintln!("[VOX][ASR] apple-speech prewarm skipped: {error}");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_selected_model(
+    model_name: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let model_name = model_name.trim();
+    if model_name.is_empty() {
+        return Err("Selected model cannot be empty".to_string());
+    }
+    *state
+        .selected_model
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = model_name.to_string();
     Ok(())
 }
 
@@ -3005,6 +3142,7 @@ pub fn run() {
             cancel_whisper_download,
             delete_whisper_model,
             text_enhancement_models,
+            recommended_enhancement_model,
             download_text_enhancement_model,
             delete_text_enhancement_model,
             set_enhance_icon_enabled,
@@ -3024,6 +3162,7 @@ pub fn run() {
             is_login_item_enabled,
             set_dock_icon,
             set_transcription_engine,
+            set_selected_model,
             set_engine_fallback,
             set_engine_fallback_target,
             set_snippets,
@@ -3092,7 +3231,11 @@ fn create_tray_menu(app: &App) -> tauri::Result<()> {
         .on_menu_event(handle_tray_menu_event);
 
     if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone()).icon_as_template(true);
+        // The bundled app icon is full-color and includes an opaque white
+        // rounded background. Marking it as an NSImage template turns that
+        // entire background into the menu-bar mask, which renders as a blank
+        // white icon. Keep it as a normal color tray image instead.
+        tray = tray.icon(icon.clone()).icon_as_template(false);
     }
 
     tray.build(app)?;
@@ -3294,6 +3437,47 @@ fn handle_transform_shortcut(app: AppHandle) {
     });
 }
 
+fn transcription_preflight_error(
+    models_dir: &Path,
+    preferred: &str,
+    fallback_enabled: bool,
+) -> Option<String> {
+    let statuses = engines::describe_engines(models_dir);
+
+    if preferred == "auto" {
+        if statuses.iter().any(|status| status.available) {
+            return None;
+        }
+        return Some(
+            "No transcription engine is ready. Download a model or check the engine permissions in Settings."
+                .to_string(),
+        );
+    }
+
+    let selected = statuses.iter().find(|status| status.id == preferred);
+    if selected.is_some_and(|status| status.available) {
+        return None;
+    }
+
+    // The router can try any registered fallback, so do not block recording
+    // when at least one other engine is usable.
+    if fallback_enabled
+        && statuses
+            .iter()
+            .any(|status| status.id != preferred && status.available)
+    {
+        return None;
+    }
+
+    let display_name = selected
+        .map(|status| status.display_name)
+        .unwrap_or(preferred);
+    let reason = selected
+        .and_then(|status| status.reason.as_deref())
+        .unwrap_or("the engine is unavailable");
+    Some(format!("{display_name} is unavailable — {reason}"))
+}
+
 fn start_recording_flow(app: AppHandle) {
     let recorder_state = app.state::<RecorderState>();
 
@@ -3308,16 +3492,19 @@ fn start_recording_flow(app: AppHandle) {
         }
     };
 
-    let has_model = whisper::list_models(&models_dir)
-        .iter()
-        .any(|m| m.downloaded);
-
-    if !has_model {
-        show_widget(
-            &app,
-            "error",
-            "No model downloaded — open Vox and download one first",
-        );
+    let (preferred_engine, fallback_enabled) = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| {
+            Some((
+                state.engine.lock().ok()?.clone(),
+                state.fallback_enabled.load(Ordering::Relaxed),
+            ))
+        })
+        .unwrap_or_else(|| ("auto".to_string(), true));
+    if let Some(error) =
+        transcription_preflight_error(&models_dir, &preferred_engine, fallback_enabled)
+    {
+        show_widget(&app, "error", &error);
         hide_widget_after_delay(app.clone(), 4000);
         return;
     }
@@ -3370,6 +3557,7 @@ fn stop_and_transcribe(app: AppHandle) {
                     None,
                     status.app_name.clone(),
                     status.window_title.clone(),
+                    status.preview_text.clone(),
                 ) {
                     Ok(mut result) => {
                         result.app_name = status.app_name;
@@ -3595,7 +3783,7 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
     };
 
     let path_str = path.to_string_lossy().to_string();
-    match transcribe_recording_inner(&app, path_str, None, app_name, window_title) {
+    match transcribe_recording_inner(&app, path_str, None, app_name, window_title, None) {
         Ok(result) => {
             if !is_blank_transcription(&result.text) {
                 let text = result.text.clone();

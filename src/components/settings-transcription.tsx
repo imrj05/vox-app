@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
 import { Switch } from "@/components/ui/switch";
-import { Mic, ShieldCheck, Cpu, TriangleAlertIcon } from "@/components/icons";
 import {
+  Mic,
+  ShieldCheck,
+  Cpu,
+  TriangleAlertIcon,
+  FileText,
+} from "@/components/icons";
+import {
+  Notice,
+  OptionGrid,
+  OptionTile,
   SectionHeader,
+  SettingGroupHeader,
   SettingRow,
   SettingsCard,
 } from "@/components/settings-primitives";
@@ -15,7 +25,6 @@ import {
   getTranscriptionEngines,
   type TranscriptionEngineStatus,
 } from "@/lib/native";
-import { cn } from "@/lib/utils";
 
 const engineOptions: Array<{
   value: TranscriptionEngine;
@@ -37,8 +46,7 @@ const engineOptions: Array<{
   {
     value: "parakeet",
     label: "Parakeet",
-    description:
-      "Fast English transcription on Apple Silicon. English only.",
+    description: "Fast English transcription on Apple Silicon. English only.",
   },
   {
     value: "apple",
@@ -78,7 +86,10 @@ export function TranscriptionSection() {
     };
   }, []);
 
-  const statusFor = (value: string) => engines.find((e) => e.id === value);
+  const statusFor = (value: string) =>
+    engines.find((e) => e.id === value);
+  const showParakeetWarning =
+    engine === "parakeet" && (language === "hi" || language === "hinglish");
 
   return (
     <div className="space-y-5">
@@ -86,77 +97,57 @@ export function TranscriptionSection() {
         title="Transcription"
         description="Choose which speech-to-text engine Vox uses and what happens when it cannot."
       />
-      <SettingsCard className="space-y-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-            <Mic className="h-4 w-4" />
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Engine</p>
-            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              All engines run locally on your device. Automatic picks the
-              fastest engine that supports your language.
-            </p>
-          </div>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-3">
+
+      <SettingsCard className="space-y-4">
+        <SettingGroupHeader
+          icon={<Mic className="h-4 w-4" />}
+          title="Engine"
+          description="All engines run locally on your device. Automatic picks the fastest engine that supports your language."
+        />
+        <OptionGrid label="Transcription engine" className="sm:grid-cols-2">
           {engineOptions.map((option) => {
             const status = statusFor(option.value);
-            const unavailable = option.value !== "auto" && status && !status.available;
+            const unavailable =
+              option.value !== "auto" && status && !status.available;
             return (
-              <button
+              <OptionTile
                 key={option.value}
-                onClick={() => void setEngine(option.value)}
-                disabled={unavailable}
-                title={unavailable ? (status?.reason ?? undefined) : undefined}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left transition-colors",
-                  engine === option.value
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                  unavailable && "cursor-not-allowed opacity-50"
-                )}
-              >
-                <span className="flex items-center justify-between gap-2 text-sm font-medium">
-                  {option.label}
-                  {status ? (
-                    <span
-                      className={cn(
-                        "text-[10px] font-normal",
-                        status.available ? "text-primary" : "text-muted-foreground"
-                      )}
-                    >
-                      {status.available ? "Ready" : "Unavailable"}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  {unavailable
+                selected={engine === option.value}
+                onSelect={() => void setEngine(option.value)}
+                title={option.label}
+                description={
+                  unavailable
                     ? status?.reason ?? option.description
-                    : option.description}
-                </span>
-              </button>
+                    : option.description
+                }
+                disabled={unavailable}
+                disabledReason={status?.reason ?? undefined}
+                status={
+                  status
+                    ? {
+                        label: status.available ? "Ready" : "Unavailable",
+                        ok: status.available,
+                      }
+                    : undefined
+                }
+              />
             );
           })}
-        </div>
+        </OptionGrid>
+        {showParakeetWarning ? (
+          <Notice
+            icon={<TriangleAlertIcon className="h-4 w-4" />}
+            title="Parakeet doesn’t support Hindi or Hinglish"
+          >
+            Parakeet models only understand English and some European
+            languages. Vox will automatically transcribe your Hindi dictation
+            with Whisper instead — or switch the engine to Whisper or
+            Automatic for the best results.
+          </Notice>
+        ) : null}
       </SettingsCard>
-      {engine === "parakeet" && (language === "hi" || language === "hinglish") ? (
-        <SettingsCard className="flex items-start gap-3 border-amber-500/40 bg-amber-500/5">
-          <TriangleAlertIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
-              Parakeet doesn&rsquo;t support Hindi or Hinglish
-            </p>
-            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Parakeet models only understand English and some European
-              languages. Vox will automatically transcribe your Hindi
-              dictation with Whisper instead — or switch the engine to
-              Whisper/Automatic for the best results.
-            </p>
-          </div>
-        </SettingsCard>
-      ) : null}
-      <SettingsCard className="space-y-3">
+
+      <SettingsCard className="space-y-4">
         <SettingRow
           icon={<ShieldCheck className="h-4 w-4" />}
           title="Fallback"
@@ -166,49 +157,42 @@ export function TranscriptionSection() {
               id="engine-fallback"
               aria-label="Engine fallback"
               checked={engineFallbackEnabled}
-              onCheckedChange={(checked) => void setEngineFallbackEnabled(checked)}
+              onCheckedChange={(checked) =>
+                void setEngineFallbackEnabled(checked)
+              }
             />
           }
         />
         {engineFallbackEnabled ? (
           <>
             <div className="h-px bg-border" />
-            <div className="space-y-3">
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-                  <Cpu className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">
-                    Preferred fallback
-                  </p>
-                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                    The engine to try first when the selected one fails.
-                  </p>
-                </div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {fallbackOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    onClick={() => void setPreferredEngineFallback(option.value)}
-
-                    className={cn(
-                      "rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition-colors",
-                      preferredEngineFallback === option.value
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <SettingGroupHeader
+              icon={<Cpu className="h-4 w-4" />}
+              title="Preferred fallback"
+              description="The engine to try first when the selected one fails."
+            />
+            <OptionGrid
+              label="Preferred fallback engine"
+              className="sm:grid-cols-3"
+            >
+              {fallbackOptions.map((option) => (
+                <OptionTile
+                  key={option.value}
+                  dense
+                  selected={preferredEngineFallback === option.value}
+                  onSelect={() =>
+                    void setPreferredEngineFallback(option.value)
+                  }
+                  title={option.label}
+                />
+              ))}
+            </OptionGrid>
           </>
         ) : null}
       </SettingsCard>
-      <p className="text-xs text-muted-foreground">
+
+      <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+        <FileText className="h-3.5 w-3.5 shrink-0" />
         Download, switch, or remove speech models on the{" "}
         <span className="font-medium text-foreground">Models</span> page in the
         sidebar.

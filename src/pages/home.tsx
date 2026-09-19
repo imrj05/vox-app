@@ -313,7 +313,8 @@ export function HomePage() {
             status.path,
             requestedModel,
             status.appName,
-            status.windowTitle
+            status.windowTitle,
+            status.previewText
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;

@@ -24,7 +24,14 @@ import {
 } from "@/components/icons";
 import { AppearanceBlock } from "@/components/settings-appearance";
 import { Button } from "@/components/ui/button";
-import { SectionHeader, SettingsCard, SettingRow } from "@/components/settings-primitives";
+import {
+  OptionGrid,
+  OptionTile,
+  SectionHeader,
+  SettingGroupHeader,
+  SettingsCard,
+  SettingRow,
+} from "@/components/settings-primitives";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -119,121 +126,76 @@ export function GeneralSection() {
   };
   return (
     <div className="space-y-5">
-      <div>
-        <SectionHeader
-          title="General"
-          description="Appearance, sound, formatting, and language for everyday dictation."
-        />
-      </div>
-      <SettingsCard className="space-y-4">
+      <SectionHeader
+        title="General"
+        description="Appearance, sound, formatting, and language for everyday dictation."
+      />
+      <SettingsCard>
         <AppearanceBlock />
-        <div className="h-px bg-border" />
-        <div className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <BookOpenText className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                Context-aware formatting
-              </p>
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Auto switches to developer formatting in coding apps, so punctuation, line breaks, indentation, and identifier styles paste like code.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {formattingModeOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => void setTranscriptFormattingMode(option.value)}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left transition-colors",
-                  transcriptFormattingMode === option.value
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <span className="block text-sm font-medium">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  {option.description}
-                </span>
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Examples: "camel case user name", "new line", "arrow function", and "try catch".
-          </p>
-        </div>
-        <div className="h-px bg-border" />
-        <div className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Sparkles className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                AI cleanup
-              </p>
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Automatically clean up dictated text with the local enhancement model. Removes filler words, fixes grammar and punctuation, and resolves self-corrections. Disabled in developer mode to protect code.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {cleanupLevelOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => void setCleanupLevel(option.value)}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left transition-colors",
-                  cleanupLevel === option.value
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <span className="block text-sm font-medium">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  {option.description}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="h-px bg-border" />
-        <div className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Globe className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">Dictation language</p>
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Choose the language Vox should transcribe. Auto detects the language from your speech. Hinglish (Hindi + English) works best with a multilingual model.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {languageOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => void setLanguage(option.value)}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left transition-colors",
-                  language === option.value
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <span className="block text-sm font-medium">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  {option.description}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="h-px bg-border" />
+      </SettingsCard>
+      <SettingsCard className="space-y-4">
+        <SettingGroupHeader
+          icon={<BookOpenText className="h-4 w-4" />}
+          title="Context-aware formatting"
+          description="Vox switches to developer formatting in coding apps, so punctuation, line breaks, indentation, and identifier styles paste like code."
+        />
+        <OptionGrid
+          label="Context-aware formatting"
+          className="sm:grid-cols-3"
+        >
+          {formattingModeOptions.map((option) => (
+            <OptionTile
+              key={option.value}
+              selected={transcriptFormattingMode === option.value}
+              onSelect={() => void setTranscriptFormattingMode(option.value)}
+              title={option.label}
+              description={option.description}
+            />
+          ))}
+        </OptionGrid>
+        <p className="text-xs text-muted-foreground">
+          Voice shortcuts work in any mode: &quot;camel case user name&quot;,
+          &quot;new line&quot;, &quot;arrow function&quot;, &quot;try
+          catch&quot;.
+        </p>
+      </SettingsCard>
+      <SettingsCard className="space-y-4">
+        <SettingGroupHeader
+          icon={<Sparkles className="h-4 w-4" />}
+          title="AI cleanup"
+          description="Polish dictated text before it is pasted — remove fillers, fix grammar, resolve self-corrections. Disabled in developer mode to protect code."
+        />
+        <OptionGrid label="AI cleanup level" className="sm:grid-cols-2">
+          {cleanupLevelOptions.map((option) => (
+            <OptionTile
+              key={option.value}
+              selected={cleanupLevel === option.value}
+              onSelect={() => void setCleanupLevel(option.value)}
+              title={option.label}
+              description={option.description}
+            />
+          ))}
+        </OptionGrid>
+      </SettingsCard>
+      <SettingsCard className="space-y-4">
+        <SettingGroupHeader
+          icon={<Globe className="h-4 w-4" />}
+          title="Dictation language"
+          description="Choose the language Vox should transcribe. Auto detects from your speech; Hinglish works best with a multilingual model."
+        />
+        <OptionGrid label="Dictation language" className="sm:grid-cols-2">
+          {languageOptions.map((option) => (
+            <OptionTile
+              key={option.value}
+              selected={language === option.value}
+              onSelect={() => void setLanguage(option.value)}
+              title={option.label}
+              description={option.description}
+            />
+          ))}
+        </OptionGrid>
+      </SettingsCard>
+      <SettingsCard className="space-y-4">
         <SettingRow
           icon={<Sparkles className="h-4 w-4" />}
           title="Voice commands"
@@ -849,38 +811,22 @@ export function PrivacySection() {
           }
         />
         <div className="h-px bg-border" />
-        <div className="space-y-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Database className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">Transcript retention</p>
-              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Automatically delete transcripts older than the selected period. Applied on app launch and when the library opens.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {retentionOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => void setTranscriptRetention(option.value)}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left transition-colors",
-                  transcriptRetention === option.value
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <span className="block text-sm font-medium">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  {option.description}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+        <SettingGroupHeader
+          icon={<Database className="h-4 w-4" />}
+          title="Transcript retention"
+          description="Automatically delete transcripts older than the selected period. Applied on app launch and when the library opens."
+        />
+        <OptionGrid label="Transcript retention" className="sm:grid-cols-2">
+          {retentionOptions.map((option) => (
+            <OptionTile
+              key={option.value}
+              selected={transcriptRetention === option.value}
+              onSelect={() => void setTranscriptRetention(option.value)}
+              title={option.label}
+              description={option.description}
+            />
+          ))}
+        </OptionGrid>
         <div className="h-px bg-border" />
         <SettingRow
           icon={<ShieldCheck className="h-4 w-4" />}
@@ -896,22 +842,30 @@ export function PrivacySection() {
             />
           }
         />
-        <div className="rounded-xl border border-border bg-background px-3 py-3 text-[11px] leading-5 text-muted-foreground">
-          <p className="font-medium text-foreground">What Vox stores</p>
-          <p className="mt-1">
-            • Raw audio is deleted immediately after transcription — it is never kept on disk.
-          </p>
-          <p className="mt-1">
-            • Transcripts are stored locally in SQLite and never leave this device.
-          </p>
-          <p className="mt-1">
-            • Whisper and AI cleanup models run fully on-device.
-          </p>
+        <div className="rounded-xl border border-border bg-background p-4">
+          <p className="text-sm font-medium text-foreground">What Vox stores</p>
+          <ul className="mt-2 space-y-1.5">
+            {storedDataFacts.map((fact) => (
+              <li
+                key={fact}
+                className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"
+              >
+                <Check className="mt-1 size-3.5 shrink-0 text-primary" />
+                {fact}
+              </li>
+            ))}
+          </ul>
         </div>
       </SettingsCard>
     </div>
   );
 }
+
+const storedDataFacts = [
+  "Raw audio is deleted immediately after transcription — it is never kept on disk.",
+  "Transcripts are stored locally in SQLite and never leave this device.",
+  "Whisper and AI cleanup models run fully on-device.",
+];
 function ConfirmDataAction({
   title,
   description,
@@ -1267,6 +1221,28 @@ export function PermissionsSection() {
     </div>
   );
 }
+const triggerModeOptions: Array<{
+  value: TriggerMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "toggle",
+    label: "Toggle",
+    description: "Press once to start, press again to stop.",
+  },
+  {
+    value: "pushToTalk",
+    label: "Push to talk",
+    description: "Hold to record, release to transcribe.",
+  },
+  {
+    value: "handsFree",
+    label: "Hands-free",
+    description: "Press once to start; text is inserted as you speak.",
+  },
+];
+
 export function ShortcutsSection() {
   const { hotkey, setHotkey, triggerMode, setTriggerMode } = useAppStore();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1446,35 +1422,17 @@ export function ShortcutsSection() {
               Choose how the hotkey controls dictation.
             </p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {(["toggle", "pushToTalk", "handsFree"] as TriggerMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => void handleTriggerModeChange(mode)}
-                className={cn(
-                  "rounded-xl border px-3 py-3 text-left text-xs transition-colors",
-                  triggerMode === mode
-                    ? "border-primary bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <span className="block text-sm font-medium">
-                  {mode === "toggle"
-                    ? "Toggle"
-                    : mode === "pushToTalk"
-                      ? "Push to talk"
-                      : "Hands-free"}
-                </span>
-                <span className="mt-1 block leading-4 text-muted-foreground">
-                  {mode === "toggle"
-                    ? "Press once to start, press again to stop."
-                    : mode === "pushToTalk"
-                      ? "Hold to record, release to transcribe."
-                      : "Press once to start; text is inserted as you speak."}
-                </span>
-              </button>
+          <OptionGrid label="Trigger mode" className="sm:grid-cols-3">
+            {triggerModeOptions.map((mode) => (
+              <OptionTile
+                key={mode.value}
+                selected={triggerMode === mode.value}
+                onSelect={() => void handleTriggerModeChange(mode.value)}
+                title={mode.label}
+                description={mode.description}
+              />
             ))}
-          </div>
+          </OptionGrid>
         </div>
       </SettingsCard>
       <SettingsCard className="space-y-1">
@@ -1537,38 +1495,40 @@ export function ShortcutsSection() {
         {diagnostics ? (
           <div
             className={cn(
-              "space-y-2 transition-opacity duration-300",
+              "space-y-3 transition-opacity duration-300",
               livePulse && "opacity-60"
             )}
           >
-            {diagnosticsRows.map((row) => (
-              <div
-                key={row.label}
-                className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-3 py-2"
-              >
-                <div>
-                  <p className="text-sm text-foreground">
-                    {row.label}
-                  </p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {row.detail}
-                  </p>
-                </div>
-                <Badge
-                  variant={row.ok ? "secondary" : "destructive"}
-                  className={cn("shrink-0", row.ok && "bg-primary/10 text-primary")}
+            <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-background">
+              {diagnosticsRows.map((row) => (
+                <div
+                  key={row.label}
+                  className="flex items-center justify-between gap-4 px-3.5 py-2.5"
                 >
-                  {row.ok ? "OK" : "Needs action"}
-                </Badge>
-              </div>
-            ))}
-            <div className="rounded-xl border border-border bg-background px-3 py-2 text-[11px] text-muted-foreground">
-              Active shortcut: <span className="font-mono">{formatShortcut(diagnostics.currentShortcut)}</span>
-              {" · "}
-              Recording: <span className="font-medium">{diagnostics.isRecording ? "Yes" : "No"}</span>
+                  <div className="min-w-0">
+                    <p className="text-sm text-foreground">
+                      {row.label}
+                    </p>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      {row.detail}
+                    </p>
+                  </div>
+                  <Badge
+                    variant={row.ok ? "secondary" : "destructive"}
+                    className={cn("shrink-0", row.ok && "bg-primary/10 text-primary")}
+                  >
+                    {row.ok ? "OK" : "Needs action"}
+                  </Badge>
+                </div>
+              ))}
             </div>
-            <div className="space-y-1 rounded-xl border border-border bg-background px-3 py-2 text-[11px] text-muted-foreground">
+            <div className="rounded-xl border border-border bg-background px-3.5 py-2.5 text-[11px] leading-5 text-muted-foreground">
               <p>
+                Active shortcut: <span className="font-mono">{formatShortcut(diagnostics.currentShortcut)}</span>
+                {" · "}
+                Recording: <span className="font-medium">{diagnostics.isRecording ? "Yes" : "No"}</span>
+              </p>
+              <p className="mt-1">
                 App data: <span className="font-mono">{diagnostics.appDataDir ?? "Unavailable"}</span>
               </p>
               <p>

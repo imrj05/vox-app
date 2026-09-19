@@ -19,6 +19,8 @@ export interface RecordingStatus {
   appName: string | null;
   windowTitle: string | null;
   durationSeconds: number | null;
+  /** Final Apple Speech live result, when it can be reused by the final pass. */
+  previewText?: string | null;
 }
 
 export interface TranscriptionResult {
@@ -157,13 +159,15 @@ export async function transcribeRecording(
   audioPath: string,
   modelName?: string,
   contextAppName?: string | null,
-  contextWindowTitle?: string | null
+  contextWindowTitle?: string | null,
+  previewText?: string | null
 ) {
   return invoke<TranscriptionResult>("transcribe_recording", {
     audioPath,
     modelName,
     contextAppName,
     contextWindowTitle,
+    previewText,
   });
 }
 
@@ -193,6 +197,11 @@ export async function deleteWhisperModel(modelName: string) {
 
 export async function listTextEnhancementModels() {
   return invoke<TextEnhancementModelInfo[]>("text_enhancement_models");
+}
+
+/** Enhancement model recommended for this machine's hardware (spec §25). */
+export async function getRecommendedEnhancementModel() {
+  return invoke<string>("recommended_enhancement_model");
 }
 
 export async function downloadTextEnhancementModel(modelName: string) {
@@ -274,6 +283,10 @@ export async function setNativeLanguage(language: string) {
 
 export async function setTranscriptionEngine(engine: string) {
   return invoke<void>("set_transcription_engine", { engine });
+}
+
+export async function setNativeSelectedModel(modelName: string) {
+  return invoke<void>("set_selected_model", { modelName });
 }
 
 export async function setEngineFallback(enabled: boolean) {

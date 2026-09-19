@@ -3561,7 +3561,7 @@ fn start_recording_flow(app: AppHandle) {
             // Re-emit the widget state now that the session carries the active
             // app context, so the "In <app> · <file>" line appears instantly
             // instead of waiting for the first timer tick.
-            show_widget_with_elapsed(&app, "recording", "Listening…", None);
+            show_widget_with_elapsed(&app, "recording", "Listening…", Some(0));
             start_recording_timer(app.clone());
             refresh_tray_menu(&app);
         }

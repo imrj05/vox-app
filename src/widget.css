@@ -45,24 +45,26 @@ body,
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 12px;
-    min-height: 40px;
-    /* Absolute cap: the window hugs this element, so a %-based max-width
-       would deadlock (window caps capsule, capsule caps window). */
+    /* Never let the (window-sized) root compress the pill: it must keep its
+       natural content width so the ResizeObserver can grow the window back
+       out — otherwise window and pill cap each other and content squashes. */
+    flex-shrink: 0;
+    padding: 10px 14px;
+    min-height: 44px;
+    /* Absolute cap only: a %-based max-width would deadlock (window caps
+       capsule, capsule caps window), so the pill sizes to its content and
+       the window follows it. */
     max-width: 360px;
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.02) 100%),
-        rgba(18, 16, 16, 0.34);
+    /* Single flat tint layer — no gradient sheen, no active-state overlay,
+       so only one background shows inside the border. */
+    background: rgba(18, 16, 16, 0.3);
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 999px;
-    box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.14),
-        inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+
 
     color: #f7ede8;
     overflow: hidden;
     transition:
-        transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1),
         opacity 200ms ease,
         background 200ms ease,
         border-color 200ms ease,
@@ -70,38 +72,31 @@ body,
 }
 
 .widget-active {
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.03) 100%),
-        rgba(18, 16, 16, 0.44);
     border-color: rgba(255, 255, 255, 0.22);
 }
 
 :root[data-theme="light"] .widget-capsule {
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.38) 100%),
-        rgba(250, 249, 248, 0.3);
-    border-color: rgba(255, 255, 255, 0.65);
+    /* Premium light glass: soft white tint over the vibrancy, a barely-there
+       warm edge, and inset top-light / bottom-shade for volume. Outer drop
+       shadows are impossible here — the window hugs the pill and clips them. */
+    background: rgba(255, 255, 255, 0.58);
+    border-color: rgba(32, 29, 29, 0.08);
     box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.75),
-        inset 0 -1px 0 rgba(32, 29, 29, 0.06),
-        0 0 0 1px rgba(32, 29, 29, 0.07);
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        inset 0 -1px 0 rgba(32, 29, 29, 0.06);
 
     color: #201d1d;
 }
 
 :root[data-theme="light"] .widget-active {
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.5) 100%),
-        rgba(250, 249, 248, 0.4);
-    border-color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.68);
+    border-color: rgba(32, 29, 29, 0.1);
 }
 
 .widget-visible {
     opacity: 1;
-    transform: translateY(0) scale(1);
     pointer-events: auto;
     transition:
-        transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1),
         opacity 120ms ease,
         border-color 200ms ease,
         box-shadow 200ms ease;
@@ -109,10 +104,8 @@ body,
 
 .widget-hidden {
     opacity: 0;
-    transform: translateY(6px) scale(0.96);
     pointer-events: none;
     transition:
-        transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
         opacity 320ms ease,
         border-color 200ms ease,
         box-shadow 200ms ease;
@@ -129,7 +122,9 @@ body,
     align-items: center;
     gap: 10px;
     justify-content: center;
-    min-width: 0;
+    border: none;
+    /* No min-width: 0 here — the row must keep its natural width so the
+       ResizeObserver can grow the window with it instead of wrapping. */
 }
 
 
@@ -139,9 +134,14 @@ body,
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 26px;
+    height: 26px;
     flex-shrink: 0;
+    /* Rounded dark tile behind the glyph, with an extra lit border ring —
+       reads in both appearances, so no theme swap is needed. */
+    border-radius: 8px;
+    background: #141111;
+    border: 1px solid rgba(255, 255, 255, 0.22);
 }
 
 .widget-logo {
@@ -149,18 +149,6 @@ body,
     height: 18px;
     object-fit: contain;
     flex-shrink: 0;
-}
-
-.widget-logo--dark {
-    display: none;
-}
-
-:root[data-theme="dark"] .widget-logo--dark {
-    display: block;
-}
-
-:root[data-theme="dark"] .widget-logo:not(.widget-logo--dark) {
-    display: none;
 }
 
 
@@ -448,16 +436,6 @@ body,
 /*  Live app-context line ("In Visual Studio Code · file.ts")         */
 /* ------------------------------------------------------------------ */
 
-/* Context rows keep the pill silhouette: the window's vibrancy mask is
-   always h/2, so the CSS radius must stay 999px to match it. */
-.widget-capsule.widget-has-context {
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 10px 16px 9px;
-    max-width: 340px;
-}
-
 .widget-context {
     position: relative;
     z-index: 1;
@@ -497,6 +475,7 @@ body,
 }
 
 @keyframes widget-dot-pulse {
+
     0%,
     100% {
         opacity: 1;

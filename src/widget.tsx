@@ -47,36 +47,6 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-/**
- * Build a compact "what am I doing right now" label from the detected app
- * context: "Visual Studio Code · user.service.ts", "WhatsApp",
- * "Google Chrome · Gmail - rajeshwar@gmail.com". Returns null when no context
- * was detected (e.g. non-macOS or no frontmost app).
- */
-function buildContextLabel(
-  appName?: string | null,
-  windowTitle?: string | null
-): string | null {
-  const app = appName?.trim();
-  const title = windowTitle?.trim();
-  if (!app && !title) return null;
-
-  if (!app) return title || null;
-  if (!title) return app;
-
-  // Skip redundant titles (WhatsApp window titled "WhatsApp").
-  if (title.toLowerCase() === app.toLowerCase()) return app;
-
-  // Editor titles: "user.service.ts — my-project — Visual Studio Code" →
-  // show the file name instead of the full title.
-  const first = title.split(" — ")[0]?.split(" - ")[0]?.trim();
-  const looksLikeFile =
-    !!first && (first.includes(".") || first.includes("/") || first.includes("\\"));
-  if (looksLikeFile && first !== app) return `${app} · ${first}`;
-
-  return `${app} · ${title}`;
-}
-
 function shapeVoiceLevel(value: number): number {
   return Math.pow(clamp01(value), 0.55);
 }
@@ -137,7 +107,6 @@ function VoiceDots({
   audioLevel,
   elapsed,
   message,
-  contextLabel,
   onClose,
 }: {
   mode: WidgetMode;
@@ -145,7 +114,6 @@ function VoiceDots({
   audioLevel: number;
   elapsed: number | undefined;
   message: string;
-  contextLabel: string | null;
   onClose: () => void;
 }) {
   const isRecording = mode === "recording";
@@ -160,15 +128,9 @@ function VoiceDots({
   return (
     <>
       <div className="widget-voice-container">
-        {/* Vox logo — light tile by default, dark tile in dark mode */}
+        {/* Menu-bar mic glyph — white on dark glass, inverted for light glass */}
         <div className="widget-logo-wrap">
-          <img src="/logo-light.png" alt="" className="widget-logo" />
-          <img
-            src="/logo-dark.png"
-            alt=""
-            aria-hidden="true"
-            className="widget-logo widget-logo--dark"
-          />
+          <img src="/menubar-icon.png" alt="" className="widget-logo" />
         </div>
 
         <div className="widget-glow" style={{ opacity: glowAlpha }} />
@@ -224,9 +186,7 @@ function VoiceDots({
               })}
             </div>
 
-            {elapsed !== undefined && elapsed > 0 && (
-              <span className="widget-timer">{formatElapsed(elapsed)}</span>
-            )}
+            <span className="widget-timer">{formatElapsed(elapsed ?? 0)}</span>
 
             {message && message !== "Listening…" && (
               <span className="widget-mode-label">{message}</span>
@@ -234,14 +194,6 @@ function VoiceDots({
           </>
         )}
       </div>
-
-      {/* Live app-context line: what the user is doing right now */}
-      {isRecording && contextLabel && (
-        <span className="widget-context" role="status">
-          <span className="widget-context-dot" aria-hidden="true" />
-          <span className="widget-context-text">{contextLabel}</span>
-        </span>
-      )}
     </>
   );
 }
@@ -342,7 +294,9 @@ export function Widget() {
         const key = `${w}x${h}`;
         if (w >= 1 && h >= 1 && key !== last) {
           last = key;
-          void setWidgetSize(w, h).catch(() => {});
+          void setWidgetSize(w, h).catch((err) => {
+            console.error("[vox-widget] setWidgetSize failed (window won't hug the pill):", err);
+          });
         }
       });
     };
@@ -421,8 +375,6 @@ export function Widget() {
   }, []);
 
   const isActive = state.mode === "recording" || state.mode === "transcribing";
-  const isRecording = state.mode === "recording";
-  const contextLabel = buildContextLabel(state.appName, state.windowTitle);
 
   const isVisible =
     state.mode === "recording" ||
@@ -438,7 +390,7 @@ export function Widget() {
     <div className="widget-root">
       <div
         ref={capsuleRef}
-        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"} ${isRecording && contextLabel ? "widget-has-context" : ""}`}
+        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}
       >
         <VoiceDots
           mode={state.mode}
@@ -446,7 +398,6 @@ export function Widget() {
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
           message={state.message}
-          contextLabel={contextLabel}
           onClose={close}
         />
       </div>

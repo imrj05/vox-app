@@ -1275,35 +1275,36 @@ function DictationWidget({ mode }: { mode: "recording" | "transcribing" }) {
   const isRecording = mode === "recording";
 
   return (
-    <div
-      className="fixed right-6 top-14 z-40 flex items-center gap-3 rounded-full border border-border bg-muted px-4 py-2"
-    >
-      <div
-        className={[
-          "flex h-8 w-8 items-center justify-center rounded-full",
-          isRecording
-            ? "bg-destructive/20 text-destructive"
-            : "bg-accent text-accent-foreground",
-        ].join(" ")}
-      >
+    <div className="fixed right-6 top-14 z-40 flex animate-in items-center gap-3 overflow-hidden rounded-full border border-border/40 bg-card/30 py-1.5 pl-1.5 pr-4 shadow-[0_1px_1px_rgba(0,0,0,0.03),0_8px_24px_-8px_rgba(0,0,0,0.18),0_24px_48px_-24px_rgba(0,0,0,0.28)] duration-300 before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:backdrop-blur-2xl before:backdrop-saturate-180 fade-in-0 slide-in-from-top-2">
+      <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-foreground/10 to-transparent" />
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-gradient-to-b from-foreground to-foreground/90 text-background shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_2px_8px_-2px_rgba(0,0,0,0.35)]">
         {isRecording ? <Mic className="h-4 w-4" /> : <Wand2 className="h-4 w-4" />}
       </div>
       <div className="min-w-0">
-        <p className="text-xs font-semibold text-foreground">
+        <p className="text-[13px] font-semibold leading-4 tracking-tight text-foreground">
           {isRecording ? "Recording" : "Transcribing"}
         </p>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-[11px] leading-4 text-muted-foreground">
           {isRecording ? "Listening locally" : "Converting voice to text"}
         </p>
       </div>
-      <span
-        className={[
-          "h-2 w-2 rounded-full",
-          isRecording
-            ? "animate-pulse bg-destructive"
-            : "animate-pulse bg-primary",
-        ].join(" ")}
-      />
+      <span className="h-6 w-px shrink-0 bg-border/60" aria-hidden="true" />
+      <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
+        <span
+          className={[
+            "absolute inline-flex h-full w-full animate-ping rounded-full opacity-40",
+            isRecording ? "bg-destructive" : "bg-primary",
+          ].join(" ")}
+        />
+        <span
+          className={[
+            "relative inline-flex h-2 w-2 rounded-full shadow-[0_0_10px_2px]",
+            isRecording
+              ? "bg-destructive shadow-destructive/50"
+              : "bg-primary shadow-primary/50",
+          ].join(" ")}
+        />
+      </span>
     </div>
   );
 }

@@ -51,6 +51,7 @@ export function TranscriptsPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [rawViewId, setRawViewId] = useState<number | null>(null);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
@@ -87,7 +88,11 @@ export function TranscriptsPage() {
 
     return history.filter((item) => {
       const appName = item.app_name ?? "Unknown app";
-      return item.text.toLowerCase().includes(needle) || appName.toLowerCase().includes(needle);
+      return (
+        item.text.toLowerCase().includes(needle) ||
+        (item.asr_text ?? "").toLowerCase().includes(needle) ||
+        appName.toLowerCase().includes(needle)
+      );
     });
   }, [history, query]);
 
@@ -344,9 +349,34 @@ export function TranscriptsPage() {
                         </div>
                       </div>
                     ) : (
-                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground/90">
-                        {item.text}
-                      </p>
+                      <>
+                        {rawViewId === item.id ? (
+                          <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                            Final
+                          </p>
+                        ) : null}
+                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground/90">
+                          {item.text}
+                        </p>
+                        {rawViewId === item.id && item.asr_text ? (
+                          <div
+                            id={`raw-${item.id}`}
+                            className="mt-3 rounded-lg border border-border/70 bg-muted/30 px-3 py-2.5"
+                          >
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                                Raw speech
+                              </p>
+                              <span className="text-[11px] text-muted-foreground">
+                                Before formatting, cleanup, and corrections
+                              </span>
+                            </div>
+                            <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                              {item.asr_text}
+                            </p>
+                          </div>
+                        ) : null}
+                      </>
                     )}
                     <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                       <span className="font-mono tabular-nums">
@@ -358,6 +388,26 @@ export function TranscriptsPage() {
                           <span className="font-mono tabular-nums">
                             {formatDurationCompact(item.duration_seconds)} audio
                           </span>
+                        </>
+                      ) : null}
+                      {hasRawAsr(item) && editingId !== item.id ? (
+                        <>
+                          <span aria-hidden>·</span>
+                          <button
+                            type="button"
+                            className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline"
+                            aria-expanded={rawViewId === item.id}
+                            aria-controls={
+                              rawViewId === item.id ? `raw-${item.id}` : undefined
+                            }
+                            onClick={() =>
+                              setRawViewId((current) =>
+                                current === item.id ? null : item.id
+                              )
+                            }
+                          >
+                            {rawViewId === item.id ? "Hide raw" : "Show raw"}
+                          </button>
                         </>
                       ) : null}
                     </div>
@@ -466,6 +516,12 @@ function countWords(text: string) {
 function hasAiCleanup(item: TranscriptRow): boolean {
   if (!item.raw_text) return false;
   return item.raw_text.trim() !== item.text.trim();
+}
+
+/** True when the engine output differs from the final text in any way. */
+function hasRawAsr(item: TranscriptRow): boolean {
+  if (!item.asr_text) return false;
+  return item.asr_text.trim() !== item.text.trim();
 }
 
 function formatDurationCompact(seconds: number) {

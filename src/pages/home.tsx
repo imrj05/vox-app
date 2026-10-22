@@ -110,7 +110,7 @@ export function HomePage() {
 
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
     setTranscriptionResult(result);
-    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.language ?? "en", result.engine ?? null);
+    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.asrText ?? null, result.language ?? "en", result.engine ?? null, result.timings ?? null);
     await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
     await deleteRecordingFile(result.audioPath).catch(() => {});
     setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
@@ -249,6 +249,39 @@ export function HomePage() {
     };
   }, []);
 
+  // Surface insertion failures. The transcript is already saved to History,
+  // so the user can copy it here or retry from the Vox menu bar icon.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen<{ text: string; error: string; appName?: string | null }>(
+      "vox-insertion-failed",
+      (event) => {
+        setToast({
+          title: "Couldn't insert text",
+          detail: "Saved to History. Retry from the Vox menu bar icon.",
+          tone: "warning",
+          duration: 6000,
+          action: {
+            label: "Copy",
+            onClick: () => {
+              void navigator.clipboard
+                .writeText(event.payload.text)
+                .catch(() => {});
+              setToast(null);
+            },
+          },
+        });
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   // Hands-free mode: each auto-segmented utterance is transcribed in the
   // background and emitted here. Save it to history without touching the
   // recording state (the session is still live).
@@ -257,16 +290,28 @@ export function HomePage() {
 
     void listen<{
       text: string;
+      asrText?: string | null;
       rawText?: string | null;
       appName?: string | null;
       language?: string | null;
       engine?: string | null;
-      corrections?: { source: string; canonical: string }[];
+      corrections?: {
+        source: string;
+        canonical: string;
+        confidence?: number;
+        asrConfidence?: number | null;
+      }[];
+      timings?: {
+        audioPreflightMs: number;
+        transcribeMs: number;
+        postprocessMs: number;
+        totalMs: number;
+      } | null;
     }>("vox-hands-free-segment", async (event) => {
-      const { text, rawText, appName, language, engine, corrections } = event.payload;
+      const { text, asrText, rawText, appName, language, engine, corrections, timings } = event.payload;
       if (!text?.trim()) return;
       try {
-        await saveTranscript(text, undefined, appName ?? null, null, rawText ?? null, language ?? "en", engine ?? null);
+        await saveTranscript(text, undefined, appName ?? null, null, rawText ?? null, asrText ?? null, language ?? "en", engine ?? null, timings ?? null);
         await saveCorrections(corrections ?? [], appName ?? null).catch(() => {});
         setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
       } catch {
@@ -314,7 +359,8 @@ export function HomePage() {
             requestedModel,
             status.appName,
             status.windowTitle,
-            status.previewText
+            status.previewText,
+            status.previewConfidence
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;
@@ -352,7 +398,9 @@ export function HomePage() {
         recordingStatus.path,
         requestedModel,
         recordingStatus.appName,
-        recordingStatus.windowTitle
+        recordingStatus.windowTitle,
+        recordingStatus.previewText,
+        recordingStatus.previewConfidence
       );
       result.appName = recordingStatus.appName;
       result.durationSeconds = recordingStatus.durationSeconds;
@@ -470,6 +518,7 @@ export function HomePage() {
       usageTrend: buildUsageTrend(history),
       topApps: buildTopApps(history),
       dailyWordTrend: buildDailyWordTrend(history),
+      latency: buildLatencySummary(history),
     };
   }, [history]);
   const {
@@ -483,6 +532,7 @@ export function HomePage() {
     usageTrend,
     topApps,
     dailyWordTrend,
+    latency,
   } = analytics;
   const lastDuration = recordingStatus?.durationSeconds ?? 0;
 
@@ -674,6 +724,7 @@ export function HomePage() {
               usageTrend={usageTrend}
               dailyWordTrend={dailyWordTrend}
               totalDurationSeconds={totalDurationSeconds}
+              latency={latency}
             />
           </Suspense>
         </div>
@@ -876,6 +927,34 @@ function buildDailyWordTrend(history: TranscriptRow[]) {
   });
 
   return Array.from(buckets.values());
+}
+
+function percentile(values: number[], p: number) {
+  if (values.length === 0) return 0;
+  const index = Math.min(
+    values.length - 1,
+    Math.max(0, Math.ceil((p / 100) * values.length) - 1)
+  );
+  return values[index];
+}
+
+function buildLatencySummary(history: TranscriptRow[]) {
+  const totals = history
+    .map((item) => item.total_ms)
+    .filter((value): value is number => typeof value === "number")
+    .sort((a, b) => a - b);
+  const asr = history
+    .map((item) => item.transcribe_ms)
+    .filter((value): value is number => typeof value === "number")
+    .sort((a, b) => a - b);
+
+  return {
+    samples: totals.length,
+    totalP50: percentile(totals, 50),
+    totalP95: percentile(totals, 95),
+    asrP50: percentile(asr, 50),
+    asrP95: percentile(asr, 95),
+  };
 }
 
 function buildTopApps(history: TranscriptRow[]) {

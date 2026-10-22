@@ -21,6 +21,17 @@ export interface RecordingStatus {
   durationSeconds: number | null;
   /** Final Apple Speech live result, when it can be reused by the final pass. */
   previewText?: string | null;
+  /** Average confidence of the live final, when Apple reports it. */
+  previewConfidence?: number | null;
+  /** True for an incognito dictation (nothing is persisted). */
+  private?: boolean;
+}
+
+export interface TranscriptTimings {
+  audioPreflightMs: number;
+  transcribeMs: number;
+  postprocessMs: number;
+  totalMs: number;
 }
 
 export interface TranscriptionResult {
@@ -28,14 +39,25 @@ export interface TranscriptionResult {
   text: string;
   appName: string | null;
   durationSeconds: number | null;
+  /** Raw text exactly as the ASR engine produced it, before any processing. */
+  asrText?: string | null;
   /** Raw transcription before AI cleanup, when cleanup was applied. */
   rawText?: string | null;
   /** Language actually used for transcription (auto-detected or pinned). */
   language?: string | null;
+  /** Engine confidence for the raw transcript (0.0–1.0), when available. */
+  confidence?: number | null;
+  /** Per-stage processing timings. */
+  timings?: TranscriptTimings | null;
   /** Engine that produced the raw transcript ("whisper" | "parakeet" | …). */
   engine?: string | null;
   /** Vocabulary corrections applied to the final text ("shad can" → "shadcn"). */
-  corrections?: { source: string; canonical: string }[];
+  corrections?: {
+    source: string;
+    canonical: string;
+    confidence?: number;
+    asrConfidence?: number | null;
+  }[];
 }
 
 /** Hardware awareness (spec §25): what this Mac can comfortably run. */
@@ -160,7 +182,8 @@ export async function transcribeRecording(
   modelName?: string,
   contextAppName?: string | null,
   contextWindowTitle?: string | null,
-  previewText?: string | null
+  previewText?: string | null,
+  previewConfidence?: number | null
 ) {
   return invoke<TranscriptionResult>("transcribe_recording", {
     audioPath,
@@ -168,6 +191,7 @@ export async function transcribeRecording(
     contextAppName,
     contextWindowTitle,
     previewText,
+    previewConfidence,
   });
 }
 
@@ -232,6 +256,18 @@ export async function hideWidget() {
   return invoke<void>("hide_widget");
 }
 
+/** Remove the most recently inserted transcript at the cursor. */
+export async function undoLastInsertion() {
+  return invoke<{ method: "accessibilityValue" | "undoShortcut" }>(
+    "undo_last_insertion"
+  );
+}
+
+/** Retry an insertion that failed (used by the menu bar action). */
+export async function retryLastInsertion() {
+  return invoke<void>("retry_last_insertion");
+}
+
 export async function setWidgetSize(width: number, height: number) {
   return invoke<void>("widget_set_size", { width, height });
 }
@@ -280,6 +316,13 @@ export async function setTriggerMode(mode: "toggle" | "pushToTalk" | "handsFree"
   return invoke<void>("set_trigger_mode", { mode });
 }
 
+export type InsertionMethod = "typing" | "clipboard";
+
+/** Choose cursor typing or a clipboard paste that restores the clipboard. */
+export async function setInsertionMethod(method: InsertionMethod) {
+  return invoke<void>("set_insertion_method", { method });
+}
+
 
 export async function setNativeLanguage(language: string) {
   return invoke<void>("set_language", { language });
@@ -312,6 +355,8 @@ export async function setNativeWhisperMode(enabled: boolean) {
 export interface NativeSnippet {
   trigger: string;
   expansion: string;
+  /** Optional app-name filter; null/empty applies everywhere. */
+  appPattern?: string | null;
 }
 
 export async function setNativeSnippets(snippets: NativeSnippet[]) {
@@ -421,6 +466,13 @@ export async function applyTransform(
   customInstruction?: string
 ) {
   return invoke<void>("apply_transform", { text, preset, customInstruction });
+}
+
+export type NoteTask = "summarizeMeeting" | "extractActionItems";
+
+/** Run a local meeting task and return generated Markdown (no paste). */
+export async function noteTransform(task: NoteTask, text: string) {
+  return invoke<string>("note_transform", { task, text });
 }
 
 /** Human-readable label for a shortcut string like "Meta+Shift+Space" */

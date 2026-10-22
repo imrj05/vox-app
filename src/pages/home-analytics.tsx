@@ -49,6 +49,14 @@ type HourlyActivity = {
 type UsageTrendPoint = { label: string; count: number; duration: number };
 type DailyWordPoint = { key: string; label: string; words: number; sessions: number };
 
+type LatencySummary = {
+  samples: number;
+  totalP50: number;
+  totalP95: number;
+  asrP50: number;
+  asrP95: number;
+};
+
 /** Grayscale slice ramp from the app's chart tokens (monochrome system). */
 const piePalette = [
   // Ordered so adjacent slices (including the wrap-around pair) alternate
@@ -72,6 +80,7 @@ export function AnalyticsPanels({
   usageTrend,
   dailyWordTrend,
   totalDurationSeconds,
+  latency,
 }: {
   activitySummary: ActivitySummary;
   activityDays: ActivityDay[];
@@ -82,6 +91,7 @@ export function AnalyticsPanels({
   usageTrend: UsageTrendPoint[];
   dailyWordTrend: DailyWordPoint[];
   totalDurationSeconds: number;
+  latency: LatencySummary;
 }) {
   const chartStatus = historyLoading ? ("loading" as const) : ("ready" as const);
 
@@ -105,6 +115,33 @@ export function AnalyticsPanels({
           />
         </div>
         <ContributionHeatmap days={activityDays} status={chartStatus} />
+      </section>
+
+      <section className="surface-depth-soft rounded-2xl border border-border bg-card p-6">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">Speed</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Processing time for recent dictations, from audio preflight to
+              finished transcript.
+            </p>
+          </div>
+          <p className="shrink-0 text-xs text-muted-foreground tabular-nums">
+            {latency.samples.toLocaleString()} samples
+          </p>
+        </div>
+        {latency.samples > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-4">
+            <MetricPill label="Median total" value={formatMs(latency.totalP50)} />
+            <MetricPill label="p95 total" value={formatMs(latency.totalP95)} />
+            <MetricPill label="Median ASR" value={formatMs(latency.asrP50)} />
+            <MetricPill label="p95 ASR" value={formatMs(latency.asrP95)} />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Latency appears after your next dictation.
+          </p>
+        )}
       </section>
 
       <section className="grid gap-4 lg:grid-cols-2">
@@ -186,6 +223,11 @@ function LoadingInline({ label }: { label: string }) {
       <span>{label}</span>
     </div>
   );
+}
+
+function formatMs(ms: number) {
+  if (!ms || ms <= 0) return "0ms";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function MetricPill({

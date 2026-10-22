@@ -20,6 +20,7 @@
 #                            APPLE_TEAM_ID from the environment (e.g. .env).
 #   DMG_OUT_DIR              Output directory (default: <repo>/release).
 #   DMG_BACKGROUND           Optional background image for the DMG window.
+#                            Defaults to public/background_660x400.tiff.
 #   DMG_VOLUME_ICON          Optional .icns volume icon.
 #
 # Dependencies:
@@ -63,6 +64,7 @@ OUT_DIR="${DMG_OUT_DIR:-$REPO_ROOT/release}"
 DMG="$OUT_DIR/${PRODUCT_NAME}-v${VERSION}.dmg"
 STAGING="$(mktemp -d)/staging"
 NOTARY_PROFILE="${NOTARY_PROFILE:-vox-notary}"
+DMG_BACKGROUND="${DMG_BACKGROUND:-$REPO_ROOT/public/background_660x400.tiff}"
 
 # Resolve a code-signing identity. Apple Development identities are rejected by
 # notarization, so we look for a Developer ID Application certificate.
@@ -88,16 +90,16 @@ mkdir -p "$OUT_DIR"
 rm -f "$DMG"
 
 if command -v create-dmg >/dev/null 2>&1; then
-  # Polished layout: app icon left, Applications drop-link right.
-  # The window is 600x368, matching a 1200x736 @2x background if provided.
+  # Polished layout: app icon left, Applications drop-link right, using the
+  # 660x400 brand background (the arrow sits in the middle of the image).
   CREATE_DMG_ARGS=(
     --volname "$PRODUCT_NAME"
     --window-pos 200 120
-    --window-size 600 368
+    --window-size 660 400
     --icon-size 100
     --text-size 16
-    --icon "${PRODUCT_NAME}.app" 175 192
-    --app-drop-link 425 192
+    --icon "${PRODUCT_NAME}.app" 190 200
+    --app-drop-link 470 200
   )
   [ -n "${DMG_BACKGROUND:-}" ] && [ -f "$DMG_BACKGROUND" ] && CREATE_DMG_ARGS+=(--background "$DMG_BACKGROUND")
   [ -n "${DMG_VOLUME_ICON:-}" ] && [ -f "$DMG_VOLUME_ICON" ] && CREATE_DMG_ARGS+=(--volicon "$DMG_VOLUME_ICON")

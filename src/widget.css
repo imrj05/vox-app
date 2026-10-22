@@ -332,6 +332,56 @@ body,
     animation: widget-content-in 200ms ease both;
 }
 
+.widget-undo-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 5%);
+    color: rgb(247 237 232 / 78%);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.widget-undo-btn:hover {
+    background: rgb(255 255 255 / 12%);
+    color: rgb(247 237 232 / 92%);
+}
+
+.widget-undo-btn:active {
+    transform: translateY(1px);
+}
+
+.widget-undo-btn:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 45%);
+    outline-offset: 2px;
+}
+
+:root[data-theme="light"] .widget-undo-btn {
+    border-color: rgb(15 0 0 / 10%);
+    background: rgb(15 0 0 / 3%);
+    color: rgb(24 20 20 / 68%);
+}
+
+:root[data-theme="light"] .widget-undo-btn:hover {
+    background: rgb(15 0 0 / 8%);
+    color: rgb(24 20 20 / 88%);
+}
+
+:root[data-theme="light"] .widget-undo-btn:focus-visible {
+    outline-color: rgb(15 0 0 / 45%);
+}
+
 .widget-close-btn:focus-visible {
     outline: 2px solid rgb(255 255 255 / 45%);
     outline-offset: 2px;
@@ -429,6 +479,29 @@ body,
 
 :root[data-theme="light"] .widget-mode-label {
     color: rgb(24 20 20 / 50%);
+    text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
+
+/* Latest live-preview words while recording (Apple Speech). */
+.widget-live-text {
+    position: relative;
+    z-index: 1;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    color: rgb(247 237 232 / 72%);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+    animation: widget-content-in 160ms ease both;
+}
+
+:root[data-theme="light"] .widget-live-text {
+    color: rgb(24 20 20 / 62%);
     text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
 }
 

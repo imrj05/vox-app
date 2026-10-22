@@ -92,9 +92,17 @@ func recognizer(for locale: Locale) -> SFSpeechRecognizer? {
 // MARK: - Recognition (shared by single-shot and serve modes)
 
 /// Runs file-based, on-device recognition to completion.
-/// Returns (exitCode, text, message): exitCode 0 = success, `text` may be
-/// empty to signal recognized silence.
-func runRecognition(_ recognizer: SFSpeechRecognizer, audioPath: String, contextualStrings: [String] = []) -> (code: Int32, text: String, message: String) {
+/// `text` may be empty to signal recognized silence.
+struct RecognitionOutcome {
+    let code: Int32
+    let text: String
+    let message: String
+    let confidence: Double?
+}
+
+/// Returns code 0 on success. `confidence` is the average segment confidence
+/// when the recognizer reports one.
+func runRecognition(_ recognizer: SFSpeechRecognizer, audioPath: String, contextualStrings: [String] = []) -> RecognitionOutcome {
     let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: audioPath))
     request.shouldReportPartialResults = false
     request.taskHint = .dictation
@@ -107,6 +115,7 @@ func runRecognition(_ recognizer: SFSpeechRecognizer, audioPath: String, context
     }
 
     var finalText: String?
+    var finalConfidence: Double?
     var failure: String?
     var watchdogMessage: String?
     let started = Date()
@@ -125,6 +134,10 @@ func runRecognition(_ recognizer: SFSpeechRecognizer, audioPath: String, context
     recognizer.recognitionTask(with: request) { result, error in
         if let result = result, result.isFinal {
             finalText = result.bestTranscription.formattedString
+            let segments = result.bestTranscription.segments
+            if !segments.isEmpty {
+                finalConfidence = segments.reduce(0.0) { $0 + Double($1.confidence) } / Double(segments.count)
+            }
             return
         }
         if let error = error {
@@ -150,17 +163,17 @@ func runRecognition(_ recognizer: SFSpeechRecognizer, audioPath: String, context
     let elapsed = Int(Date().timeIntervalSince(started) * 1000)
     if let failure = failure {
         diag("recognition failed after \(elapsed)ms: \(failure)")
-        return (7, "", "recognition failed: \(failure)")
+        return RecognitionOutcome(code: 7, text: "", message: "recognition failed: \(failure)", confidence: nil)
     }
     if let watchdogMessage = watchdogMessage {
         diag("recognition abandoned after \(elapsed)ms: \(watchdogMessage)")
-        return (7, "", watchdogMessage)
+        return RecognitionOutcome(code: 7, text: "", message: watchdogMessage, confidence: nil)
     }
     guard let finalText = finalText else {
-        return (0, "", "")
+        return RecognitionOutcome(code: 0, text: "", message: "", confidence: nil)
     }
     diag("recognition completed in \(elapsed)ms (\(finalText.split(separator: " ").count) words)")
-    return (0, finalText, "")
+    return RecognitionOutcome(code: 0, text: finalText, message: "", confidence: finalConfidence)
 }
 
 // MARK: - Serve mode (persistent, warm recognizers)
@@ -214,7 +227,11 @@ func serveTranscription(_ json: [String: Any]) {
     let outcome = runRecognition(recognizer, audioPath: audioPath, contextualStrings: contextualStrings)
     diag("request \(id) done in \(Int(Date().timeIntervalSince(started) * 1000))ms (code \(outcome.code))")
     if outcome.code == 0 {
-        writeServeResponse(["id": id, "ok": true, "text": outcome.text])
+        var payload: [String: Any] = ["id": id, "ok": true, "text": outcome.text]
+        if let confidence = outcome.confidence {
+            payload["confidence"] = confidence
+        }
+        writeServeResponse(payload)
     } else {
         serveError(id: id, code: Int(outcome.code), message: outcome.message)
     }
@@ -333,7 +350,12 @@ final class LiveTranscriber {
             let full = self.accumulated.isEmpty ? text : self.accumulated + " " + text
             if self.stopping {
                 if result.isFinal {
-                    writeLiveLine(["type": "final", "text": full])
+                    var payload: [String: Any] = ["type": "final", "text": full]
+                    let segments = result.bestTranscription.segments
+                    if !segments.isEmpty {
+                        payload["confidence"] = segments.reduce(0.0) { $0 + Double($1.confidence) } / Double(segments.count)
+                    }
+                    writeLiveLine(payload)
                 }
                 return
             }

@@ -6,7 +6,6 @@ import {
   type SettingsSection,
 } from "@/components/settings-sections";
 import {
-  AccountSection,
   DataSection,
   GeneralSection,
   PermissionsSection,
@@ -15,6 +14,7 @@ import {
   SnippetsSection,
 } from "@/components/settings-panels";
 import { VocabularyPacksSection } from "@/components/settings-vocabulary";
+import { WritingSection } from "@/components/settings-writing";
 import { TranscriptionSection } from "@/components/settings-transcription";
 
 type NavGroup = {
@@ -24,8 +24,8 @@ type NavGroup = {
 
 const navGroups: readonly NavGroup[] = [
   { label: "Recording", sections: ["general", "transcription", "shortcuts"] },
-  { label: "Vocabulary", sections: ["vocabulary-packs", "snippets"] },
-  { label: "System", sections: ["permissions", "privacy", "data", "account"] },
+  { label: "Vocabulary", sections: ["vocabulary-packs", "writing", "snippets"] },
+  { label: "System", sections: ["permissions", "privacy", "data"] },
 ];
 
 const sectionMeta = new Map(settingsSections.map((s) => [s.id, s]));
@@ -33,8 +33,8 @@ const sectionMeta = new Map(settingsSections.map((s) => [s.id, s]));
 const sectionComponents: Record<SettingsSection, () => React.JSX.Element> = {
   general: GeneralSection,
   transcription: TranscriptionSection,
-  account: AccountSection,
   "vocabulary-packs": VocabularyPacksSection,
+  writing: WritingSection,
   snippets: SnippetsSection,
   data: DataSection,
   privacy: PrivacySection,

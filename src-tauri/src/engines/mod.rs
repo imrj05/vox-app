@@ -90,6 +90,8 @@ pub struct TranscriptionOutput {
     pub text: String,
     pub language: Option<String>,
     pub engine: &'static str,
+    /// Average ASR confidence (0.0–1.0) when the engine can report it.
+    pub confidence: Option<f32>,
 }
 
 impl TranscriptionOutput {
@@ -98,7 +100,17 @@ impl TranscriptionOutput {
             text,
             language,
             engine,
+            confidence: None,
         }
+    }
+
+    pub fn with_confidence(mut self, confidence: Option<f32>) -> Self {
+        // Zero is treated as "engine did not report confidence" rather than
+        // "the engine was certain of nothing" — some locales return 0.
+        self.confidence = confidence
+            .filter(|value| *value > 0.0)
+            .map(|value| value.clamp(0.0, 1.0));
+        self
     }
 }
 
@@ -308,7 +320,7 @@ fn run_engine(
     context: Option<&str>,
     language: &str,
     contextual_strings: &[String],
-) -> Result<(String, Option<String>, &'static str), String> {
+) -> Result<(String, Option<String>, &'static str, Option<f32>), String> {
     let model_path = engine.pick_model(models_dir, None)?;
     let request = TranscriptionRequest {
         model_path: model_path.as_deref(),
@@ -318,7 +330,14 @@ fn run_engine(
         language: Some(language),
         contextual_strings: contextual_strings.to_vec(),
     };
-    timed_transcribe(engine, &request).map(|output| (output.text, output.language, output.engine))
+    timed_transcribe(engine, &request).map(|output| {
+        (
+            output.text,
+            output.language,
+            output.engine,
+            output.confidence,
+        )
+    })
 }
 
 /// Transcribe an already-resolved model file (used for explicit model
@@ -330,7 +349,7 @@ fn transcribe_resolved(
     context: Option<&str>,
     language: &str,
     contextual_strings: &[String],
-) -> Result<(String, Option<String>, &'static str), String> {
+) -> Result<(String, Option<String>, &'static str, Option<f32>), String> {
     let engine = engine_for_model(model_path)?;
     let request = TranscriptionRequest {
         model_path: Some(model_path),
@@ -340,7 +359,14 @@ fn transcribe_resolved(
         language: Some(language),
         contextual_strings: contextual_strings.to_vec(),
     };
-    timed_transcribe(engine, &request).map(|output| (output.text, output.language, output.engine))
+    timed_transcribe(engine, &request).map(|output| {
+        (
+            output.text,
+            output.language,
+            output.engine,
+            output.confidence,
+        )
+    })
 }
 
 /// Auto-mode primary-engine strategy (spec §7).
@@ -427,7 +453,7 @@ fn fallback_candidates_for_language(
 
 /// Top-level transcription entry point (spec §31): resolves engine + model
 /// from user selection and runs the pipeline.
-/// Returns `(text, detected_language, engine_id)`.
+/// Returns `(text, detected_language, engine_id, confidence)`.
 ///
 /// Routing rules:
 ///   1. Explicit `model_name` (Models page) — that model decides the engine.
@@ -445,7 +471,7 @@ pub fn route_transcribe(
     language: Option<&str>,
     selection: EngineSelection,
     mut on_fallback: impl FnMut(&'static str, &'static str, &'static str),
-) -> Result<(String, Option<String>, &'static str), String> {
+) -> Result<(String, Option<String>, &'static str, Option<f32>), String> {
     route_transcribe_with_vocabulary(
         models_dir,
         audio_path,
@@ -473,7 +499,7 @@ pub fn route_transcribe_with_vocabulary(
     selection: EngineSelection,
     mut on_fallback: impl FnMut(&'static str, &'static str, &'static str),
     contextual_strings: &[String],
-) -> Result<(String, Option<String>, &'static str), String> {
+) -> Result<(String, Option<String>, &'static str, Option<f32>), String> {
     let language = language
         .map(str::trim)
         .filter(|value| !value.is_empty())

@@ -159,9 +159,28 @@ fn transcribe_with_whisper(request: &TranscriptionRequest) -> Result<Transcripti
         .map_err(|error| error.to_string())?;
 
     let mut text = String::new();
+    let mut token_probability_sum = 0.0f32;
+    let mut token_count = 0usize;
     for segment in state.as_iter() {
         text.push_str(&segment.to_string());
         text.push(' ');
+
+        // Average non-special token probabilities as a transcript-level
+        // confidence signal. whisper.cpp exposes a probability per token;
+        // special markers such as [_BEG_] are excluded.
+        for index in 0..segment.n_tokens() {
+            let Some(token) = segment.get_token(index) else {
+                continue;
+            };
+            let piece = token.to_str_lossy().unwrap_or_default();
+            let trimmed = piece.trim();
+            let is_special = trimmed.starts_with('[') && trimmed.ends_with(']');
+            if trimmed.is_empty() || is_special || !trimmed.chars().any(|ch| ch.is_alphanumeric()) {
+                continue;
+            }
+            token_probability_sum += token.token_probability();
+            token_count += 1;
+        }
     }
 
     let text = text.trim().to_string();
@@ -169,10 +188,12 @@ fn transcribe_with_whisper(request: &TranscriptionRequest) -> Result<Transcripti
         return Err("Whisper returned an empty transcript".to_string());
     }
 
+    let confidence = (token_count > 0).then(|| token_probability_sum / token_count as f32);
+
     // Report the language whisper.cpp actually used (auto-detected or pinned).
     let detected = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string);
 
-    Ok(TranscriptionOutput::new("whisper", text, detected))
+    Ok(TranscriptionOutput::new("whisper", text, detected).with_confidence(confidence))
 }
 
 /// Cache keyed by model file path. Dictation is single-user, so holding the

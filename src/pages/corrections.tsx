@@ -11,7 +11,11 @@ import {
   saveCorrections,
   type CorrectionRow,
 } from "@/lib/db";
-import { recordVocabularyCorrection } from "@/lib/vocabulary";
+import {
+  evaluateVocabulary,
+  recordVocabularyCorrection,
+  type VocabularyEvalReport,
+} from "@/lib/vocabulary";
 import { ArrowTurnBackward, CheckCircle2, Plus, Trash2 } from "@/components/icons";
 
 function formatTimestamp(timestamp: number): string {
@@ -30,15 +34,28 @@ function formatTimestamp(timestamp: number): string {
  */
 export function CorrectionsPage() {
   const [corrections, setCorrections] = useState<CorrectionRow[]>([]);
-  const [stats, setStats] = useState({ totalCorrections: 0, dictationsImproved: 0, distinctTerms: 0 });
+  const [stats, setStats] = useState({
+    totalCorrections: 0,
+    dictationsImproved: 0,
+    distinctTerms: 0,
+    lowConfidenceCorrections: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [heard, setHeard] = useState("");
   const [correct, setCorrect] = useState("");
   const [teaching, setTeaching] = useState(false);
+  const [evalReport, setEvalReport] = useState<VocabularyEvalReport | null>(null);
+  const [evalLoading, setEvalLoading] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
 
   const refresh = useCallback(async (): Promise<{
     pairs: CorrectionRow[];
-    stats: { totalCorrections: number; dictationsImproved: number; distinctTerms: number };
+    stats: {
+      totalCorrections: number;
+      dictationsImproved: number;
+      distinctTerms: number;
+      lowConfidenceCorrections: number;
+    };
   }> => {
     const [pairs, nextStats] = await Promise.all([getCorrections(), getCorrectionsStats()]);
     setCorrections(pairs);
@@ -64,6 +81,18 @@ export function CorrectionsPage() {
       ignore = true;
     };
   }, []);
+
+  const runQualityCheck = async () => {
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      setEvalReport(await evaluateVocabulary());
+    } catch (error) {
+      setEvalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setEvalLoading(false);
+    }
+  };
 
   const teachCorrection = async () => {
     const source = heard.trim().toLowerCase();
@@ -104,10 +133,11 @@ export function CorrectionsPage() {
             </div>
           </header>
 
-          <div className="stat-strip divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <div className="stat-strip divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0">
             <StatCard label="Corrections applied" value={stats.totalCorrections.toLocaleString()} />
             <StatCard label="Dictations improved" value={stats.dictationsImproved.toLocaleString()} />
             <StatCard label="Terms improved" value={stats.distinctTerms.toLocaleString()} />
+            <StatCard label="Needs review" value={stats.lowConfidenceCorrections.toLocaleString()} />
           </div>
 
           <div className="rounded-2xl border border-border bg-card p-4">
@@ -147,6 +177,63 @@ export function CorrectionsPage() {
             </div>
           </div>
 
+          <div className="rounded-2xl border border-border bg-card p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">Quality check</p>
+                <p className="mt-0.5 max-w-xl text-xs text-muted-foreground">
+                  Run the built-in evaluation set against your active vocabulary.
+                  It checks word errors, missed technical terms, and false
+                  corrections — entirely on this device.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void runQualityCheck()}
+                disabled={evalLoading}
+              >
+                {evalLoading ? (
+                  <Spinner className="size-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                Run check
+              </Button>
+            </div>
+            {evalError ? (
+              <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {evalError}
+              </p>
+            ) : null}
+            {evalReport ? (
+              <div className="mt-3 space-y-2">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <QualityMetric
+                    label="Word error rate"
+                    value={formatRate(evalReport.vocabularyWer)}
+                  />
+                  <QualityMetric
+                    label="Technical term errors"
+                    value={formatRate(evalReport.technicalTermErrorRate)}
+                  />
+                  <QualityMetric
+                    label="False corrections"
+                    value={formatRate(evalReport.falseCorrectionRate)}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {
+                    evalReport.caseResults.filter((result) => result.passed)
+                      .length
+                  }{" "}
+                  of {evalReport.caseResults.length} cases match the expected
+                  output.
+                </p>
+              </div>
+            ) : null}
+          </div>
+
           {loading ? (
             <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
               <Spinner className="size-4" />
@@ -184,6 +271,15 @@ export function CorrectionsPage() {
                           {row.count}×
                         </Badge>
                       )}
+                      {isLowConfidence(row) && (
+                        <Badge
+                          variant="outline"
+                          className="h-5 text-[10px] text-muted-foreground"
+                          title="This correction was applied with low match or ASR confidence"
+                        >
+                          Low confidence
+                        </Badge>
+                      )}
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground/80">
                       Last corrected {formatTimestamp(row.last_used_at)}
@@ -215,4 +311,29 @@ function StatCard({ label, value }: { label: string; value: string }) {
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
+}
+
+function QualityMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-2">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 font-mono text-sm font-medium tabular-nums text-foreground">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function formatRate(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+/** A correction is worth reviewing when either the lexical match or the ASR
+ * confidence was weak. */
+function isLowConfidence(row: CorrectionRow): boolean {
+  const matchLow = row.match_confidence != null && row.match_confidence < 0.92;
+  const asrLow = row.asr_confidence != null && row.asr_confidence < 0.7;
+  return matchLow || asrLow;
 }

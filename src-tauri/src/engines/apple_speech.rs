@@ -163,13 +163,18 @@ fn map_sidecar_error(code: i64, message: &str) -> String {
     }
 }
 
-fn response_to_result(response: Value) -> Result<String, String> {
+fn response_to_result(response: Value) -> Result<(String, Option<f32>), String> {
     if response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        return Ok(response
+        let text = response
             .get("text")
             .and_then(Value::as_str)
             .unwrap_or("")
-            .to_string());
+            .to_string();
+        let confidence = response
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32);
+        return Ok((text, confidence));
     }
     let code = response.get("code").and_then(Value::as_i64).unwrap_or(7);
     let message = response
@@ -185,7 +190,7 @@ fn serve_transcribe(
     audio_path: &str,
     locale: Option<&str>,
     contextual_strings: &[String],
-) -> Result<String, String> {
+) -> Result<(String, Option<f32>), String> {
     let lock = serve_session_cell();
     // A poisoned lock only matters if a panic happened mid-request; recover so
     // transcription never gets permanently wedged.
@@ -271,7 +276,8 @@ impl TranscriptionEngine for AppleSpeechEngine {
 
         let locale = locale_code(request.language);
         let started = Instant::now();
-        let text = serve_transcribe(audio_path, locale.as_deref(), &request.contextual_strings)?;
+        let (text, confidence) =
+            serve_transcribe(audio_path, locale.as_deref(), &request.contextual_strings)?;
         eprintln!(
             "[VOX][ASR] apple-speech transcription finished in {}ms",
             started.elapsed().as_millis()
@@ -285,7 +291,7 @@ impl TranscriptionEngine for AppleSpeechEngine {
         // requested when pinned so transcripts keep their language label.
         let detected = locale.map(|code| code.split('-').next().unwrap_or("en").to_string());
 
-        Ok(TranscriptionOutput::new("apple", text, detected))
+        Ok(TranscriptionOutput::new("apple", text, detected).with_confidence(confidence))
     }
 }
 

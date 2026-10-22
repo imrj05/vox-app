@@ -209,3 +209,23 @@ export async function recordVocabularyCorrection(source: string, canonical: stri
 export async function migrateLegacyDictionary(dictionary: string): Promise<number> {
   return invoke<number>("vocabulary_migrate_dictionary", { dictionary });
 }
+
+export interface VocabularyEvalCase {
+  raw: string;
+  output: string;
+  expected: string;
+  passed: boolean;
+  missingTerms: string[];
+}
+
+export interface VocabularyEvalReport {
+  vocabularyWer: number;
+  technicalTermErrorRate: number;
+  falseCorrectionRate: number;
+  caseResults: VocabularyEvalCase[];
+}
+
+/** Run the deterministic vocabulary evaluation dataset (local, no network). */
+export async function evaluateVocabulary(): Promise<VocabularyEvalReport> {
+  return invoke<VocabularyEvalReport>("vocabulary_eval");
+}

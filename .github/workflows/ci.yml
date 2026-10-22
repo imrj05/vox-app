@@ -86,6 +86,9 @@ jobs:
       - name: Run Rust check
         working-directory: src-tauri
         run: cargo check --workspace
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --workspace
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
       - name: Upload macOS artifacts

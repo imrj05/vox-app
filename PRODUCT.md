@@ -33,13 +33,20 @@ The only Mac dictation app with **multi-engine local routing** — Apple Speech,
 - Custom dictionary (with pronunciation hints), voice-command snippets, hands-free mode.
 - Local SQLite persistence for transcripts, models, settings; autostart; signed auto-updates.
 - Floating widget: transparent always-on-top capsule with live waveform, timer, shimmer transcribing state.
-- Text insertion is cursor-direct (no clipboard).
+- Text insertion defaults to cursor-direct typing; an optional clipboard-paste mode restores the previous clipboard for long transcripts.
 - Open decision (undecided): distribution/pricing model — not yet stated by owner.
 
 ## Brand Commitments
 - Name is **Vox** and stays Vox (owner-confirmed). Identifier: `app.vox.desktop`.
 - "Local-only / private by default" is a binding product promise: transcription must never require external servers.
 - macOS 10.15 floor and Metal acceleration remain binding.
+
+## Non-Goals
+- No accounts, sign-in, or user profiles.
+- No cloud transcription, cloud rewriting, or remote inference.
+- No cross-device sync, teams, shared libraries, or organization features.
+- No telemetry by default. Optional crash reporting stays off unless the user enables it.
+- Windows/Linux distribution is out of scope.
 
 ## Evidence on Hand
 - Real working app with all capabilities above shipped (v0.0.8, released via signed updater).

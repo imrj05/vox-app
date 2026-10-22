@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
-import { hideWidget, setWidgetSize } from "@/lib/native";
+import { hideWidget, setWidgetSize, undoLastInsertion } from "@/lib/native";
 import { X } from "@/components/icons";
 import "./widget.css";
 
@@ -11,6 +11,7 @@ import "./widget.css";
 
 const BAR_COUNT = 7;
 const THEME_KEY = "theme";
+const LIVE_PREVIEW_ENABLED_KEY = "live_preview_enabled";
 
 type WidgetMode = "idle" | "recording" | "transcribing" | "done" | "error";
 
@@ -19,6 +20,8 @@ interface WidgetState {
   message: string;
   elapsedSeconds?: number;
   showEnhance?: boolean;
+  /** Show the Undo action for the transcript that was just inserted. */
+  showUndo?: boolean;
   /** Active app detected at recording start (e.g. "Visual Studio Code"). */
   appName?: string | null;
   /** Active window title (e.g. "user.service.ts — my-project — VS Code"). */
@@ -49,6 +52,13 @@ function clamp01(value: number): number {
 
 function shapeVoiceLevel(value: number): number {
   return Math.pow(clamp01(value), 0.55);
+}
+
+/** Keep the most recent words visible when a partial overflows the pill. */
+function tailText(text: string, maxChars = 90): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `…${trimmed.slice(-maxChars)}`;
 }
 
 function mapAudioBarsToMeter(bars: number[]): number[] {
@@ -107,14 +117,20 @@ function VoiceDots({
   audioLevel,
   elapsed,
   message,
+  liveText,
+  canUndo,
   onClose,
+  onUndo,
 }: {
   mode: WidgetMode;
   meterLevels: number[];
   audioLevel: number;
   elapsed: number | undefined;
   message: string;
+  liveText: string;
+  canUndo: boolean;
   onClose: () => void;
+  onUndo: () => void;
 }) {
   const isRecording = mode === "recording";
 
@@ -149,6 +165,17 @@ function VoiceDots({
               <CheckIcon />
               <span className="widget-status-text">{message || "Done"}</span>
             </div>
+            {canUndo && (
+              <button
+                type="button"
+                className="widget-undo-btn"
+                onClick={onUndo}
+                onMouseDown={(event) => event.preventDefault()}
+                aria-label="Undo last dictation"
+              >
+                Undo
+              </button>
+            )}
             <button
               type="button"
               className="widget-close-btn"
@@ -188,9 +215,13 @@ function VoiceDots({
 
             <span className="widget-timer">{formatElapsed(elapsed ?? 0)}</span>
 
-            {message && message !== "Listening…" && (
+            {liveText ? (
+              <span className="widget-live-text" title={liveText}>
+                {tailText(liveText)}
+              </span>
+            ) : message && message !== "Listening…" ? (
               <span className="widget-mode-label">{message}</span>
-            )}
+            ) : null}
           </>
         )}
       </div>
@@ -276,6 +307,9 @@ export function Widget() {
   });
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
+  const [liveText, setLiveText] = useState("");
+  const pendingLiveText = useRef("");
+  const liveTextTimer = useRef<number | null>(null);
   const prevMode = useRef<WidgetMode>("idle");
   const capsuleRef = useRef<HTMLDivElement>(null);
 
@@ -340,6 +374,16 @@ export function Widget() {
       if (soundOn && prev === "recording" && next !== "recording") playStopTone();
       prevMode.current = next;
       setState(event.payload);
+      // Partials only belong to the recording phase; clear them as soon as the
+      // widget moves to transcribing/done/error.
+      if (next !== "recording") {
+        if (liveTextTimer.current !== null) {
+          window.clearTimeout(liveTextTimer.current);
+          liveTextTimer.current = null;
+        }
+        pendingLiveText.current = "";
+        setLiveText("");
+      }
     }).then((cleanup) => {
       unlisten = cleanup;
     }).catch((err) => console.error("[vox-widget] failed to listen vox-widget-state:", err));
@@ -357,6 +401,44 @@ export function Widget() {
     }).catch((err) => console.error("[vox-widget] failed to listen vox-audio-bars:", err));
     return () => {
       unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ text: string; isFinal: boolean }>("vox-live-transcript", (event) => {
+      const enabled = localStorage.getItem(LIVE_PREVIEW_ENABLED_KEY) !== "false";
+      if (!enabled) {
+        pendingLiveText.current = "";
+        setLiveText("");
+        return;
+      }
+
+      // Partial results arrive continuously. Coalesce them so the native
+      // window is not resized on every token, but apply finals immediately.
+      pendingLiveText.current = event.payload.text?.trim() ?? "";
+      if (event.payload.isFinal) {
+        if (liveTextTimer.current !== null) {
+          window.clearTimeout(liveTextTimer.current);
+          liveTextTimer.current = null;
+        }
+        setLiveText(pendingLiveText.current);
+        return;
+      }
+      if (liveTextTimer.current !== null) return;
+      liveTextTimer.current = window.setTimeout(() => {
+        liveTextTimer.current = null;
+        setLiveText(pendingLiveText.current);
+      }, 150);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    }).catch((err) => console.error("[vox-widget] failed to listen vox-live-transcript:", err));
+    return () => {
+      unlisten?.();
+      if (liveTextTimer.current !== null) {
+        window.clearTimeout(liveTextTimer.current);
+        liveTextTimer.current = null;
+      }
     };
   }, []);
 
@@ -386,6 +468,26 @@ export function Widget() {
     void hideWidget().catch(() => {});
   };
 
+  const undo = async () => {
+    try {
+      await undoLastInsertion();
+      setState((prev) => ({
+        ...prev,
+        message: "Dictation undone",
+        showUndo: false,
+      }));
+      window.setTimeout(() => close(), 900);
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        mode: "error",
+        message: error instanceof Error ? error.message : String(error),
+        showUndo: false,
+      }));
+      window.setTimeout(() => close(), 2600);
+    }
+  };
+
   return (
     <div className="widget-root">
       <div
@@ -398,7 +500,10 @@ export function Widget() {
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
           message={state.message}
+          liveText={state.mode === "recording" ? liveText : ""}
+          canUndo={Boolean(state.showUndo) && state.mode === "done"}
           onClose={close}
+          onUndo={() => void undo()}
         />
       </div>
     </div>

@@ -35,6 +35,54 @@ pub struct CorrectionResult {
     pub corrections: Vec<AppliedCorrection>,
 }
 
+/// Context-dependent correction policy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CorrectionOptions {
+    /// Developer-context transcripts are code, commands, paths, and symbols.
+    /// Only exact, multi-word replacements made of plain lowercase words are
+    /// safe there: single-token canonicalization could rename an identifier,
+    /// and fuzzy matching could change a path or package name.
+    pub developer_context: bool,
+    /// Average confidence reported by the ASR engine (0.0–1.0), when available.
+    /// Low confidence makes fuzzy repair more conservative; exact alias
+    /// matches remain deterministic and are never downgraded.
+    pub asr_confidence: Option<f32>,
+}
+
+/// Low ASR confidence raises the fuzzy-match bar. A transcript the engine was
+/// unsure about needs a closer lexical match before Vox rewrites a word.
+fn effective_auto_threshold(base: f32, asr_confidence: Option<f32>) -> f32 {
+    match asr_confidence {
+        Some(confidence) if confidence < 0.55 => base.max(0.97),
+        Some(confidence) if confidence < 0.70 => base.max(0.95),
+        Some(confidence) if confidence < 0.85 => base.max(0.93),
+        _ => base,
+    }
+}
+
+/// Characters that join tokens into a code identifier, path, URL, or package
+/// name. A vocabulary match that touches one of these is not prose.
+const CODE_SEPARATORS: [char; 10] = ['_', '.', '-', '/', '\\', ':', '@', '#', '$', '~'];
+
+fn char_before(text: &str, index: usize) -> Option<char> {
+    text[..index].chars().next_back()
+}
+
+fn char_at(text: &str, index: usize) -> Option<char> {
+    text[index..].chars().next()
+}
+
+/// True when `separator` on the far side of a match still joins an
+/// alphanumeric neighbour, e.g. `code.ts` or `foo.vs`.
+fn separator_joins_identifier(separator: char, neighbour: Option<char>) -> bool {
+    match separator {
+        // In prose a period or hyphen is usually punctuation; it only joins an
+        // identifier when an alphanumeric character follows directly.
+        '.' | '-' => neighbour.is_some_and(|ch| ch.is_alphanumeric()),
+        _ => true,
+    }
+}
+
 /// One transcript token with its byte span in the original text.
 struct Token {
     normalized: String,
@@ -75,8 +123,62 @@ pub fn correct_transcript(
     trie: &PhraseTrie,
     settings: &VocabularySettings,
 ) -> CorrectionResult {
+    correct_transcript_with_options(raw, trie, settings, CorrectionOptions::default())
+}
+
+/// True when a match is safe to rewrite in a developer context: at least two
+/// plain lowercase words with no identifier/path separator in between or at
+/// either edge. CamelCase and PascalCase are skipped because the developer
+/// formatter has already produced an identifier there.
+fn safe_in_developer_context(raw: &str, tokens: &[Token], start_token: usize, len: usize) -> bool {
+    if len < 2 {
+        return false;
+    }
+    let all_lowercase = (start_token..start_token + len).all(|index| {
+        let token = &tokens[index];
+        raw[token.start..token.end] == token.normalized
+    });
+    if !all_lowercase {
+        return false;
+    }
+    let span_start = tokens[start_token].start;
+    let span_end = tokens[start_token + len - 1].end;
+    let touches_separator = char_before(raw, span_start).is_some_and(|separator| {
+        CODE_SEPARATORS.contains(&separator)
+            && separator_joins_identifier(
+                separator,
+                char_before(raw, span_start - separator.len_utf8()),
+            )
+    }) || char_at(raw, span_end).is_some_and(|separator| {
+        CODE_SEPARATORS.contains(&separator)
+            && separator_joins_identifier(separator, char_at(raw, span_end + separator.len_utf8()))
+    });
+    if touches_separator {
+        return false;
+    }
+    !(start_token..start_token + len - 1).any(|index| {
+        raw[tokens[index].end..tokens[index + 1].start]
+            .chars()
+            .any(|ch| CODE_SEPARATORS.contains(&ch))
+    })
+}
+
+pub fn correct_transcript_with_options(
+    raw: &str,
+    trie: &PhraseTrie,
+    settings: &VocabularySettings,
+    options: CorrectionOptions,
+) -> CorrectionResult {
     let tokens = tokenize(raw);
     let normalized: Vec<String> = tokens.iter().map(|t| t.normalized.clone()).collect();
+    let auto_threshold =
+        effective_auto_threshold(settings.auto_correct_threshold, options.asr_confidence);
+    // The cautious band is corroboration-based and only safe when the engine
+    // was reasonably confident about what it heard.
+    let cautious_enabled = options
+        .asr_confidence
+        .is_none_or(|confidence| confidence >= 0.70)
+        && settings.cautious_correct_threshold < auto_threshold;
 
     let mut corrections: Vec<AppliedCorrection> = Vec::new();
     // Pre-scan: token indices of confirmed exact matches — the corroboration
@@ -113,12 +215,14 @@ pub fn correct_transcript(
         if let Some((len, candidate)) = trie.longest_match(&normalized, t) {
             let span_start = token.start;
             let span_end = tokens[t + len - 1].end;
-            result.push_str(&raw[cursor..span_start]);
-            result.push_str(&candidate.canonical);
-            cursor = span_end;
+            let can_rewrite =
+                !options.developer_context || safe_in_developer_context(raw, &tokens, t, len);
 
             // Canonical already spelled correctly? Still an anchor, not a fix.
-            if raw[span_start..span_end] != candidate.canonical {
+            if can_rewrite && raw[span_start..span_end] != candidate.canonical {
+                result.push_str(&raw[cursor..span_start]);
+                result.push_str(&candidate.canonical);
+                cursor = span_end;
                 corrections.push(AppliedCorrection {
                     entry_id: candidate.entry_id.clone(),
                     canonical: candidate.canonical.clone(),
@@ -132,11 +236,17 @@ pub fn correct_transcript(
             continue;
         }
 
+        // Fuzzy matching is too risky on code and commands: a single edit can
+        // turn an identifier or path into a different one. Developer contexts
+        // therefore only receive exact phrase matches above.
+        if options.developer_context {
+            t += 1;
+            continue;
+        }
+
         // Fuzzy fallback for single tokens only (spec §15): multi-token fuzzy
         // matching is too error-prone for deterministic correction.
-        if let Some(candidate) =
-            trie.fuzzy_match(&token.normalized, settings.auto_correct_threshold)
-        {
+        if let Some(candidate) = trie.fuzzy_match(&token.normalized, auto_threshold) {
             result.push_str(&raw[cursor..token.start]);
             result.push_str(&candidate.canonical);
             cursor = token.end;
@@ -154,7 +264,7 @@ pub fn correct_transcript(
 
         // Cautious band (0.80–0.92): correct only with contextual
         // corroboration from a canonical term nearby (spec §15/§16).
-        if settings.cautious_correct_threshold < settings.auto_correct_threshold {
+        if cautious_enabled {
             if let Some(candidate) =
                 trie.fuzzy_match(&token.normalized, settings.cautious_correct_threshold)
             {
@@ -396,6 +506,140 @@ mod tests {
             correct("the wifi of old times", &packs).text,
             "the Wi-Fi of old times"
         );
+    }
+
+    #[test]
+    fn developer_context_only_corrects_safe_multiword_phrases() {
+        let packs = pack_with(vec![
+            ("VS Code", vec!["vs code"]),
+            ("username", vec!["user name"]),
+            ("GitHub", vec!["git hub", "github"]),
+        ]);
+        let context = build_context(&packs, None, 0);
+        let trie = PhraseTrie::build(&context);
+        let options = CorrectionOptions {
+            developer_context: true,
+            asr_confidence: None,
+        };
+        let settings = VocabularySettings::default();
+
+        // Spoken phrase in a comment or commit message is safe.
+        let result = correct_transcript_with_options(
+            "open vs code and check git hub",
+            &trie,
+            &settings,
+            options,
+        );
+        assert_eq!(result.text, "open VS Code and check GitHub");
+
+        // Sentence punctuation at the edge is not a path separator.
+        let result = correct_transcript_with_options("open vs code.", &trie, &settings, options);
+        assert_eq!(result.text, "open VS Code.");
+
+        // A filename or path is left alone.
+        let result = correct_transcript_with_options("open vs code.ts", &trie, &settings, options);
+        assert_eq!(result.text, "open vs code.ts");
+
+        // CamelCase identifiers must keep their casing.
+        let result = correct_transcript_with_options("let userName = 1", &trie, &settings, options);
+        assert_eq!(result.text, "let userName = 1");
+
+        // Identifier and path separators mean this is one token, not a phrase.
+        let result = correct_transcript_with_options(
+            "import git_hub from 'vs-code'",
+            &trie,
+            &settings,
+            options,
+        );
+        assert_eq!(result.text, "import git_hub from 'vs-code'");
+
+        // Single-token aliases are skipped in code.
+        let result = correct_transcript_with_options("const github = 1", &trie, &settings, options);
+        assert_eq!(result.text, "const github = 1");
+    }
+
+    #[test]
+    fn developer_context_skips_fuzzy_matches() {
+        let packs = pack_with(vec![("shadcn", vec!["shad cn"])]);
+        let context = build_context(&packs, None, 0);
+        let trie = PhraseTrie::build(&context);
+        let options = CorrectionOptions {
+            developer_context: true,
+            asr_confidence: None,
+        };
+
+        let result = correct_transcript_with_options(
+            "install shadcnx today",
+            &trie,
+            &VocabularySettings::default(),
+            options,
+        );
+        assert_eq!(result.text, "install shadcnx today");
+        assert!(result.corrections.is_empty());
+    }
+
+    #[test]
+    fn low_asr_confidence_requires_stronger_fuzzy_match() {
+        let packs = pack_with(vec![("GitHub Actions", vec!["github actions"])]);
+        let context = build_context(&packs, None, 0);
+        let trie = PhraseTrie::build(&context);
+        let settings = VocabularySettings::default();
+
+        let confident = CorrectionOptions {
+            developer_context: false,
+            asr_confidence: Some(0.95),
+        };
+        let result =
+            correct_transcript_with_options("run githubactionsx now", &trie, &settings, confident);
+        assert!(
+            result.text.contains("GitHub Actions"),
+            "got: {}",
+            result.text
+        );
+
+        let uncertain = CorrectionOptions {
+            developer_context: false,
+            asr_confidence: Some(0.40),
+        };
+        let result =
+            correct_transcript_with_options("run githubactionsx now", &trie, &settings, uncertain);
+        assert_eq!(result.text, "run githubactionsx now");
+        assert!(result.corrections.is_empty());
+    }
+
+    #[test]
+    fn low_asr_confidence_disables_cautious_band() {
+        let packs = pack_with(vec![
+            ("Kubernetes", vec!["kubernetes"]),
+            ("shadcn", vec!["shad cn"]),
+        ]);
+        let context = build_context(&packs, None, 0);
+        let trie = PhraseTrie::build(&context);
+        let settings = VocabularySettings::default();
+
+        let confident = CorrectionOptions {
+            developer_context: false,
+            asr_confidence: Some(0.90),
+        };
+        let result = correct_transcript_with_options(
+            "deploy kubernets with shadcn",
+            &trie,
+            &settings,
+            confident,
+        );
+        assert!(result.text.contains("Kubernetes"), "got: {}", result.text);
+
+        let uncertain = CorrectionOptions {
+            developer_context: false,
+            asr_confidence: Some(0.45),
+        };
+        let result = correct_transcript_with_options(
+            "deploy kubernets with shadcn",
+            &trie,
+            &settings,
+            uncertain,
+        );
+        assert_eq!(result.text, "deploy kubernets with shadcn");
     }
 
     #[test]

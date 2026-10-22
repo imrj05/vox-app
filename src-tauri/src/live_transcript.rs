@@ -27,6 +27,7 @@ use crate::engines::apple_speech::locale_code;
 #[derive(Default)]
 struct LiveResultState {
     final_text: Option<String>,
+    final_confidence: Option<f32>,
     finished: bool,
 }
 
@@ -172,6 +173,11 @@ fn start_inner(app: &AppHandle, language: &str) -> Result<(), String> {
                     if is_final && !text.is_empty() {
                         if let Ok(mut state) = result_for_reader.state.lock() {
                             state.final_text = Some(text.clone());
+                            state.final_confidence = payload
+                                .get("confidence")
+                                .and_then(serde_json::Value::as_f64)
+                                .map(|value| (value as f32).clamp(0.0, 1.0))
+                                .filter(|value| *value > 0.0);
                             result_for_reader.ready.notify_all();
                         }
                     }
@@ -209,7 +215,7 @@ fn start_inner(app: &AppHandle, language: &str) -> Result<(), String> {
 /// Stop the live preview and return its final result when one arrived before
 /// the short grace period. A missing result is normal and tells the caller to
 /// use the recorded-file fallback.
-pub fn stop() -> Option<String> {
+pub fn stop() -> Option<(String, Option<f32>)> {
     let session = live_session_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -230,7 +236,7 @@ pub fn stop() -> Option<String> {
     let _ = stdin.flush();
 
     let deadline = Instant::now() + Duration::from_millis(600);
-    let final_text = {
+    let final_result = {
         let mut state = result
             .state
             .lock()
@@ -248,7 +254,10 @@ pub fn stop() -> Option<String> {
                 break;
             }
         }
-        state.final_text.take()
+        state
+            .final_text
+            .take()
+            .map(|text| (text, state.final_confidence.take()))
     };
     drop(stdin);
 
@@ -275,7 +284,7 @@ pub fn stop() -> Option<String> {
         }
     });
 
-    final_text
+    final_result
 }
 
 #[cfg(test)]

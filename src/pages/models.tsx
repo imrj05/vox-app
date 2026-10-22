@@ -342,12 +342,13 @@ export function ModelsPage() {
             (engine as string) === "whisper" ? selectedModel : undefined,
             status.appName,
             status.windowTitle,
-            status.previewText
+            status.previewText,
+            status.previewConfidence
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;
           setTranscriptionResult(result);
-          await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, undefined, result.language ?? "en");
+          await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, undefined, result.asrText ?? null, result.language ?? "en", result.engine ?? null, result.timings ?? null);
           await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
           await deleteRecordingFile(result.audioPath).catch(() => {});
         }

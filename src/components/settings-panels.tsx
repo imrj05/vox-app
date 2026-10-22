@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   Database,
   ExternalLink,
-  Github,
   Globe,
   Keyboard,
   ListBullet,
@@ -68,10 +67,10 @@ import {
 import { HotkeyPicker } from "@/components/hotkey-picker";
 import { clearAppData, clearTranscripts } from "@/lib/db";
 import { useAppStore } from "@/store/app-store";
-import { getPocketBase } from "@/lib/pocketbase";
 import type {
   CleanupLevel,
   DictationLanguage,
+  InsertionMethod,
   TranscriptFormattingMode,
   TranscriptRetention,
   TriggerMode,
@@ -82,10 +81,14 @@ export function GeneralSection() {
     setTranscriptFormattingMode,
     cleanupLevel,
     setCleanupLevel,
+    insertionMethod,
+    setInsertionMethod,
     language,
     setLanguage,
     voiceCommandsEnabled,
     setVoiceCommandsEnabled,
+    livePreviewEnabled,
+    setLivePreviewEnabled,
     whisperMode,
     setWhisperMode,
   } = useAppStore();
@@ -179,6 +182,24 @@ export function GeneralSection() {
       </SettingsCard>
       <SettingsCard className="space-y-4">
         <SettingGroupHeader
+          icon={<Keyboard className="h-4 w-4" />}
+          title="Text insertion"
+          description="How Vox places the finished transcript at your cursor."
+        />
+        <OptionGrid label="Insertion method" className="sm:grid-cols-2">
+          {insertionMethodOptions.map((option) => (
+            <OptionTile
+              key={option.value}
+              selected={insertionMethod === option.value}
+              onSelect={() => void setInsertionMethod(option.value)}
+              title={option.label}
+              description={option.description}
+            />
+          ))}
+        </OptionGrid>
+      </SettingsCard>
+      <SettingsCard className="space-y-4">
+        <SettingGroupHeader
           icon={<Globe className="h-4 w-4" />}
           title="Dictation language"
           description="Choose the language Vox should transcribe. Auto detects from your speech; Hinglish works best with a multilingual model."
@@ -206,6 +227,20 @@ export function GeneralSection() {
               aria-label="Voice commands"
               checked={voiceCommandsEnabled}
               onCheckedChange={(checked) => void setVoiceCommandsEnabled(checked)}
+            />
+          }
+        />
+        <div className="h-px bg-border" />
+        <SettingRow
+          icon={<Sparkles className="h-4 w-4" />}
+          title="Live preview"
+          description="Show words in the floating widget as you speak. Available with Apple Speech."
+          action={
+            <Switch
+              id="live-preview"
+              aria-label="Live preview"
+              checked={livePreviewEnabled}
+              onCheckedChange={(checked) => void setLivePreviewEnabled(checked)}
             />
           }
         />
@@ -247,6 +282,33 @@ export function GeneralSection() {
     </div>
   );
 }
+
+const MACRO_ACTION_PATTERN =
+  /\{(enter|return|tab|escape|esc|backspace|delete|del|space|up|down|left|right|home|end|pageup|pagedown|wait:\d+|[a-z]+\+[^}]+)\}/i;
+
+function isMacroExpansion(expansion: string): boolean {
+  return MACRO_ACTION_PATTERN.test(expansion);
+}
+
+const insertionMethodOptions: Array<{
+  value: InsertionMethod;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "typing",
+    label: "Type at cursor",
+    description:
+      "Default. Types directly into the focused field without touching the clipboard.",
+  },
+  {
+    value: "clipboard",
+    label: "Paste via clipboard",
+    description:
+      "Faster and more reliable for long transcripts. Vox restores your previous clipboard afterwards.",
+  },
+];
+
 const formattingModeOptions: Array<{
   value: TranscriptFormattingMode;
   label: string;
@@ -327,9 +389,11 @@ export function SnippetsSection() {
   const { snippets, addSnippet, updateSnippet, removeSnippet } = useAppStore();
   const [triggerInput, setTriggerInput] = useState("");
   const [expansionInput, setExpansionInput] = useState("");
+  const [appPatternInput, setAppPatternInput] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editTrigger, setEditTrigger] = useState("");
   const [editExpansion, setEditExpansion] = useState("");
+  const [editAppPattern, setEditAppPattern] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -340,19 +404,21 @@ export function SnippetsSection() {
     setError(null);
     setMessage(null);
     try {
-      await addSnippet(trigger, expansion);
+      await addSnippet(trigger, expansion, appPatternInput.trim() || null);
       setTriggerInput("");
       setExpansionInput("");
+      setAppPatternInput("");
       setMessage(`Snippet "${trigger}" added.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const startEdit = (id: number, trigger: string, expansion: string) => {
+  const startEdit = (id: number, trigger: string, expansion: string, appPattern: string) => {
     setEditingId(id);
     setEditTrigger(trigger);
     setEditExpansion(expansion);
+    setEditAppPattern(appPattern);
   };
 
   const saveEdit = async (id: number) => {
@@ -361,7 +427,7 @@ export function SnippetsSection() {
     if (!trigger || !expansion) return;
     setError(null);
     try {
-      await updateSnippet(id, trigger, expansion);
+      await updateSnippet(id, trigger, expansion, editAppPattern.trim() || null);
       setEditingId(null);
       setMessage(`Snippet "${trigger}" updated.`);
     } catch (err) {
@@ -383,7 +449,7 @@ export function SnippetsSection() {
     <div className="space-y-5">
       <SectionHeader
         title="Snippets"
-        description="Voice-triggered text expansion. Say the trigger while dictating and Vox replaces it with the expansion."
+        description="Voice-triggered text expansion. Say the trigger while dictating and Vox replaces it with the expansion. Add an app name to scope a macro to one app."
       />
       <SettingsCard className="space-y-4">
         <div className="space-y-2">
@@ -412,6 +478,49 @@ export function SnippetsSection() {
               onChange={(event) => setExpansionInput(event.target.value)}
             />
           </div>
+          <Input
+            aria-label="Applies to app (optional)"
+            placeholder="Only in app (optional, e.g. Slack)"
+            value={appPatternInput}
+            onChange={(event) => setAppPatternInput(event.target.value)}
+          />
+          <p className="text-[11px] leading-5 text-muted-foreground">
+            Variables:{" "}
+            {["{date}", "{time}", "{datetime}", "{day}", "{app}", "{clipboard}"].map(
+              (token) => (
+                <code
+                  key={token}
+                  className="mr-1 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground"
+                >
+                  {token}
+                </code>
+              )
+            )}
+            — expanded at dictation time.
+          </p>
+          <p className="text-[11px] leading-5 text-muted-foreground">
+            Macro actions:{" "}
+            {[
+              "{enter}",
+              "{tab}",
+              "{escape}",
+              "{backspace}",
+              "{up}",
+              "{down}",
+              "{left}",
+              "{right}",
+              "{cmd+a}",
+              "{wait:200}",
+            ].map((token) => (
+              <code
+                key={token}
+                className="mr-1 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground"
+              >
+                {token}
+              </code>
+            ))}
+            — a macro runs only when the entire utterance matches its trigger.
+          </p>
           <Button
             size="sm"
             onClick={() => void handleAdd()}
@@ -444,6 +553,12 @@ export function SnippetsSection() {
                       value={editExpansion}
                       onChange={(event) => setEditExpansion(event.target.value)}
                     />
+                    <Input
+                      aria-label="Applies to app (optional)"
+                      placeholder="Only in app (optional, e.g. Slack)"
+                      value={editAppPattern}
+                      onChange={(event) => setEditAppPattern(event.target.value)}
+                    />
                     <div className="flex gap-2">
                       <Button
                         size="sm"
@@ -461,14 +576,33 @@ export function SnippetsSection() {
                 ) : (
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-foreground">&quot;{snippet.trigger}&quot;</p>
+                      <p className="text-sm font-medium text-foreground">
+                        &quot;{snippet.trigger}&quot;{" "}
+                        {isMacroExpansion(snippet.expansion) ? (
+                          <Badge variant="secondary" className="ml-1 h-5 text-[10px]">
+                            Macro
+                          </Badge>
+                        ) : null}
+                      </p>
                       <p className="mt-0.5 break-words text-xs text-muted-foreground">{snippet.expansion}</p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {snippet.app_pattern
+                          ? `Only in ${snippet.app_pattern}`
+                          : "Any app"}
+                      </p>
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => startEdit(snippet.id, snippet.trigger, snippet.expansion)}
+                        onClick={() =>
+                          startEdit(
+                            snippet.id,
+                            snippet.trigger,
+                            snippet.expansion,
+                            snippet.app_pattern ?? ""
+                          )
+                        }
                       >
                         <Pencil className="h-4 w-4" />
                         Edit
@@ -499,130 +633,6 @@ export function SnippetsSection() {
     </div>
   );
 }
-export function AccountSection() {
-  const { authUser, authStatus, signInWithGithub, signOut } = useAppStore();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSignIn = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await signInWithGithub();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const lower = message.toLowerCase();
-      if (lower.includes("cancelled")) {
-        setError("Sign-in was cancelled.");
-      } else if (lower.includes("timed out")) {
-        setError(message);
-      } else {
-        setError(
-          "Couldn't reach the Vox server. Check your connection and try again."
-        );
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await signOut();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const displayName =
-    authUser?.name || authUser?.username || authUser?.email || "GitHub user";
-  const avatarUrl = authUser?.avatar
-    ? getPocketBase().files.getURL(authUser, authUser.avatar)
-    : null;
-
-  return (
-    <div className="space-y-5">
-      <SectionHeader
-        title="Account"
-        description="Your Vox account is linked to GitHub. We don't store any data in the cloud — everything stays on this device. Your account details are used only for analytics."
-      />
-      <SettingsCard className="space-y-4">
-        {authUser ? (
-          <>
-            <div className="flex items-center gap-3">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt=""
-                  className="h-10 w-10 rounded-full border border-border object-cover"
-                />
-              ) : (
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <Github className="h-5 w-5" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-foreground">
-                  {displayName}
-                </p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {authUser?.email ?? "Signed in with GitHub"}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground">Sign out</p>
-                <p className="text-xs text-muted-foreground">
-                  You'll be asked to sign in again on next launch.
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                onClick={() => void handleSignOut()}
-                disabled={busy}
-                className="shrink-0"
-              >
-                {busy ? <Spinner className="size-4" /> : <LogIn className="size-4" />}
-                Sign out
-              </Button>
-            </div>
-          </>
-        ) : (
-          <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                Not signed in
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Sign in with GitHub to link your account. Vox works fully
-                without an account.
-              </p>
-            </div>
-            <Button
-              onClick={() => void handleSignIn()}
-              disabled={busy || authStatus === "loading"}
-              className="shrink-0 gap-2"
-            >
-              {busy ? (
-                <Spinner className="size-4" />
-              ) : (
-                <Github className="size-4" />
-              )}
-              {busy ? "Opening your browser…" : "Sign in with GitHub"}
-            </Button>
-          </div>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
-      </SettingsCard>
-    </div>
-  );
-}
-
 export function DataSection() {
   const {
     resetAppState,
@@ -842,6 +852,16 @@ export function PrivacySection() {
             />
           }
         />
+        <div className="rounded-xl border border-border bg-background p-4">
+          <p className="text-sm font-medium text-foreground">
+            One-off private dictation
+          </p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Choose “Dictate Without Saving” from the Vox menu bar icon to
+            transcribe and insert once. The transcript, audio, and vocabulary
+            learning are never saved.
+          </p>
+        </div>
         <div className="rounded-xl border border-border bg-background p-4">
           <p className="text-sm font-medium text-foreground">What Vox stores</p>
           <ul className="mt-2 space-y-1.5">

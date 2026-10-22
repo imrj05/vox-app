@@ -84,6 +84,10 @@ pub const EVAL_CASES: &[EvalCase] = &[
     },
 ];
 
+use serde::Serialize;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EvalReport {
     /// Word-level WER of the corrected output vs expected.
     pub vocabulary_wer: f32,
@@ -94,6 +98,8 @@ pub struct EvalReport {
     pub case_results: Vec<CaseResult>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaseResult {
     pub raw: &'static str,
     pub output: String,

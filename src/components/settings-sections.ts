@@ -1,16 +1,15 @@
-import { BookOpenText, CircleHelp, Cpu, Database, Github, Keyboard, ListBullet, Settings, ShieldCheck } from "@/components/icons";
+import { BookOpenText, Database, Keyboard, ListBullet, Mic, Pencil, Settings, ShieldAlert, ShieldCheck } from "@/components/icons";
 
 export const settingsSections = [
   { id: "general", label: "General", icon: Settings },
-  { id: "account", label: "Account", icon: Github },
-  { id: "models", label: "Models", icon: Cpu },
-  { id: "dictionary", label: "Dictionary", icon: BookOpenText },
+  { id: "transcription", label: "Transcription", icon: Mic },
+  { id: "vocabulary-packs", label: "Vocabulary Packs", icon: BookOpenText },
+  { id: "writing", label: "Writing", icon: Pencil },
   { id: "snippets", label: "Snippets", icon: ListBullet },
   { id: "data", label: "Data", icon: Database },
   { id: "privacy", label: "Privacy", icon: ShieldCheck },
-  { id: "permissions", label: "Permissions", icon: ShieldCheck },
+  { id: "permissions", label: "Permissions", icon: ShieldAlert },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
-  { id: "about", label: "About", icon: CircleHelp },
 ] as const;
 
 export type SettingsSection = (typeof settingsSections)[number]["id"];

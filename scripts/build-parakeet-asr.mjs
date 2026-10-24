@@ -30,6 +30,19 @@ if (!fs.existsSync(path.join(repoDir, "CMakeLists.txt"))) {
   );
 }
 
+// Apply the local --serve patch (persistent warm-model mode used by the Vox
+// app). Idempotent: `git apply --check` fails when it is already applied.
+if (fs.existsSync(path.join(repoDir, ".git"))) {
+  const patch = path.join(root, "src-tauri", "patches", "transcribe-cli-serve.patch");
+  try {
+    execSync(`git apply --check "${patch}"`, { cwd: repoDir, stdio: "pipe" });
+    execSync(`git apply "${patch}"`, { cwd: repoDir });
+    console.log("Applied transcribe.cpp --serve patch");
+  } catch {
+    console.log("--serve patch already applied (or not applicable); continuing");
+  }
+}
+
 console.log("Configuring transcribe.cpp build…");
 execSync(`cmake -B ${buildDir} -DCMAKE_BUILD_TYPE=Release`, {
   cwd: repoDir,

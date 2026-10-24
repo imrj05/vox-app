@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     io::BufWriter,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -71,10 +71,61 @@ extern "C" {
     fn CGRequestListenEventAccess() -> bool;
 }
 
+mod custom_models;
+#[cfg(target_os = "macos")]
+mod dock_icon;
 #[cfg(target_os = "macos")]
 mod event_tap;
+#[cfg(target_os = "macos")]
+mod live_transcript;
+#[cfg(target_os = "macos")]
+mod login_item;
 mod text_enhancement;
-mod custom_models;
+pub mod vocabulary;
+mod writing;
+
+#[cfg(not(target_os = "macos"))]
+mod live_transcript {
+    /// No live preview off macOS (no Apple Speech sidecar).
+    pub fn start(_app: &tauri::AppHandle, _language: &str) {}
+    pub fn stop() -> Option<(String, Option<f32>)> {
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod dock_icon {
+    /// The Dock icon is macOS-only; other platforms use the bundled icon.
+    pub fn apply(_app: &tauri::AppHandle, _theme: &str) {}
+}
+
+#[cfg(not(target_os = "macos"))]
+mod login_item {
+    // "Start at login" off macOS is delegated to the autostart plugin
+    // directly (no SMAppService or LaunchAgent-grouping concerns).
+    use tauri::Manager;
+
+    pub fn set_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+        let manager = app
+            .try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+            .ok_or_else(|| "Autostart service is unavailable".to_string())?;
+        if enabled {
+            manager.enable().map_err(|error| error.to_string())
+        } else {
+            manager.disable().map_err(|error| error.to_string())
+        }
+    }
+
+    pub fn is_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+        app.try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+            .ok_or_else(|| "Autostart service is unavailable".to_string())?
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Nothing to migrate off macOS — there is no legacy LaunchAgent path.
+    pub fn migrate_legacy_agent() {}
+}
 
 #[cfg(not(target_os = "macos"))]
 mod event_tap {
@@ -256,14 +307,27 @@ fn open_external_link(href: String) -> Result<(), String> {
         .map_err(|error| format!("Could not open link: {error}"))
 }
 
+mod engines;
+mod hardware;
 mod whisper;
 
 const DEFAULT_SHORTCUT: &str = "Meta+Shift+Space";
 const TRAY_OPEN_APP_ID: &str = "open_app";
 const TRAY_START_DICTATION_ID: &str = "start_dictation";
+const TRAY_PRIVATE_DICTATION_ID: &str = "private_dictation";
 const TRAY_CANCEL_DICTATION_ID: &str = "cancel_dictation";
+const TRAY_UNDO_INSERTION_ID: &str = "undo_insertion";
+const TRAY_RETRY_INSERTION_ID: &str = "retry_insertion";
 const TRAY_SETTINGS_ID: &str = "settings";
 const TRAY_QUIT_ID: &str = "quit";
+
+/// How long after insertion the tray/undo command keeps offering an undo.
+const UNDO_INSERTION_WINDOW: Duration = Duration::from_secs(60);
+/// How long a failed insertion can be retried from the tray.
+const RETRY_INSERTION_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// Cmd+Z is only a safe fallback immediately after insertion, before the user
+/// is likely to have typed something else.
+const UNDO_SHORTCUT_FALLBACK_WINDOW: Duration = Duration::from_secs(10);
 
 type SharedWriter = Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>;
 
@@ -271,9 +335,101 @@ struct ActiveShortcut {
     current: Mutex<String>,
 }
 
-#[derive(Default)]
-struct DictionaryState {
-    content: Mutex<String>,
+/// Vocabulary Packs state (spec §23): the store is behind a Mutex and never
+/// mutated from the audio thread — it is only touched by Tauri commands and
+/// the transcription command, both of which already run off the audio path.
+/// The cached trie/context is rebuilt lazily when the generation counter or
+/// app context changes (spec §22: rebuild indexes only after changes).
+struct VocabularyState {
+    store: Mutex<vocabulary::store::VocabularyStore>,
+    cache: Mutex<Option<VocabularyCache>>,
+}
+
+struct VocabularyCache {
+    generation: u64,
+    app_key: Option<String>,
+    context: std::sync::Arc<vocabulary::model::ActiveVocabularyContext>,
+    trie: std::sync::Arc<vocabulary::index::PhraseTrie>,
+}
+
+impl VocabularyState {
+    fn with_store<T>(
+        &self,
+        mutate: impl FnOnce(&mut vocabulary::store::VocabularyStore) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Vocabulary state unavailable".to_string())?;
+        let result = mutate(&mut store)?;
+        if let Err(error) = store.persist() {
+            eprintln!("[VOX][vocabulary] persist failed: {error}");
+        }
+        *self
+            .cache
+            .lock()
+            .map_err(|_| "Vocabulary cache unavailable".to_string())? = None; // invalidate
+        Ok(result)
+    }
+
+    /// Cached active context + trie for the given app (spec §22).
+    fn cached_context(&self, app_name: Option<&str>) -> std::sync::Arc<VocabularyCache> {
+        let generation = self.store.lock().map(|store| store.generation).unwrap_or(0);
+        let app_key = app_name.map(|name| name.trim().to_lowercase());
+
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.as_ref() {
+            if cached.generation == generation && cached.app_key == app_key {
+                return std::sync::Arc::new(VocabularyCache {
+                    generation,
+                    app_key: cached.app_key.clone(),
+                    context: cached.context.clone(),
+                    trie: cached.trie.clone(),
+                });
+            }
+        }
+
+        let now = vocabulary::store::now_secs();
+        let (context, trie) = {
+            let store = self
+                .store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let packs = store.all_packs();
+            let app_context = app_key
+                .clone()
+                .map(|name| vocabulary::model::ApplicationContext {
+                    app: vocabulary::model::ApplicationIdentifier {
+                        id: name.clone(),
+                        display_name: Some(name),
+                    },
+                    window_title: None,
+                });
+            let context = vocabulary::context::build_context(&packs, app_context.clone(), now);
+            // The correction trie covers every enabled entry (local + fast);
+            // the capped `context` is what engine adapters receive (spec §8).
+            let correction_context =
+                vocabulary::context::build_correction_context(&packs, app_context, now);
+            let trie = vocabulary::index::PhraseTrie::build(&correction_context);
+            (std::sync::Arc::new(context), std::sync::Arc::new(trie))
+        };
+        let built = VocabularyCache {
+            generation,
+            app_key: app_key.clone(),
+            context: context.clone(),
+            trie: trie.clone(),
+        };
+        *cache = Some(VocabularyCache {
+            generation,
+            app_key: app_key.clone(),
+            context: context.clone(),
+            trie: trie.clone(),
+        });
+        std::sync::Arc::new(built)
+    }
 }
 
 struct TranscriptFormattingState {
@@ -506,6 +662,34 @@ struct LanguageState {
     language: Mutex<String>,
 }
 
+/// Which transcription engine runs (spec §6/§7/§8). `engine` is "auto" or an
+/// engine id; fallback settings govern what happens when the chosen engine
+/// cannot produce a transcript.
+struct EngineSelectionState {
+    engine: Mutex<String>,
+    /// The Whisper pin used by background hotkey transcriptions. The UI path
+    /// already passes this explicitly; keeping it here keeps both paths fast
+    /// and consistent.
+    selected_model: Mutex<String>,
+    fallback_enabled: AtomicBool,
+    preferred_fallback: Mutex<String>,
+    /// Engine used by the previous transcription — used to emit
+    /// `transcription_engine_changed` when auto/dispatch picks a different one.
+    last_engine: Mutex<String>,
+}
+
+impl Default for EngineSelectionState {
+    fn default() -> Self {
+        Self {
+            engine: Mutex::new("auto".to_string()),
+            selected_model: Mutex::new("base.en".to_string()),
+            fallback_enabled: AtomicBool::new(true),
+            preferred_fallback: Mutex::new("whisper".to_string()),
+            last_engine: Mutex::new(String::new()),
+        }
+    }
+}
+
 /// A voice-triggered text expansion: when the trigger phrase appears in a
 /// transcript, it is replaced with the expansion.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -513,11 +697,38 @@ struct LanguageState {
 struct Snippet {
     trigger: String,
     expansion: String,
+    /// Optional app/window-name filter. Empty or missing = anywhere.
+    #[serde(default)]
+    app_pattern: Option<String>,
 }
 
 #[derive(Default)]
 struct SnippetsState {
     snippets: Mutex<Vec<Snippet>>,
+}
+
+/// The most recent transcript Vox inserted (or tried to insert). Powers the
+/// "Undo last dictation" action and retrying an insertion that failed.
+#[derive(Default)]
+struct LastInsertionState {
+    last: Mutex<Option<LastInsertion>>,
+}
+
+/// User preference for how dictated text is inserted: cursor typing (default)
+/// or a clipboard paste that restores the previous clipboard afterwards.
+#[derive(Default)]
+struct InsertionMethodState {
+    method: Mutex<String>,
+}
+
+#[derive(Clone)]
+struct LastInsertion {
+    /// Exact text handed to the typing layer, including any trailing space.
+    text: String,
+    app_name: Option<String>,
+    inserted_at: Instant,
+    /// False when typing failed, so the tray offers Retry instead of Undo.
+    inserted: bool,
 }
 
 #[derive(Default)]
@@ -567,6 +778,9 @@ struct RecordingSession {
     /// rotates segment files.
     channels: u16,
     sample_rate: u32,
+    /// Incognito dictation: transcribe and insert, but never save the
+    /// transcript, audio, or vocabulary learning.
+    private: bool,
 }
 
 #[derive(Serialize)]
@@ -586,6 +800,13 @@ struct RecordingStatus {
     app_name: Option<String>,
     window_title: Option<String>,
     duration_seconds: Option<u64>,
+    /// Final Apple Speech live result, when available. The selected Apple
+    /// engine can reuse it instead of recognizing the recorded WAV again.
+    preview_text: Option<String>,
+    /// Average confidence of the live final, when Apple reports it.
+    preview_confidence: Option<f32>,
+    /// True for an incognito dictation (nothing is persisted).
+    private: bool,
 }
 
 #[derive(Serialize)]
@@ -596,6 +817,28 @@ struct TranscriptPreview {
     duration_seconds: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionInfo {
+    /// Raw ASR form that was replaced.
+    pub source: String,
+    /// Canonical form it was replaced with.
+    pub canonical: String,
+    /// Lexical confidence of the correction (1.0 for exact matches).
+    pub confidence: f32,
+    /// Engine confidence for the transcript this correction came from.
+    pub asr_confidence: Option<f32>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionTimings {
+    audio_preflight_ms: u64,
+    transcribe_ms: u64,
+    postprocess_ms: u64,
+    total_ms: u64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TranscriptionResult {
@@ -603,10 +846,22 @@ struct TranscriptionResult {
     text: String,
     app_name: Option<String>,
     duration_seconds: Option<u64>,
-    /// Raw transcription before AI cleanup, when cleanup was applied.
+    /// Raw text exactly as the ASR engine produced it, before formatting,
+    /// cleanup, corrections, or snippet expansion.
+    asr_text: String,
+    /// Text before AI cleanup/corrections, when a later stage changed it.
+    /// Used by the transcript library's "Undo AI edit" action.
     raw_text: Option<String>,
     /// Language actually used for transcription (auto-detected or pinned).
     language: Option<String>,
+    /// Engine confidence for the raw transcript (0.0–1.0), when available.
+    confidence: Option<f32>,
+    /// Engine that produced the raw transcript ("whisper", "parakeet", …).
+    engine: &'static str,
+    /// Per-stage timings for latency dashboards and regression checks.
+    timings: TranscriptionTimings,
+    /// Vocabulary corrections applied to the final text.
+    corrections: Vec<CorrectionInfo>,
 }
 
 #[derive(Clone, Serialize)]
@@ -617,6 +872,8 @@ struct WidgetEvent {
     elapsed_seconds: Option<u64>,
     /// When true, the widget shows an Enhance action + close button (done state).
     show_enhance: bool,
+    /// When true, the widget shows an Undo action for the last insertion.
+    show_undo: bool,
     /// Active app + window title captured at recording start, so the widget can
     /// show the user what context Vox detected ("In Visual Studio Code · file.ts").
     app_name: Option<String>,
@@ -767,6 +1024,59 @@ fn check_microphone_permission() -> bool {
     true
 }
 
+/// Raw macOS microphone authorization state so the UI can react to WHY the
+/// permission is missing:
+///   0 = not determined (offer the native prompt),
+///   1 = restricted, 2 = denied (System Settings is the only path — macOS
+///   never re-prompts after a refusal),
+///   3 = authorized.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn microphone_authorization_status() -> i64 {
+    unsafe {
+        let media_type = nsstring_from_str("soun");
+        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type]
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn microphone_authorization_status() -> i64 {
+    3
+}
+
+/// Deep-link straight into the matching Privacy pane. Essential for mic
+/// recovery: after one refusal, macOS suppresses the native prompt forever and
+/// System Settings is the only path back.
+#[tauri::command]
+fn open_system_settings(pane: String) -> Result<(), String> {
+    let url = match pane.as_str() {
+        "microphone" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        }
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "input_monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        }
+        other => return Err(format!("Unknown System Settings pane: {other}")),
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn check_input_monitoring_permission() -> bool {
@@ -879,6 +1189,9 @@ fn recording_status(state: State<'_, RecorderState>) -> Result<RecordingStatus, 
             app_name: session.app_name.clone(),
             window_title: session.window_title.clone(),
             duration_seconds: Some(session.started_at.elapsed().as_secs()),
+            preview_text: None,
+            preview_confidence: None,
+            private: session.private,
         },
         None => RecordingStatus {
             is_recording: false,
@@ -886,6 +1199,9 @@ fn recording_status(state: State<'_, RecorderState>) -> Result<RecordingStatus, 
             app_name: None,
             window_title: None,
             duration_seconds: None,
+            preview_text: None,
+            preview_confidence: None,
+            private: false,
         },
     })
 }
@@ -896,13 +1212,17 @@ fn start_recording(
     state: State<'_, RecorderState>,
     hands_free: Option<bool>,
 ) -> Result<RecordingStatus, String> {
-    start_recording_inner(&app, &state, hands_free.unwrap_or(false))
+    clear_last_insertion(&app);
+    let result = start_recording_inner(&app, &state, hands_free.unwrap_or(false), false);
+    refresh_tray_menu(&app);
+    result
 }
 
 fn start_recording_inner(
     app: &AppHandle,
     state: &RecorderState,
     hands_free: bool,
+    private: bool,
 ) -> Result<RecordingStatus, String> {
     let mut session = state
         .session
@@ -977,6 +1297,7 @@ fn start_recording_inner(
         writer,
         channels: spec.channels,
         sample_rate: spec.sample_rate,
+        private,
     });
 
     if hands_free {
@@ -986,12 +1307,33 @@ fn start_recording_inner(
         spawn_hands_free_monitor(app.clone());
     }
 
+    // Apple Speech is also the live-preview implementation. For an explicit
+    // Apple selection, its final live result can be reused by the final
+    // pipeline, avoiding a second recognition pass. Hands-free segments keep
+    // the file path because one live result cannot represent each segment.
+    let preview_engine = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| state.engine.lock().ok().map(|engine| engine.clone()))
+        .unwrap_or_else(|| "auto".to_string());
+    if !hands_free && preview_engine == "apple" {
+        let language = app
+            .try_state::<LanguageState>()
+            .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
+            .unwrap_or_else(|| "auto".to_string());
+        live_transcript::start(app, &language);
+    } else {
+        let _ = live_transcript::stop();
+    }
+
     Ok(RecordingStatus {
         is_recording: true,
         path: Some(path.to_string_lossy().to_string()),
         app_name,
         window_title,
         duration_seconds: Some(0),
+        preview_text: None,
+        preview_confidence: None,
+        private,
     })
 }
 
@@ -1028,12 +1370,22 @@ fn stop_recording_inner(state: &RecorderState) -> Result<RecordingStatus, String
         *bars = [0.0; 7];
     }
 
+    // Capture the live final before disposing of the session. Apple can reuse
+    // it; all other engines continue through their normal file path.
+    let live_result = match live_transcript::stop() {
+        Some((text, confidence)) => (Some(text), confidence),
+        None => (None, None),
+    };
+
     Ok(RecordingStatus {
         is_recording: false,
         path: Some(session.path.to_string_lossy().to_string()),
         app_name,
         window_title,
         duration_seconds: Some(duration_seconds),
+        preview_text: live_result.0,
+        preview_confidence: live_result.1,
+        private: session.private,
     })
 }
 
@@ -1050,6 +1402,21 @@ fn transcribe_sample() -> TranscriptPreview {
 fn whisper_models(app: AppHandle) -> Result<Vec<WhisperModelInfo>, String> {
     let models_dir = whisper_models_dir(&app)?;
     Ok(whisper::list_models(&models_dir))
+}
+
+/// Hardware awareness (spec §25): what this machine can run comfortably.
+#[tauri::command]
+fn get_hardware_info() -> hardware::HardwareInfo {
+    hardware::detect()
+}
+
+/// Expose the registered transcription engines and their availability to the
+/// frontend (spec §3/§31). React only ever sees `id`/`displayName`/`available`
+/// — never engine internals.
+#[tauri::command]
+fn get_transcription_engines(app: AppHandle) -> Result<Vec<engines::EngineStatus>, String> {
+    let models_dir = whisper_models_dir(&app)?;
+    Ok(engines::describe_engines(&models_dir))
 }
 
 #[tauri::command]
@@ -1103,6 +1470,7 @@ fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let recordings_dir = app_data_dir.join("recordings");
+    let writing_path = writing::config_path(&app_data_dir);
     let models_dir = whisper::models_dir(app_data_dir);
 
     if recordings_dir.exists() {
@@ -1111,6 +1479,15 @@ fn wipe_local_app_files(app: AppHandle) -> Result<(), String> {
 
     if models_dir.exists() {
         fs::remove_dir_all(&models_dir).map_err(|error| error.to_string())?;
+    }
+
+    if writing_path.exists() {
+        fs::remove_file(&writing_path).map_err(|error| error.to_string())?;
+    }
+    if let Some(state) = app.try_state::<writing::WritingProfilesState>() {
+        if let Ok(mut config) = state.config.lock() {
+            *config = writing::WritingProfileConfig::default();
+        }
     }
 
     Ok(())
@@ -1201,6 +1578,15 @@ fn text_enhancement_models(app: AppHandle) -> Result<Vec<TextEnhancementModelInf
     Ok(text_enhancement::list_models(&models_dir))
 }
 
+/// The enhancement model a fresh install should use (spec §25): the hardware
+/// recommendation, or the best already-downloaded model. Used only until the
+/// user pins a model.
+#[tauri::command]
+fn recommended_enhancement_model(app: AppHandle) -> Result<String, String> {
+    let models_dir = text_enhancement_models_dir(&app)?;
+    Ok(text_enhancement::resolve_recommended_model(&models_dir))
+}
+
 #[tauri::command]
 async fn download_text_enhancement_model(
     app: AppHandle,
@@ -1256,11 +1642,25 @@ fn set_enhancement_model(
     state: State<'_, EnhancePreferencesState>,
     model_name: String,
 ) -> Result<(), String> {
+    let model_name = model_name.trim().to_string();
+    if model_name.is_empty() {
+        return Err("Enhancement model cannot be empty".to_string());
+    }
     *state
         .model_name
         .lock()
-        .map_err(|_| "Enhance preferences unavailable".to_string())? = model_name;
+        .map_err(|_| "Enhance preferences unavailable".to_string())? = model_name.clone();
     refresh_selected_enhancement_model_availability(&app);
+
+    // Load the selected GGUF and initialize the backend in the background so
+    // the first visible Enhance/AI-cleanup action does not pay cold-start cost.
+    if let Ok(models_dir) = text_enhancement_models_dir(&app) {
+        std::thread::spawn(move || {
+            if let Err(error) = text_enhancement::warm_model(&models_dir, &model_name) {
+                eprintln!("[VOX][AI] text-enhance prewarm skipped: {error}");
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1378,6 +1778,42 @@ fn hide_widget(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the floating widget window to hug the glass capsule (the window
+/// *is* the capsule, so macOS vibrancy shows through exactly its pill
+/// shape) and re-anchor it to the bottom-right corner. The vibrancy corner
+/// radius is kept at half the capsule height so the blur mask matches the
+/// pill at any content size.
+#[tauri::command]
+fn widget_set_size(window: tauri::WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 {
+        return Ok(());
+    }
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+
+    // Position from the requested size: the native resize is dispatched
+    // asynchronously, so outer_size() may still report the old bounds.
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_w = (width * scale).round() as i32;
+    let win_h = (height * scale).round() as i32;
+    position_widget_with_size(&window, win_w, win_h);
+
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+        let _ = window.set_effects(Some(
+            EffectsBuilder::new()
+                .effect(Effect::Sidebar)
+                .state(EffectState::Active)
+                .radius(height / 2.0)
+                .build(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn capture_selected_text(app: AppHandle) -> Result<String, String> {
     let original = Clipboard::new()
@@ -1401,6 +1837,62 @@ async fn capture_selected_text(app: AppHandle) -> Result<String, String> {
         .map_err(|_| "Transform state unavailable".to_string())? = original;
 
     Ok(selected)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum NoteTask {
+    SummarizeMeeting,
+    ExtractActionItems,
+}
+
+impl NoteTask {
+    fn instruction(self) -> &'static str {
+        match self {
+            NoteTask::SummarizeMeeting => {
+                "Summarize this meeting transcript in Markdown. Return exactly three sections: `## Summary` with 3-6 concise bullets, `## Decisions` with bullets (or `None noted`), and `## Action items` as a Markdown checklist. For each action item use `- [ ] Task — owner (due date)` when the transcript states an owner or date. Preserve names, technical terms, and the original language. Return only the Markdown."
+            }
+            NoteTask::ExtractActionItems => {
+                "Extract every action item from this meeting transcript. Return only a Markdown checklist using `- [ ] Task — owner (due date)` when the transcript states an owner or date. Preserve names, technical terms, and the original language. If there are no action items, return `- [ ] None noted`."
+            }
+        }
+    }
+}
+
+/// Run a local meeting task (summary or action items) and return the generated
+/// Markdown without pasting it. Notes are user content, so this never touches
+/// the clipboard or the focused app.
+#[tauri::command]
+async fn note_transform(app: AppHandle, task: NoteTask, text: String) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("This note is empty.".to_string());
+    }
+    if !is_selected_enhancement_model_available(&app) {
+        return Err(
+            "Download a cleanup model in Models to use meeting tools. Everything runs locally."
+                .to_string(),
+        );
+    }
+
+    let model_name = app
+        .try_state::<EnhancePreferencesState>()
+        .and_then(|state| state.model_name.lock().ok().map(|name| name.clone()))
+        .unwrap_or_default();
+    let models_dir = text_enhancement_models_dir(&app)?;
+    let instruction = task.instruction().to_string();
+    let input = text;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        text_enhancement::transform_text(
+            &models_dir,
+            Some(&model_name),
+            &input,
+            None,
+            Some(&instruction),
+        )
+    })
+    .await
+    .map_err(|error| format!("Meeting task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1530,7 +2022,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "professional",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Professional,
+        ));
     }
     if contains_any(
         &joined,
@@ -1545,7 +2039,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "casual",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Casual));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Casual,
+        ));
     }
     if contains_any(
         &joined,
@@ -1562,7 +2058,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "concise",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Concise));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Concise,
+        ));
     }
     if contains_any(
         &joined,
@@ -1573,7 +2071,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "give me a summary",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Summarize,
+        ));
     }
     if contains_any(
         &joined,
@@ -1586,7 +2086,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "fix grammar of this",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::FixGrammar));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::FixGrammar,
+        ));
     }
     if contains_any(
         &joined,
@@ -1602,7 +2104,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "polish",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Polish));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::Polish,
+        ));
     }
     if contains_any(
         &joined,
@@ -1652,7 +2156,9 @@ fn detect_voice_command(text: &str) -> Option<VoiceCommand> {
             "as an ai prompt",
         ],
     ) {
-        return Some(VoiceCommand::Transform(text_enhancement::TransformPreset::PromptEngine));
+        return Some(VoiceCommand::Transform(
+            text_enhancement::TransformPreset::PromptEngine,
+        ));
     }
     None
 }
@@ -1714,17 +2220,21 @@ fn transcribe_recording(
     app: AppHandle,
     audio_path: String,
     model_name: Option<String>,
-    dictionary: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
+    preview_text: Option<String>,
+    preview_confidence: Option<f32>,
+    learn_corrections: bool,
 ) -> Result<TranscriptionResult, String> {
     transcribe_recording_inner(
         &app,
         audio_path,
         model_name,
-        dictionary,
         context_app_name,
         context_window_title,
+        preview_text,
+        preview_confidence,
+        learn_corrections,
     )
 }
 
@@ -1732,10 +2242,13 @@ fn transcribe_recording_inner(
     app: &AppHandle,
     audio_path: String,
     model_name: Option<String>,
-    dictionary: Option<String>,
     context_app_name: Option<String>,
     context_window_title: Option<String>,
+    preview_text: Option<String>,
+    preview_confidence: Option<f32>,
+    learn_corrections: bool,
 ) -> Result<TranscriptionResult, String> {
+    let pipeline_started = Instant::now();
     let audio_path = PathBuf::from(audio_path);
     if !audio_path.exists() {
         return Err(format!(
@@ -1755,26 +2268,185 @@ fn transcribe_recording_inner(
         );
     }
 
+    // A full-length file can still be all zeros when macOS routes the stream
+    // to the wrong (or muted) input device. Fail before spending seconds on a
+    // hopeless transcription pass. The check scans raw PCM only; engines do
+    // their own normalization later when it is actually required.
+    let audio_check_started = Instant::now();
+    if let Some(reason) = engines::audio::detect_silent_recording(&audio_path) {
+        eprintln!(
+            "[VOX][ASR] audio preflight: {}ms (silent)",
+            audio_check_started.elapsed().as_millis()
+        );
+        return Err(reason);
+    }
+    let audio_preflight_ms = audio_check_started.elapsed().as_millis() as u64;
+    eprintln!("[VOX][ASR] audio preflight: {}ms", audio_preflight_ms);
+
     let models_dir = whisper_models_dir(&app)?;
-    let context_dictionary = build_context_dictionary(
-        dictionary.as_deref(),
-        context_app_name.as_deref(),
-        context_window_title.as_deref(),
-    );
+    let context_dictionary =
+        build_context_dictionary(context_app_name.as_deref(), context_window_title.as_deref());
     let context_prompt =
         build_context_prompt(context_app_name.as_deref(), context_window_title.as_deref());
+
+    // Vocabulary Packs (spec §8, §10–§12): build the active context for this
+    // app, then adapt it per engine. Fast (cached trie, ≤64 entries, spec §22);
+    // never blocks audio capture — this command runs after recording ends.
+    let vocab_cache = app
+        .try_state::<VocabularyState>()
+        .map(|state| state.cached_context(context_app_name.as_deref()));
+    let (vocab_prompt, contextual_strings) = match &vocab_cache {
+        Some(cache) => {
+            let started = std::time::Instant::now();
+            let whisper_payload = vocabulary::adapters::adapt("whisper", &cache.context);
+            let apple_payload = vocabulary::adapters::adapt("apple", &cache.context);
+            eprintln!(
+                "[VOX][vocabulary] active terms: {} | context+adapt: {}ms",
+                cache.context.entries.len(),
+                started.elapsed().as_millis()
+            );
+            (whisper_payload.prompt, apple_payload.contextual_strings)
+        }
+        None => (None, Vec::new()),
+    };
+    let context_prompt = match (&context_prompt, &vocab_prompt) {
+        (Some(prompt), Some(vocab)) => Some(format!("{prompt} {vocab}")),
+        (Some(prompt), None) => Some(prompt.clone()),
+        (None, Some(vocab)) => Some(vocab.clone()),
+        (None, None) => None,
+    };
     let language = app
         .try_state::<LanguageState>()
         .and_then(|state| state.language.lock().ok().map(|language| language.clone()))
         .unwrap_or_else(|| "auto".to_string());
-    let (text, detected_language) = whisper::transcribe(
-        &models_dir,
-        &audio_path,
-        model_name.as_deref(),
-        context_dictionary.as_deref(),
-        context_prompt.as_deref(),
-        Some(&language),
-    )?;
+    let transcribe_started = std::time::Instant::now();
+
+    // Engine selection + fallback come from user settings (spec §6–§8).
+    let (engine_pref, selected_model, fallback_enabled, fallback_target, last_engine) = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| {
+            let engine = state.engine.lock().ok().map(|e| e.clone())?;
+            let selected_model = state.selected_model.lock().ok().map(|m| m.clone())?;
+            let fallback = state.preferred_fallback.lock().ok().map(|f| f.clone())?;
+            let last_engine = state.last_engine.lock().ok().map(|e| e.clone())?;
+            Some((
+                engine,
+                selected_model,
+                state.fallback_enabled.load(Ordering::Relaxed),
+                fallback,
+                last_engine,
+            ))
+        })
+        .unwrap_or_else(|| {
+            (
+                "auto".to_string(),
+                "base.en".to_string(),
+                true,
+                "whisper".to_string(),
+                String::new(),
+            )
+        });
+    // Keep the global hotkey path aligned with the UI's Whisper pin. Apple
+    // Speech and Parakeet intentionally continue to choose their own models.
+    let requested_model =
+        model_name.or_else(|| (engine_pref == "whisper").then_some(selected_model));
+    let fallback_report: Mutex<Option<engines::EngineFallback>> = Mutex::new(None);
+    let live_preview = preview_text
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (text, detected_language, engine, asr_confidence) = if engine_pref == "apple" {
+        if let Some(text) = live_preview {
+            eprintln!("[VOX][ASR] apple-speech: reused live final transcript");
+            let detected_language = match language.as_str() {
+                "auto" | "hinglish" => None,
+                code => Some(code.to_string()),
+            };
+            (text, detected_language, "apple", preview_confidence)
+        } else {
+            engines::route_transcribe_with_vocabulary(
+                &models_dir,
+                &audio_path,
+                requested_model.as_deref(),
+                context_dictionary.as_deref(),
+                context_prompt.as_deref(),
+                Some(&language),
+                engines::EngineSelection {
+                    preferred: &engine_pref,
+                    fallback_enabled,
+                    preferred_fallback: Some(&fallback_target),
+                },
+                |from, to, reason| {
+                    *fallback_report.lock().unwrap() =
+                        Some(engines::EngineFallback { from, to, reason });
+                },
+                &contextual_strings,
+            )?
+        }
+    } else {
+        engines::route_transcribe_with_vocabulary(
+            &models_dir,
+            &audio_path,
+            requested_model.as_deref(),
+            context_dictionary.as_deref(),
+            context_prompt.as_deref(),
+            Some(&language),
+            engines::EngineSelection {
+                preferred: &engine_pref,
+                fallback_enabled,
+                preferred_fallback: Some(&fallback_target),
+            },
+            |from, to, reason| {
+                *fallback_report.lock().unwrap() =
+                    Some(engines::EngineFallback { from, to, reason });
+            },
+            &contextual_strings,
+        )?
+    };
+    if let Some(fallback) = fallback_report.into_inner().unwrap_or(None) {
+        // Engine switches must never be silent (spec §8/§26).
+        eprintln!(
+            "[VOX][ASR] fallback: {} -> {} ({})",
+            fallback.from, fallback.to, fallback.reason
+        );
+        let _ = app.emit(
+            "transcription_engine_fallback",
+            serde_json::json!({
+                "event": "transcription_engine_fallback",
+                "from": fallback.from,
+                "to": fallback.to,
+                "reason": fallback.reason,
+            }),
+        );
+    }
+    // `transcription_engine_changed` (spec §11): emitted whenever the engine
+    // that just ran differs from the previous transcription's engine.
+    if let Some(state) = app.try_state::<EngineSelectionState>() {
+        let previous = last_engine.clone();
+        if !previous.is_empty() && previous != engine {
+            let _ = app.emit(
+                "transcription_engine_changed",
+                serde_json::json!({
+                    "event": "transcription_engine_changed",
+                    "from": previous,
+                    "to": engine,
+                }),
+            );
+        }
+        if let Ok(mut last) = state.last_engine.lock() {
+            *last = engine.to_string();
+        }
+    }
+    // Performance logging (spec §26). Never logs transcript content.
+    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
+    eprintln!(
+        "[VOX][ASR] Engine: {engine} | confidence: {asr_confidence:?} | audio: {:.1}s | transcribe: {}ms",
+        wav_duration_seconds(&audio_path).unwrap_or(0.0),
+        transcribe_ms
+    );
+    let postprocess_started = Instant::now();
+    // Capture the engine output before any formatting or cleanup so the
+    // transcript library can always show what was actually heard.
+    let asr_text = text.clone();
     let formatting_mode = app
         .try_state::<TranscriptFormattingState>()
         .and_then(|state| state.mode.lock().ok().map(|mode| *mode))
@@ -1790,12 +2462,23 @@ fn transcribe_recording_inner(
         context_window_title.as_deref(),
         is_editable_focused,
     );
+    // Conservative punctuation restoration for engines that return unpunctuated
+    // prose. Developer transcripts are never touched.
+    let formatted_text = if dev_applied {
+        formatted_text
+    } else {
+        restore_punctuation(&formatted_text)
+    };
 
     // Auto AI cleanup only runs on plain (non-developer) transcripts so it
     // never rephrases or mangles dictated code, commands, paths, or symbols.
     let mut final_text = formatted_text;
     let mut raw_text: Option<String> = None;
+    // Vocabulary corrections applied during post-processing, surfaced to the
+    // UI for review/teaching (spec §13, §17).
+    let mut applied_corrections: Vec<CorrectionInfo> = Vec::new();
     if !dev_applied {
+        let cleanup_started = std::time::Instant::now();
         let cleanup_level = app
             .try_state::<CleanupLevelState>()
             .and_then(|state| state.level.lock().ok().map(|level| *level))
@@ -1833,11 +2516,22 @@ fn transcribe_recording_inner(
                 if let Some(models_dir) = enhance_models_dir {
                     // App-context writing style (Gmail → professional email, Slack →
                     // casual, Notion → structured document) steers the cleanup model.
-                    let mut style: Option<String> = app_style_instruction(
+                    let mut style: Option<String> = writing::resolve_style(
+                        &app.try_state::<writing::WritingProfilesState>()
+                            .and_then(|state| state.config.lock().ok().map(|config| config.clone()))
+                            .unwrap_or_default(),
                         context_app_name.as_deref(),
                         context_window_title.as_deref(),
-                    )
-                    .map(str::to_string);
+                        is_developer_app_context(
+                            context_app_name.as_deref(),
+                            context_window_title.as_deref(),
+                            true,
+                        ),
+                        app_style_instruction(
+                            context_app_name.as_deref(),
+                            context_window_title.as_deref(),
+                        ),
+                    );
                     // File Awareness: tell the model which file the user is
                     // working on so prompts can reference it.
                     if let Some(file) = current_file_from_title(context_window_title.as_deref()) {
@@ -1874,6 +2568,87 @@ fn transcribe_recording_inner(
                     }
                 }
             }
+
+            eprintln!(
+                "[VOX][AI] Cleanup level: {cleanup_level:?} | cleanup: {}ms",
+                cleanup_started.elapsed().as_millis()
+            );
+        }
+    }
+
+    // Vocabulary Packs correction pass (spec §13–§16): token-aware,
+    // longest-match-first canonicalization across every engine. This runs
+    // regardless of the AI cleanup level and also in developer contexts:
+    // cleanup is optional, but configured technical vocabulary is a core
+    // dictation guarantee. Developer contexts receive a restricted policy so
+    // identifiers, paths, and package names are never rewritten.
+    if let Some(cache) = &vocab_cache {
+        if !cache.context.entries.is_empty() {
+            let correction_started = std::time::Instant::now();
+            let settings = app
+                .try_state::<VocabularyState>()
+                .map(|state| {
+                    state
+                        .store
+                        .lock()
+                        .map(|store| store.document.settings.clone())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            let result = vocabulary::correct::correct_transcript_with_options(
+                &final_text,
+                &cache.trie,
+                &settings,
+                vocabulary::correct::CorrectionOptions {
+                    developer_context: dev_applied,
+                    asr_confidence,
+                },
+            );
+            if !result.corrections.is_empty() {
+                // Learning (spec §17): record accepted corrections and
+                // promote unknown terms into the Personal pack. Incognito
+                // dictation skips this so nothing derived from the text is
+                // persisted.
+                if learn_corrections {
+                    if let Some(state) = app.try_state::<VocabularyState>() {
+                        let now = vocabulary::store::now_secs();
+                        let mut store = state
+                            .store
+                            .lock()
+                            .map_err(|_| "Vocabulary state unavailable")?;
+                        for correction in &result.corrections {
+                            store.record_correction(
+                                &correction.source,
+                                &correction.entry_id,
+                                correction.confidence,
+                                now,
+                            );
+                        }
+                        let _ = store.persist();
+                        drop(store);
+                        *state.cache.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    }
+                }
+                eprintln!(
+                    "[VOX][vocabulary] applied {} correction(s) in {}ms",
+                    result.corrections.len(),
+                    correction_started.elapsed().as_millis()
+                );
+            }
+            if result.text != final_text {
+                if raw_text.is_none() {
+                    raw_text = Some(final_text);
+                }
+                final_text = result.text;
+            }
+            applied_corrections.extend(result.corrections.iter().map(|correction| {
+                CorrectionInfo {
+                    source: correction.source.clone(),
+                    canonical: correction.canonical.clone(),
+                    confidence: correction.confidence,
+                    asr_confidence,
+                }
+            }));
         }
     }
 
@@ -1884,7 +2659,7 @@ fn transcribe_recording_inner(
         .and_then(|state| state.snippets.lock().ok().map(|snippets| snippets.clone()))
         .unwrap_or_default();
     if !snippets.is_empty() {
-        let expanded = expand_snippets(&final_text, &snippets);
+        let expanded = expand_snippets(&final_text, &snippets, context_app_name.as_deref());
         if expanded != final_text {
             if raw_text.is_none() {
                 raw_text = Some(final_text);
@@ -1893,29 +2668,339 @@ fn transcribe_recording_inner(
         }
     }
 
+    eprintln!(
+        "[VOX][ASR] postprocess: {}ms | total: {}ms",
+        postprocess_started.elapsed().as_millis(),
+        pipeline_started.elapsed().as_millis()
+    );
+
     Ok(TranscriptionResult {
         audio_path: audio_path.to_string_lossy().to_string(),
         text: final_text,
         app_name: context_app_name,
         duration_seconds: None,
+        asr_text,
+        confidence: asr_confidence,
         raw_text,
         language: detected_language,
+        engine,
+        timings: TranscriptionTimings {
+            audio_preflight_ms,
+            transcribe_ms,
+            postprocess_ms: postprocess_started.elapsed().as_millis() as u64,
+            total_ms: pipeline_started.elapsed().as_millis() as u64,
+        },
+        corrections: applied_corrections,
     })
 }
 
 /// Replace snippet trigger phrases in `text` with their expansions.
 /// Case-insensitive, word-boundary-aware ("my email" in "send it to my email"
 /// matches, but "my email" inside "my emailaddress" does not).
-fn expand_snippets(text: &str, snippets: &[Snippet]) -> String {
+fn expand_snippets(text: &str, snippets: &[Snippet], app_name: Option<&str>) -> String {
     let mut result = text.to_string();
     for snippet in snippets {
         let trigger = snippet.trigger.trim();
-        if trigger.is_empty() {
+        if trigger.is_empty()
+            || is_macro_expansion(&snippet.expansion)
+            || !snippet_matches_app(snippet.app_pattern.as_deref(), app_name)
+            || !result.to_lowercase().contains(&trigger.to_lowercase())
+        {
             continue;
         }
-        result = replace_phrase(&result, trigger, &snippet.expansion);
+        let expansion = expand_snippet_variables(&snippet.expansion, app_name);
+        result = replace_phrase(&result, trigger, &expansion);
     }
     result
+}
+
+/// Snippets with an app pattern only apply when the active app name contains
+/// that pattern (case-insensitive). Empty patterns apply everywhere.
+fn snippet_matches_app(pattern: Option<&str>, app_name: Option<&str>) -> bool {
+    let pattern = pattern.unwrap_or_default().trim();
+    if pattern.is_empty() {
+        return true;
+    }
+    let app = app_name.unwrap_or_default().trim().to_lowercase();
+    !app.is_empty() && app.contains(&pattern.to_lowercase())
+}
+
+/// Expand macro variables in a snippet at insertion time. Supported:
+/// `{date}`, `{time}`, `{datetime}`, `{day}`, `{app}`, `{clipboard}`.
+/// Unknown tokens are left untouched.
+fn expand_snippet_variables(expansion: &str, app_name: Option<&str>) -> String {
+    if !expansion.contains('{') {
+        return expansion.to_string();
+    }
+
+    let now = chrono::Local::now();
+    let mut result = expansion.to_string();
+    result = result.replace("{date}", &now.format("%Y-%m-%d").to_string());
+    result = result.replace("{time}", &now.format("%H:%M").to_string());
+    result = result.replace("{datetime}", &now.format("%Y-%m-%d %H:%M").to_string());
+    result = result.replace("{day}", &now.format("%A").to_string());
+    result = result.replace("{app}", app_name.unwrap_or_default());
+    if result.contains("{clipboard}") {
+        let clipboard = Clipboard::new()
+            .ok()
+            .and_then(|mut clipboard| clipboard.get_text().ok())
+            .unwrap_or_default();
+        result = result.replace("{clipboard}", &clipboard);
+    }
+    result
+}
+
+// ── Multi-step macros ────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacroKey {
+    Return,
+    Tab,
+    Escape,
+    Backspace,
+    Delete,
+    Space,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Char(char),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacroModifier {
+    Cmd,
+    Ctrl,
+    Alt,
+    Shift,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MacroStep {
+    Text(String),
+    Key(MacroKey),
+    Combo(Vec<MacroModifier>, MacroKey),
+    Wait(u64),
+}
+
+fn parse_macro_key(token: &str) -> Option<MacroKey> {
+    match token {
+        "enter" | "return" => Some(MacroKey::Return),
+        "tab" => Some(MacroKey::Tab),
+        "escape" | "esc" => Some(MacroKey::Escape),
+        "backspace" => Some(MacroKey::Backspace),
+        "delete" | "del" => Some(MacroKey::Delete),
+        "space" => Some(MacroKey::Space),
+        "up" => Some(MacroKey::Up),
+        "down" => Some(MacroKey::Down),
+        "left" => Some(MacroKey::Left),
+        "right" => Some(MacroKey::Right),
+        "home" => Some(MacroKey::Home),
+        "end" => Some(MacroKey::End),
+        "pageup" => Some(MacroKey::PageUp),
+        "pagedown" => Some(MacroKey::PageDown),
+        _ => {
+            let mut chars = token.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Some(MacroKey::Char(ch)),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn parse_macro_modifier(token: &str) -> Option<MacroModifier> {
+    match token {
+        "cmd" | "command" | "meta" => Some(MacroModifier::Cmd),
+        "ctrl" | "control" => Some(MacroModifier::Ctrl),
+        "alt" | "option" | "opt" => Some(MacroModifier::Alt),
+        "shift" => Some(MacroModifier::Shift),
+        _ => None,
+    }
+}
+
+fn parse_macro_action(token: &str) -> Option<MacroStep> {
+    if let Some(millis) = token.strip_prefix("wait:") {
+        let millis = millis.parse::<u64>().ok()?.min(5_000);
+        return Some(MacroStep::Wait(millis));
+    }
+
+    let mut parts: Vec<&str> = token.split('+').collect();
+    let key = parse_macro_key(parts.pop()?)?;
+    if parts.is_empty() {
+        return Some(MacroStep::Key(key));
+    }
+
+    let mut modifiers = Vec::new();
+    for part in parts {
+        modifiers.push(parse_macro_modifier(part)?);
+    }
+    // Never let a dictated macro quit or lock the current app.
+    if modifiers.contains(&MacroModifier::Cmd)
+        && matches!(key, MacroKey::Char('q') | MacroKey::Char('Q'))
+    {
+        return None;
+    }
+    Some(MacroStep::Combo(modifiers, key))
+}
+
+fn is_macro_expansion(expansion: &str) -> bool {
+    let mut rest = expansion;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            break;
+        };
+        let token = after[..close].trim().to_ascii_lowercase();
+        if matches!(
+            parse_macro_action(&token),
+            Some(MacroStep::Key(_) | MacroStep::Combo(_, _) | MacroStep::Wait(_))
+        ) {
+            return true;
+        }
+        rest = &after[close + 1..];
+    }
+    false
+}
+
+/// Parse an expansion into ordered text/key/wait steps. Variables are
+/// interpolated inside text segments only, so clipboard contents can never be
+/// mistaken for macro actions.
+fn parse_macro_steps(expansion: &str, app_name: Option<&str>) -> Vec<MacroStep> {
+    let mut steps = Vec::new();
+    let mut text = String::new();
+    let mut cursor = 0usize;
+
+    while let Some(open_rel) = expansion[cursor..].find('{') {
+        let open = cursor + open_rel;
+        let Some(close_rel) = expansion[open + 1..].find('}') else {
+            break;
+        };
+        let close = open + 1 + close_rel;
+        text.push_str(&expansion[cursor..open]);
+
+        let token = expansion[open + 1..close].trim().to_ascii_lowercase();
+        if let Some(step) = parse_macro_action(&token) {
+            if !text.is_empty() {
+                steps.push(MacroStep::Text(expand_snippet_variables(&text, app_name)));
+                text.clear();
+            }
+            steps.push(step);
+        } else {
+            // Variables and unknown tokens stay in the text segment.
+            text.push_str(&expansion[open..=close]);
+        }
+        cursor = close + 1;
+    }
+    text.push_str(&expansion[cursor..]);
+    if !text.is_empty() {
+        steps.push(MacroStep::Text(expand_snippet_variables(&text, app_name)));
+    }
+
+    steps.truncate(64);
+    steps
+}
+
+fn normalize_macro_trigger(text: &str) -> String {
+    text.trim()
+        .trim_end_matches(['.', '!', '?', ',', ';', ':'])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Macros run only when the entire utterance is the trigger, so a trigger
+/// spoken inside a sentence can never fire keystrokes.
+fn find_macro_for_utterance<'a>(
+    snippets: &'a [Snippet],
+    text: &str,
+    app_name: Option<&str>,
+) -> Option<&'a Snippet> {
+    let normalized = normalize_macro_trigger(text);
+    if normalized.is_empty() {
+        return None;
+    }
+    snippets.iter().find(|snippet| {
+        snippet_matches_app(snippet.app_pattern.as_deref(), app_name)
+            && is_macro_expansion(&snippet.expansion)
+            && normalize_macro_trigger(&snippet.trigger) == normalized
+    })
+}
+
+fn to_enigo_key(key: MacroKey) -> Key {
+    match key {
+        MacroKey::Return => Key::Return,
+        MacroKey::Tab => Key::Tab,
+        MacroKey::Escape => Key::Escape,
+        MacroKey::Backspace => Key::Backspace,
+        MacroKey::Delete => Key::Delete,
+        MacroKey::Space => Key::Space,
+        MacroKey::Up => Key::UpArrow,
+        MacroKey::Down => Key::DownArrow,
+        MacroKey::Left => Key::LeftArrow,
+        MacroKey::Right => Key::RightArrow,
+        MacroKey::Home => Key::Home,
+        MacroKey::End => Key::End,
+        MacroKey::PageUp => Key::PageUp,
+        MacroKey::PageDown => Key::PageDown,
+        MacroKey::Char(ch) => Key::Unicode(ch),
+    }
+}
+
+fn to_enigo_modifier(modifier: MacroModifier) -> Key {
+    match modifier {
+        MacroModifier::Cmd => Key::Meta,
+        MacroModifier::Ctrl => Key::Control,
+        MacroModifier::Alt => Key::Alt,
+        MacroModifier::Shift => Key::Shift,
+    }
+}
+
+/// Execute a macro. Text steps go through the normal insertion path; key steps
+/// use enigo. Waits are capped so a bad macro cannot hang dictation.
+fn execute_macro_steps(steps: &[MacroStep]) -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|error| error.to_string())?;
+    let mut total_wait = 0u64;
+
+    for step in steps {
+        match step {
+            MacroStep::Text(text) => {
+                if !text.is_empty() {
+                    paste_text(text)?;
+                }
+            }
+            MacroStep::Key(key) => {
+                enigo
+                    .key(to_enigo_key(*key), Direction::Click)
+                    .map_err(|error| error.to_string())?;
+            }
+            MacroStep::Combo(modifiers, key) => {
+                for modifier in modifiers {
+                    enigo
+                        .key(to_enigo_modifier(*modifier), Direction::Press)
+                        .map_err(|error| error.to_string())?;
+                }
+                let result = enigo.key(to_enigo_key(*key), Direction::Click);
+                for modifier in modifiers.iter().rev() {
+                    let _ = enigo.key(to_enigo_modifier(*modifier), Direction::Release);
+                }
+                result.map_err(|error| error.to_string())?;
+            }
+            MacroStep::Wait(millis) => {
+                total_wait = total_wait.saturating_add(*millis);
+                if total_wait > 10_000 {
+                    return Err("Macro wait limit exceeded (10s).".to_string());
+                }
+                thread::sleep(Duration::from_millis(*millis));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn replace_phrase(text: &str, trigger: &str, expansion: &str) -> String {
@@ -2021,13 +3106,199 @@ fn set_trigger_mode(
     Ok(())
 }
 
+// ── Vocabulary Packs commands (spec §6, §7, §9, §17, §19) ────────────────────
+
 #[tauri::command]
-fn set_dictionary(dictionary: String, state: State<'_, DictionaryState>) -> Result<(), String> {
-    *state
-        .content
+fn vocabulary_packs(
+    state: State<'_, VocabularyState>,
+) -> Result<Vec<vocabulary::model::VocabularyPack>, String> {
+    let store = state
+        .store
         .lock()
-        .map_err(|_| "Dictionary state unavailable".to_string())? = dictionary;
-    Ok(())
+        .map_err(|_| "Vocabulary state unavailable".to_string())?;
+    Ok(store.all_packs())
+}
+
+#[tauri::command]
+fn vocabulary_create_pack(
+    name: String,
+    description: String,
+    category: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    let category = serde_json::from_value::<vocabulary::model::PackCategory>(
+        serde_json::Value::String(category),
+    )
+    .unwrap_or(vocabulary::model::PackCategory::Custom);
+    state.with_store(|store| store.create_pack(name, description, category))
+}
+
+#[tauri::command]
+fn vocabulary_update_pack(
+    pack_id: String,
+    name: String,
+    description: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.update_pack(&pack_id, name, description))
+}
+
+#[tauri::command]
+fn vocabulary_duplicate_pack(
+    pack_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    state.with_store(|store| store.duplicate_pack(&pack_id))
+}
+
+#[tauri::command]
+fn vocabulary_delete_pack(
+    pack_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.delete_pack(&pack_id))
+}
+
+#[tauri::command]
+fn vocabulary_set_pack_enabled(
+    pack_id: String,
+    enabled: bool,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.set_pack_enabled(&pack_id, enabled))
+}
+
+#[tauri::command]
+fn vocabulary_upsert_entry(
+    pack_id: String,
+    entry: vocabulary::model::VocabularyEntry,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyEntry, String> {
+    state.with_store(|store| store.upsert_entry(&pack_id, entry))
+}
+
+#[tauri::command]
+fn vocabulary_delete_entry(
+    pack_id: String,
+    entry_id: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.delete_entry(&pack_id, &entry_id))
+}
+
+#[tauri::command]
+fn vocabulary_set_entry_enabled(
+    pack_id: String,
+    entry_id: String,
+    enabled: bool,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| store.set_entry_enabled(&pack_id, &entry_id, enabled))
+}
+
+#[tauri::command]
+fn vocabulary_set_app_mapping(
+    app: vocabulary::model::ApplicationIdentifier,
+    pack_ids: Vec<String>,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| {
+        store.set_app_mapping(app, pack_ids);
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn vocabulary_import(
+    json: String,
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::model::VocabularyPack, String> {
+    state.with_store(|store| store.import_pack(&json))
+}
+
+#[tauri::command]
+fn vocabulary_export(pack_id: String, state: State<'_, VocabularyState>) -> Result<String, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "Vocabulary state unavailable".to_string())?;
+    serde_json::to_string_pretty(&store.export_pack(&pack_id)?)
+        .map_err(|error| format!("Export serialization failed: {error}"))
+}
+
+/// Run the deterministic vocabulary evaluation dataset against the current
+/// packs and settings (spec §26). Local-only; used by the Corrections page's
+/// quality check and available for CI through the same test harness.
+#[tauri::command]
+fn vocabulary_eval(
+    state: State<'_, VocabularyState>,
+) -> Result<vocabulary::eval::EvalReport, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "Vocabulary state unavailable".to_string())?;
+    let packs = store.all_packs();
+    let settings = store.document.settings.clone();
+    let context =
+        vocabulary::context::build_correction_context(&packs, None, vocabulary::store::now_secs());
+    let trie = vocabulary::index::PhraseTrie::build(&context);
+    Ok(vocabulary::eval::evaluate(&trie, &settings))
+}
+
+#[tauri::command]
+fn vocabulary_set_settings(
+    settings: vocabulary::model::VocabularySettings,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    state.with_store(|store| {
+        store.document.settings = settings;
+        Ok(())
+    })
+}
+
+/// One-time migration: converts the legacy free-text personal dictionary
+/// ("word | hint | category" lines) into Personal-pack vocabulary entries.
+/// Idempotent — safe to call repeatedly.
+#[tauri::command]
+fn vocabulary_migrate_dictionary(
+    dictionary: String,
+    state: State<'_, VocabularyState>,
+) -> Result<usize, String> {
+    state.with_store(|store| store.migrate_dictionary(&dictionary))
+}
+
+/// Teach a correction from the UI (spec §17): the Corrections page's
+/// "Teach a correction" form and transcript edits both land here. Repeated
+/// corrections raise the entry's ranking; unknown terms become Personal-pack
+/// entries with the heard form as an alias.
+#[tauri::command]
+fn vocabulary_record_correction(
+    source: String,
+    canonical: String,
+    state: State<'_, VocabularyState>,
+) -> Result<(), String> {
+    let now = vocabulary::store::now_secs();
+    state.with_store(|store| {
+        store.teach_correction(&source, &canonical, now)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn set_login_item(app: AppHandle, enabled: bool) -> Result<(), String> {
+    login_item::set_enabled(&app, enabled)
+}
+
+/// Switch the Dock icon with the active theme: dark theme → the dark logo,
+/// light theme → the light logo. Applied on the main thread (AppKit).
+#[tauri::command]
+fn set_dock_icon(app: AppHandle, theme: String) {
+    dock_icon::apply(&app, &theme);
+}
+
+#[tauri::command]
+fn is_login_item_enabled(app: AppHandle) -> Result<bool, String> {
+    login_item::is_enabled(&app)
 }
 
 #[tauri::command]
@@ -2043,6 +3314,78 @@ fn set_language(language: String, state: State<'_, LanguageState>) -> Result<(),
     Ok(())
 }
 
+const VALID_ENGINES: [&str; 4] = ["auto", "apple", "whisper", "parakeet"];
+
+#[tauri::command]
+fn set_transcription_engine(
+    engine: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let engine = engine.trim().to_ascii_lowercase();
+    if !VALID_ENGINES.contains(&engine.as_str()) {
+        return Err(format!("Unknown transcription engine: {engine}"));
+    }
+    #[cfg(target_os = "macos")]
+    let should_warm_apple = engine == "apple";
+    *state
+        .engine
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = engine;
+
+    #[cfg(target_os = "macos")]
+    if should_warm_apple {
+        // Sidecar startup must never delay settings hydration or the UI.
+        std::thread::spawn(|| {
+            if let Err(error) = engines::apple_speech::warm_serve_session() {
+                eprintln!("[VOX][ASR] apple-speech prewarm skipped: {error}");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_selected_model(
+    model_name: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let model_name = model_name.trim();
+    if model_name.is_empty() {
+        return Err("Selected model cannot be empty".to_string());
+    }
+    *state
+        .selected_model
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = model_name.to_string();
+    Ok(())
+}
+
+#[tauri::command]
+fn set_engine_fallback(
+    enabled: bool,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    state.fallback_enabled.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_engine_fallback_target(
+    engine: String,
+    state: State<'_, EngineSelectionState>,
+) -> Result<(), String> {
+    let engine = engine.trim().to_ascii_lowercase();
+    if !VALID_ENGINES.contains(&engine.as_str()) {
+        return Err(format!("Unknown transcription engine: {engine}"));
+    }
+    *state
+        .preferred_fallback
+        .lock()
+        .map_err(|_| "Engine selection state unavailable".to_string())? = engine;
+    Ok(())
+}
+
 #[tauri::command]
 fn set_snippets(snippets: Vec<Snippet>, state: State<'_, SnippetsState>) -> Result<(), String> {
     *state
@@ -2050,6 +3393,57 @@ fn set_snippets(snippets: Vec<Snippet>, state: State<'_, SnippetsState>) -> Resu
         .lock()
         .map_err(|_| "Snippets state unavailable".to_string())? = snippets;
     Ok(())
+}
+
+#[tauri::command]
+fn set_insertion_method(
+    method: String,
+    state: State<'_, InsertionMethodState>,
+) -> Result<(), String> {
+    if method != "typing" && method != "clipboard" {
+        return Err(format!("Unknown insertion method: {method}"));
+    }
+    *state
+        .method
+        .lock()
+        .map_err(|_| "Insertion method state unavailable".to_string())? = method;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_writing_profiles(
+    state: State<'_, writing::WritingProfilesState>,
+) -> Result<writing::WritingProfilesView, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "Writing profiles unavailable".to_string())?;
+    Ok(writing::view(&config))
+}
+
+#[tauri::command]
+fn set_writing_profiles(
+    app: AppHandle,
+    state: State<'_, writing::WritingProfilesState>,
+    custom_styles: Vec<writing::WritingStyle>,
+    profiles: Vec<writing::AppWritingProfile>,
+    default_style_id: Option<String>,
+) -> Result<writing::WritingProfilesView, String> {
+    let config = writing::sanitize(writing::WritingProfileConfig {
+        custom_styles,
+        profiles,
+        default_style_id,
+    });
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    writing::save(&app_data_dir, &config)?;
+    *state
+        .config
+        .lock()
+        .map_err(|_| "Writing profiles unavailable".to_string())? = config.clone();
+    Ok(writing::view(&config))
 }
 
 #[tauri::command]
@@ -2258,9 +3652,10 @@ pub fn run() {
         .manage(ActiveShortcut {
             current: Mutex::new(DEFAULT_SHORTCUT.to_string()),
         })
-        .manage(DictionaryState::default())
         .manage(LanguageState::default())
         .manage(SnippetsState::default())
+        .manage(LastInsertionState::default())
+        .manage(InsertionMethodState::default())
         .manage(VoiceCommandsState::default())
         .manage(TranscriptFormattingState::default())
         .manage(CleanupLevelState::default())
@@ -2272,9 +3667,27 @@ pub fn run() {
         .manage(FocusContextState::default())
         .manage(ErrorReportingState::default())
         .manage(whisper::DownloadRegistry::default())
+        .manage(EngineSelectionState::default())
         .manage(TransformState::default())
         .setup(move |app| {
+            // Vocabulary Packs (spec §6): persisted under <app data>/vocabulary/.
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            app.manage(VocabularyState {
+                store: Mutex::new(vocabulary::store::VocabularyStore::load(&app_data_dir)),
+                cache: Mutex::new(None),
+            });
+            app.manage(writing::WritingProfilesState {
+                config: Mutex::new(writing::load(&app_data_dir)),
+            });
+
             create_tray_menu(app)?;
+
+            // One-time migration: legacy LaunchAgent login item → SMAppService
+            // (shows "Vox" instead of the signing team in System Settings).
+            login_item::migrate_legacy_agent();
 
             // Register default shortcut via OS hotkey API (works for Cmd+Shift+Space)
             app.global_shortcut().register(default_shortcut)?;
@@ -2317,16 +3730,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             native_status,
             request_microphone_permission,
+            microphone_authorization_status,
+            open_system_settings,
             recording_status,
             start_recording,
             stop_recording,
             whisper_models,
+            get_transcription_engines,
+            get_hardware_info,
             download_whisper_model,
             pause_whisper_download,
             resume_whisper_download,
             cancel_whisper_download,
             delete_whisper_model,
             text_enhancement_models,
+            recommended_enhancement_model,
             download_text_enhancement_model,
             delete_text_enhancement_model,
             set_enhance_icon_enabled,
@@ -2341,9 +3759,18 @@ pub fn run() {
             set_global_shortcut,
             get_trigger_mode,
             set_trigger_mode,
-            set_dictionary,
             set_language,
+            set_login_item,
+            is_login_item_enabled,
+            set_dock_icon,
+            set_transcription_engine,
+            set_selected_model,
+            set_engine_fallback,
+            set_engine_fallback_target,
             set_snippets,
+            set_insertion_method,
+            get_writing_profiles,
+            set_writing_profiles,
             set_whisper_mode,
             set_voice_commands_enabled,
             list_custom_models,
@@ -2351,6 +3778,9 @@ pub fn run() {
             delete_custom_model,
             enhance_focused_input_now,
             hide_widget,
+            undo_last_insertion,
+            retry_last_insertion,
+            widget_set_size,
             set_transcript_formatting_mode,
             get_cleanup_level,
             set_cleanup_level,
@@ -2367,23 +3797,54 @@ pub fn run() {
             open_external_link,
             capture_selected_text,
             apply_transform,
+            note_transform,
+            vocabulary_packs,
+            vocabulary_migrate_dictionary,
+            vocabulary_create_pack,
+            vocabulary_update_pack,
+            vocabulary_duplicate_pack,
+            vocabulary_delete_pack,
+            vocabulary_set_pack_enabled,
+            vocabulary_upsert_entry,
+            vocabulary_delete_entry,
+            vocabulary_set_entry_enabled,
+            vocabulary_set_app_mapping,
+            vocabulary_import,
+            vocabulary_export,
+            vocabulary_eval,
+            vocabulary_set_settings,
+            vocabulary_record_correction,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Vox");
+        .build(tauri::generate_context!())
+        .expect("error while running Vox")
+        .run(|_app_handle, event| {
+            // Kill the persistent engine sidecars so app exit never orphans
+            // them (they hold loaded models in memory otherwise).
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                engines::apple_speech::shutdown_serve_session();
+                engines::parakeet_engine::shutdown_serve_session();
+                crate::text_enhancement::shutdown_serve_session();
+            }
+        });
 }
 
 fn create_tray_menu(app: &App) -> tauri::Result<()> {
     let menu = build_tray_menu(app.handle(), false)?;
 
-    let mut tray = TrayIconBuilder::with_id("main")
+    // Monochrome mic glyph (2x of the tray's fixed 18pt height) rendered as
+    // an NSImage template: AppKit masks it from the alpha channel and tints
+    // it automatically, so it reads correctly on both light and dark menu
+    // bars.
+    let tray = TrayIconBuilder::with_id("main")
         .tooltip("Vox")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(handle_tray_menu_event);
-
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone()).icon_as_template(true);
-    }
+        .on_menu_event(handle_tray_menu_event)
+        .icon(tauri::include_image!("icons/menubar-icon.png"))
+        .icon_as_template(true);
 
     tray.build(app)?;
     Ok(())
@@ -2411,18 +3872,62 @@ fn build_tray_menu<R: tauri::Runtime>(
             None::<&str>,
         )?
     };
+    let private = MenuItem::with_id(
+        app,
+        TRAY_PRIVATE_DICTATION_ID,
+        "Dictate Without Saving",
+        !is_recording,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
+    let (can_undo, can_retry) = last_insertion_actions(app);
+    let undo = MenuItem::with_id(
+        app,
+        TRAY_UNDO_INSERTION_ID,
+        "Undo Last Dictation",
+        can_undo,
+        None::<&str>,
+    )?;
+    let retry = MenuItem::with_id(
+        app,
+        TRAY_RETRY_INSERTION_ID,
+        "Retry Insertion",
+        can_retry,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(app, TRAY_SETTINGS_ID, "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)?;
 
-    Menu::with_items(app, &[&open_app, &dictation, &settings, &separator, &quit])
+    Menu::with_items(
+        app,
+        &[
+            &open_app, &dictation, &private, &undo, &retry, &settings, &separator, &quit,
+        ],
+    )
 }
 
 fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match event.id().as_ref() {
         TRAY_OPEN_APP_ID => show_main_window(app),
         TRAY_START_DICTATION_ID => start_recording_flow(app.clone()),
+        TRAY_PRIVATE_DICTATION_ID => start_private_dictation_flow(app.clone()),
         TRAY_CANCEL_DICTATION_ID => cancel_recording(app.clone()),
+        TRAY_UNDO_INSERTION_ID => match undo_last_insertion(app.clone()) {
+            Ok(_) => {
+                show_widget(app, "done", "Dictation undone");
+                hide_widget_after_delay(app.clone(), 1400);
+            }
+            Err(error) => {
+                show_widget(app, "error", &error);
+                hide_widget_after_delay(app.clone(), 4000);
+            }
+        },
+        TRAY_RETRY_INSERTION_ID => {
+            if let Err(error) = retry_last_insertion(app.clone()) {
+                show_widget(app, "error", &error);
+                hide_widget_after_delay(app.clone(), 4000);
+            }
+        }
         TRAY_SETTINGS_ID => {
             show_main_window(app);
             let _ = app.emit("vox-open-settings", ());
@@ -2584,7 +4089,58 @@ fn handle_transform_shortcut(app: AppHandle) {
     });
 }
 
+fn transcription_preflight_error(
+    models_dir: &Path,
+    preferred: &str,
+    fallback_enabled: bool,
+) -> Option<String> {
+    let statuses = engines::describe_engines(models_dir);
+
+    if preferred == "auto" {
+        if statuses.iter().any(|status| status.available) {
+            return None;
+        }
+        return Some(
+            "No transcription engine is ready. Download a model or check the engine permissions in Settings."
+                .to_string(),
+        );
+    }
+
+    let selected = statuses.iter().find(|status| status.id == preferred);
+    if selected.is_some_and(|status| status.available) {
+        return None;
+    }
+
+    // The router can try any registered fallback, so do not block recording
+    // when at least one other engine is usable.
+    if fallback_enabled
+        && statuses
+            .iter()
+            .any(|status| status.id != preferred && status.available)
+    {
+        return None;
+    }
+
+    let display_name = selected
+        .map(|status| status.display_name)
+        .unwrap_or(preferred);
+    let reason = selected
+        .and_then(|status| status.reason.as_deref())
+        .unwrap_or("the engine is unavailable");
+    Some(format!("{display_name} is unavailable — {reason}"))
+}
+
 fn start_recording_flow(app: AppHandle) {
+    start_recording_flow_inner(app, false);
+}
+
+/// Incognito dictation: same pipeline as a normal hotkey dictation, but the
+/// transcript, audio, and vocabulary learning are never persisted.
+fn start_private_dictation_flow(app: AppHandle) {
+    start_recording_flow_inner(app, true);
+}
+
+fn start_recording_flow_inner(app: AppHandle, private: bool) {
     let recorder_state = app.state::<RecorderState>();
 
     // Fast pre-checks first (model availability) so we never flash a widget
@@ -2598,44 +4154,57 @@ fn start_recording_flow(app: AppHandle) {
         }
     };
 
-    let has_model = whisper::list_models(&models_dir)
-        .iter()
-        .any(|m| m.downloaded);
-
-    if !has_model {
-        show_widget(
-            &app,
-            "error",
-            "No model downloaded — open Vox and download one first",
-        );
+    let (preferred_engine, fallback_enabled) = app
+        .try_state::<EngineSelectionState>()
+        .and_then(|state| {
+            Some((
+                state.engine.lock().ok()?.clone(),
+                state.fallback_enabled.load(Ordering::Relaxed),
+            ))
+        })
+        .unwrap_or_else(|| ("auto".to_string(), true));
+    if let Some(error) =
+        transcription_preflight_error(&models_dir, &preferred_engine, fallback_enabled)
+    {
+        show_widget(&app, "error", &error);
         hide_widget_after_delay(app.clone(), 4000);
         return;
     }
 
     // Show the widget immediately so the hotkey feels instant, while the audio
     // device warms up in the background.
-    show_widget(&app, "recording", "Listening…");
+    clear_last_insertion(&app);
+    let listening_message = if private {
+        "Private · Listening…"
+    } else {
+        "Listening…"
+    };
+    show_widget(&app, "recording", listening_message);
 
-    let hands_free = app
-        .try_state::<EventTapHandle>()
-        .map(|handle| {
-            let mode: TriggerMode = (*handle.state.mode.lock().unwrap()).into();
-            mode == TriggerMode::HandsFree
-        })
-        .unwrap_or(false);
+    // Private dictation always uses toggle mode: hands-free segments emit
+    // incremental events and would bypass the no-save guarantee.
+    let hands_free = !private
+        && app
+            .try_state::<EventTapHandle>()
+            .map(|handle| {
+                let mode: TriggerMode = (*handle.state.mode.lock().unwrap()).into();
+                mode == TriggerMode::HandsFree
+            })
+            .unwrap_or(false);
 
-    match start_recording_inner(&app, &recorder_state, hands_free) {
+    match start_recording_inner(&app, &recorder_state, hands_free, private) {
         Ok(_) => {
             // Re-emit the widget state now that the session carries the active
             // app context, so the "In <app> · <file>" line appears instantly
             // instead of waiting for the first timer tick.
-            show_widget_with_elapsed(&app, "recording", "Listening…", None);
+            show_widget_with_elapsed(&app, "recording", listening_message, Some(0));
             start_recording_timer(app.clone());
             refresh_tray_menu(&app);
         }
         Err(error) => {
             show_widget(&app, "error", &error);
             hide_widget_after_delay(app.clone(), 4000);
+            refresh_tray_menu(&app);
         }
     }
 }
@@ -2643,12 +4212,9 @@ fn start_recording_flow(app: AppHandle) {
 fn stop_and_transcribe(app: AppHandle) {
     eprintln!("[vox] stop_and_transcribe: stopping recording");
     let recorder_state = app.state::<RecorderState>();
-    let dictionary = app
-        .try_state::<DictionaryState>()
-        .and_then(|state| state.content.lock().ok().map(|content| content.clone()))
-        .filter(|content| !content.trim().is_empty());
     match stop_recording_inner(&recorder_state) {
         Ok(status) => {
+            let private = status.private;
             eprintln!(
                 "[vox] stop_and_transcribe: stopped path={:?} duration={:?}",
                 status.path, status.duration_seconds
@@ -2657,18 +4223,16 @@ fn stop_and_transcribe(app: AppHandle) {
 
             let audio_path = status.path.clone();
             if let Some(path) = status.path {
-                // Yield briefly so the webview can render "transcribing" before
-                // the heavy Whisper work blocks the event loop.
-                thread::sleep(Duration::from_millis(80));
-
                 eprintln!("[vox] stop_and_transcribe: transcribing {path}");
                 match transcribe_recording_inner(
                     &app,
                     path,
                     None,
-                    dictionary.clone(),
                     status.app_name.clone(),
                     status.window_title.clone(),
+                    status.preview_text.clone(),
+                    status.preview_confidence,
+                    !status.private,
                 ) {
                     Ok(mut result) => {
                         result.app_name = status.app_name;
@@ -2679,10 +4243,53 @@ fn stop_and_transcribe(app: AppHandle) {
 
                         if is_blank_transcription(&result.text) {
                             eprintln!("[vox] stop_and_transcribe: blank transcription");
+                            if private {
+                                if let Some(path) = &audio_path {
+                                    let _ = fs::remove_file(path);
+                                }
+                            }
                             show_widget(&app, "done", "No speech detected");
                             hide_widget_after_delay(app.clone(), 1200);
                             refresh_tray_menu(&app);
                             return;
+                        }
+
+                        // Multi-step macros run only when the whole utterance
+                        // is the trigger. They never enter transcript history.
+                        let snippets = app
+                            .try_state::<SnippetsState>()
+                            .and_then(|state| {
+                                state.snippets.lock().ok().map(|snippets| snippets.clone())
+                            })
+                            .unwrap_or_default();
+                        if let Some(macro_snippet) = find_macro_for_utterance(
+                            &snippets,
+                            &result.asr_text,
+                            result.app_name.as_deref(),
+                        ) {
+                            let steps = parse_macro_steps(
+                                &macro_snippet.expansion,
+                                result.app_name.as_deref(),
+                            );
+                            if !steps.is_empty() {
+                                show_widget(&app, "transcribing", "Running macro…");
+                                if let Some(path) = &audio_path {
+                                    let _ = fs::remove_file(path);
+                                }
+                                match execute_macro_steps(&steps) {
+                                    Ok(()) => {
+                                        show_widget(&app, "done", "Macro executed");
+                                        hide_widget_after_delay(app.clone(), 1400);
+                                    }
+                                    Err(error) => {
+                                        eprintln!("[vox] macro error: {error}");
+                                        show_widget(&app, "error", &error);
+                                        hide_widget_after_delay(app.clone(), 4000);
+                                    }
+                                }
+                                refresh_tray_menu(&app);
+                                return;
+                            }
                         }
 
                         // Voice commands: a short instruction ("make this
@@ -2696,11 +4303,24 @@ fn stop_and_transcribe(app: AppHandle) {
                             if let Some(command) = detect_voice_command(&result.text) {
                                 eprintln!("[vox] stop_and_transcribe: voice command detected");
                                 show_widget(&app, "transcribing", "Applying command…");
+                                if private {
+                                    if let Some(path) = &audio_path {
+                                        let _ = fs::remove_file(path);
+                                    }
+                                }
                                 let app_clone = app.clone();
                                 tauri::async_runtime::spawn(async move {
                                     match execute_voice_command(app_clone.clone(), command).await {
                                         Ok(()) => {
-                                            show_widget(&app_clone, "done", "Command applied");
+                                            show_widget(
+                                                &app_clone,
+                                                "done",
+                                                if private {
+                                                    "Command applied · not saved"
+                                                } else {
+                                                    "Command applied"
+                                                },
+                                            );
                                             hide_widget_after_delay(app_clone.clone(), 1200);
                                             refresh_tray_menu(&app_clone);
                                         }
@@ -2716,42 +4336,114 @@ fn stop_and_transcribe(app: AppHandle) {
                             }
                         }
 
-                        let text = result.text.clone();
+                        let app_name = result.app_name.clone();
+                        let text = ensure_trailing_space(&result.text);
                         show_widget(&app, "done", "Pasting transcript…");
-                        let _ = app.emit("vox-transcription-complete", result);
-                        eprintln!("[vox] stop_and_transcribe: emitted completion event");
-
-                        thread::sleep(Duration::from_millis(150));
-                        if let Err(e) = paste_text(&text) {
-                            eprintln!("paste_text error: {e}");
+                        if private {
+                            eprintln!(
+                                "[vox] stop_and_transcribe: private dictation — history event skipped"
+                            );
                         } else {
-                            eprintln!("[vox] stop_and_transcribe: pasted transcript");
+                            let _ = app.emit("vox-transcription-complete", result);
+                            eprintln!("[vox] stop_and_transcribe: emitted completion event");
                         }
 
-                        // Offer the Enhance action in the widget only when the
-                        // Enhance icon setting is on AND the model is available;
-                        // otherwise dismiss after a short delay.
-                        if is_enhance_icon_enabled(&app) && is_selected_enhancement_model_available(&app) {
-                            show_widget_done_with_enhance(&app, "Enhanced?");
+                        let paste_started = std::time::Instant::now();
+                        let inserted = match insert_text(&app, &text) {
+                            Ok(method) => {
+                                // Performance logging (spec §26).
+                                eprintln!(
+                                    "[VOX][OUTPUT] Inserted via {method} in {}ms",
+                                    paste_started.elapsed().as_millis()
+                                );
+                                true
+                            }
+                            Err(error) => {
+                                eprintln!("[vox] paste_text error: {error}");
+                                // Never send incognito text to the main window.
+                                if !private {
+                                    let _ = app.emit(
+                                        "vox-insertion-failed",
+                                        serde_json::json!({
+                                            "text": &text,
+                                            "error": error,
+                                            "appName": &app_name,
+                                        }),
+                                    );
+                                }
+                                false
+                            }
+                        };
+                        remember_last_insertion(&app, text, app_name, inserted);
+
+                        if private {
+                            if let Some(path) = &audio_path {
+                                let _ = fs::remove_file(path);
+                            }
+                        }
+
+                        if inserted {
+                            // Offer Undo (and Enhance when the model is
+                            // available). The widget dismisses on typing or
+                            // after 10 seconds.
+                            if is_enhance_icon_enabled(&app)
+                                && is_selected_enhancement_model_available(&app)
+                            {
+                                show_widget_done_with_actions(
+                                    &app,
+                                    if private {
+                                        "Enhanced? · not saved"
+                                    } else {
+                                        "Enhanced?"
+                                    },
+                                    true,
+                                );
+                            } else if private {
+                                show_widget_done_with_actions(&app, "Inserted · not saved", false);
+                            } else {
+                                show_widget_done_with_actions(&app, "Inserted", false);
+                            }
                         } else {
-                            hide_widget_after_delay(app.clone(), 1200);
+                            show_widget(
+                                &app,
+                                "error",
+                                if private {
+                                    "Couldn't insert — text was not saved"
+                                } else {
+                                    "Couldn't insert — retry from the menu bar"
+                                },
+                            );
+                            hide_widget_after_delay(app.clone(), 6000);
                         }
                         refresh_tray_menu(&app);
                     }
                     Err(error) => {
                         eprintln!("[vox] stop_and_transcribe: transcription error: {error}");
-                        // Keep the recording file and surface the error with its
-                        // path so the main window can offer a Retry action.
-                        let _ = app.emit(
-                            "vox-transcription-error",
-                            serde_json::json!({
-                                "path": audio_path,
-                                "error": error,
-                                "appName": status.app_name,
-                                "windowTitle": status.window_title,
-                            }),
-                        );
-                        show_widget(&app, "error", &error);
+                        if private {
+                            // Incognito recordings are discarded on failure; the
+                            // main window must not receive the path or text.
+                            if let Some(path) = &audio_path {
+                                let _ = fs::remove_file(path);
+                            }
+                            show_widget(
+                                &app,
+                                "error",
+                                "Transcription failed — recording discarded",
+                            );
+                        } else {
+                            // Keep the recording file and surface the error with its
+                            // path so the main window can offer a Retry action.
+                            let _ = app.emit(
+                                "vox-transcription-error",
+                                serde_json::json!({
+                                    "path": audio_path,
+                                    "error": error,
+                                    "appName": status.app_name,
+                                    "windowTitle": status.window_title,
+                                }),
+                            );
+                            show_widget(&app, "error", &error);
+                        }
                         hide_widget_after_delay(app.clone(), 4000);
                         refresh_tray_menu(&app);
                     }
@@ -2823,7 +4515,10 @@ fn spawn_hands_free_monitor(app: AppHandle) {
 
             if has_speech && silence_elapsed >= HANDS_FREE_SILENCE_TIMEOUT {
                 if let Some(segment_path) = finalize_hands_free_segment(&recorder_state) {
-                    recorder_state.vad.has_speech.store(false, Ordering::Relaxed);
+                    recorder_state
+                        .vad
+                        .has_speech
+                        .store(false, Ordering::Relaxed);
                     *recorder_state.vad.last_sound_at.lock().unwrap() = Instant::now();
                     let app_clone = app.clone();
                     thread::spawn(move || {
@@ -2832,7 +4527,7 @@ fn spawn_hands_free_monitor(app: AppHandle) {
                 }
             }
 
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(100));
         }
     });
 }
@@ -2849,10 +4544,7 @@ fn finalize_hands_free_segment(state: &RecorderState) -> Option<PathBuf> {
     }
     let finalized_path = session.path.clone();
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let new_path = session
         .path
         .with_file_name(format!("vox-recording-{timestamp}.wav"));
@@ -2879,11 +4571,6 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
 
-    let dictionary = app
-        .try_state::<DictionaryState>()
-        .and_then(|state| state.content.lock().ok().map(|content| content.clone()))
-        .filter(|content| !content.trim().is_empty());
-
     let (app_name, window_title) = {
         let session = recorder_state.session.lock().ok();
         match session.as_ref().and_then(|session| session.as_ref()) {
@@ -2893,21 +4580,60 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
     };
 
     let path_str = path.to_string_lossy().to_string();
-    match transcribe_recording_inner(&app, path_str, None, dictionary, app_name, window_title) {
+    match transcribe_recording_inner(
+        &app,
+        path_str,
+        None,
+        app_name,
+        window_title,
+        None,
+        None,
+        true,
+    ) {
         Ok(result) => {
             if !is_blank_transcription(&result.text) {
-                let text = result.text.clone();
+                let snippets = app
+                    .try_state::<SnippetsState>()
+                    .and_then(|state| state.snippets.lock().ok().map(|snippets| snippets.clone()))
+                    .unwrap_or_default();
+                if let Some(macro_snippet) = find_macro_for_utterance(
+                    &snippets,
+                    &result.asr_text,
+                    result.app_name.as_deref(),
+                ) {
+                    let steps =
+                        parse_macro_steps(&macro_snippet.expansion, result.app_name.as_deref());
+                    if !steps.is_empty() {
+                        let _ = fs::remove_file(&path);
+                        if let Err(error) = execute_macro_steps(&steps) {
+                            eprintln!("[vox] hands-free macro error: {error}");
+                        }
+                        return;
+                    }
+                }
+
+                let text = ensure_trailing_space(&result.text);
                 let _ = app.emit(
                     "vox-hands-free-segment",
                     serde_json::json!({
                         "text": result.text,
+                        "asrText": result.asr_text,
                         "rawText": result.raw_text,
+                        "timings": result.timings,
                         "appName": result.app_name,
                         "language": result.language,
+                        "engine": result.engine,
+                        "corrections": result.corrections,
                     }),
                 );
-                if let Err(error) = paste_text(&text) {
+                let paste_started = std::time::Instant::now();
+                if let Err(error) = insert_text(&app, &text) {
                     eprintln!("[vox] hands-free paste error: {error}");
+                } else {
+                    eprintln!(
+                        "[VOX][OUTPUT] Inserted in {}ms",
+                        paste_started.elapsed().as_millis()
+                    );
                 }
             }
             let _ = fs::remove_file(&path);
@@ -2917,6 +4643,22 @@ fn transcribe_hands_free_segment(app: AppHandle, path: PathBuf) {
             let _ = fs::remove_file(&path);
         }
     }
+}
+
+/// Append a space when the transcript ends with sentence punctuation, so the
+/// cursor in the target app never sits flush against a full stop and the next
+/// typed or dictated word starts cleanly (matches system dictation behavior).
+fn ensure_trailing_space(text: &str) -> String {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() || text.ends_with(' ') {
+        return text.to_string();
+    }
+    // A closing quote after the punctuation still ends the sentence.
+    let core = trimmed.trim_end_matches(['"', '\'', '”', '’']);
+    if core.ends_with(['.', '!', '?', ',', ';', ':']) {
+        return format!("{text} ");
+    }
+    text.to_string()
 }
 
 /// Type `text` at the current cursor position.
@@ -2949,6 +4691,277 @@ fn paste_text_with_enigo(text: &str) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+/// Insert dictated text using the user's preferred method. Returns the method
+/// actually used for diagnostics.
+fn insert_text(app: &AppHandle, text: &str) -> Result<&'static str, String> {
+    let method = app
+        .try_state::<InsertionMethodState>()
+        .and_then(|state| state.method.lock().ok().map(|method| method.clone()))
+        .unwrap_or_default();
+    if method == "clipboard" {
+        match paste_text_with_clipboard(text) {
+            Ok(()) => Ok("clipboard"),
+            Err(error) => {
+                // Clipboard access can fail (locked clipboard, missing
+                // Wayland helper). Fall back to direct typing rather than
+                // dropping the transcript.
+                eprintln!("[vox] clipboard insertion failed ({error}); typing instead");
+                paste_text(text)?;
+                Ok("typing")
+            }
+        }
+    } else {
+        // Long transcripts are the ones most likely to lose characters during
+        // direct typing. Snapshot the focused field first so a retry only
+        // happens when the field demonstrably did not change.
+        let verify = text.chars().count() >= 120;
+        let before = if verify { focused_text_value() } else { None };
+        paste_text(text)?;
+        if let Some(before) = before {
+            thread::sleep(Duration::from_millis(150));
+            if focused_text_value().as_deref() == Some(before.as_str()) {
+                eprintln!(
+                    "[vox] insertion post-check: focused field unchanged; retrying via clipboard"
+                );
+                paste_text_with_clipboard(text)?;
+                thread::sleep(Duration::from_millis(200));
+                if focused_text_value().as_deref() == Some(before.as_str()) {
+                    return Err("The focused app did not accept the inserted text.".to_string());
+                }
+                return Ok("typing+clipboardRetry");
+            }
+        }
+        Ok("typing")
+    }
+}
+
+enum ClipboardBackup {
+    Text(String),
+    Image(arboard::ImageData<'static>),
+    Empty,
+}
+
+/// Paste through the clipboard for long transcripts, then restore whatever the
+/// clipboard held before (text or image). This is opt-in; the default path is
+/// direct typing.
+fn paste_text_with_clipboard(text: &str) -> Result<(), String> {
+    let mut clipboard =
+        Clipboard::new().map_err(|error| format!("Could not access clipboard: {error}"))?;
+    let backup = if let Ok(previous) = clipboard.get_text() {
+        ClipboardBackup::Text(previous)
+    } else if let Ok(image) = clipboard.get_image() {
+        ClipboardBackup::Image(image)
+    } else {
+        ClipboardBackup::Empty
+    };
+
+    clipboard
+        .set_text(text)
+        .map_err(|error| format!("Could not write transcript to clipboard: {error}"))?;
+    thread::sleep(Duration::from_millis(30));
+    simulate_paste_shortcut()?;
+    // Give the target app time to read the clipboard before restoring it.
+    thread::sleep(Duration::from_millis(250));
+
+    match backup {
+        ClipboardBackup::Text(previous) => {
+            let _ = clipboard.set_text(previous);
+        }
+        ClipboardBackup::Image(image) => {
+            let _ = clipboard.set_image(image);
+        }
+        ClipboardBackup::Empty => {
+            let _ = clipboard.clear();
+        }
+    }
+    Ok(())
+}
+
+// ── Last insertion (undo / retry) ───────────────────────────────────────────
+
+fn remember_last_insertion(
+    app: &AppHandle,
+    text: String,
+    app_name: Option<String>,
+    inserted: bool,
+) {
+    if let Some(state) = app.try_state::<LastInsertionState>() {
+        if let Ok(mut last) = state.last.lock() {
+            *last = Some(LastInsertion {
+                text,
+                app_name,
+                inserted_at: Instant::now(),
+                inserted,
+            });
+        }
+    }
+}
+
+fn clear_last_insertion(app: &AppHandle) {
+    if let Some(state) = app.try_state::<LastInsertionState>() {
+        if let Ok(mut last) = state.last.lock() {
+            *last = None;
+        }
+    }
+}
+
+fn last_insertion_snapshot<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<LastInsertion> {
+    app.try_state::<LastInsertionState>()
+        .and_then(|state| state.last.lock().ok().and_then(|last| last.clone()))
+}
+
+/// `(can_undo, can_retry)` for the tray menu.
+fn last_insertion_actions<R: tauri::Runtime>(app: &AppHandle<R>) -> (bool, bool) {
+    match last_insertion_snapshot(app) {
+        Some(entry) if entry.inserted => {
+            (entry.inserted_at.elapsed() <= UNDO_INSERTION_WINDOW, false)
+        }
+        Some(entry) => (false, entry.inserted_at.elapsed() <= RETRY_INSERTION_WINDOW),
+        None => (false, false),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UndoInsertionResult {
+    method: &'static str,
+}
+
+/// Remove the exact text Vox typed from the focused field when it is still
+/// present. This keeps the app's own undo stack untouched and works for
+/// insertions at the end of a field.
+#[cfg(target_os = "macos")]
+fn remove_inserted_suffix(inserted: &str) -> Result<(), String> {
+    if inserted.trim().is_empty() {
+        return Err("There is no inserted text to remove.".to_string());
+    }
+
+    let system = OwnedAxElement::new(unsafe { AXUIElementCreateSystemWide() })
+        .ok_or_else(|| "Could not access the focused app.".to_string())?;
+    let focused = ax_copy_attribute(system.as_ref(), "AXFocusedUIElement")
+        .and_then(|value| OwnedAxElement::new(value as AXUIElementRef))
+        .ok_or_else(|| "Could not find the focused field.".to_string())?;
+    let role = ax_string_attribute(focused.as_ref(), "AXRole");
+    if !is_editable_ax_role(role.as_deref()) {
+        return Err("No editable field is focused.".to_string());
+    }
+
+    let value = ax_string_attribute(focused.as_ref(), "AXValue")
+        .ok_or_else(|| "The focused field does not expose its text.".to_string())?;
+    let trimmed = inserted.trim_end();
+    let stripped = value.strip_suffix(inserted).or_else(|| {
+        (trimmed != inserted && !trimmed.is_empty())
+            .then(|| value.strip_suffix(trimmed))
+            .flatten()
+    });
+    let Some(stripped) = stripped else {
+        return Err("The inserted text is no longer at the end of the field.".to_string());
+    };
+
+    let new_value = CFString::new(stripped);
+    let status = unsafe {
+        AXUIElementSetAttributeValue(
+            focused.as_ref(),
+            CFString::new("AXValue").as_concrete_TypeRef(),
+            new_value.as_CFTypeRef(),
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("The app refused the edit (AX error {status})."))
+    }
+}
+
+fn simulate_undo_shortcut() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    let modifier = if cfg!(target_os = "macos") {
+        Key::Meta
+    } else {
+        Key::Control
+    };
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Unicode('z'), Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn undo_last_insertion(app: AppHandle) -> Result<UndoInsertionResult, String> {
+    let entry = last_insertion_snapshot(&app).ok_or_else(|| "Nothing to undo.".to_string())?;
+    if !entry.inserted {
+        return Err(
+            "The last transcript was not inserted. Use Retry insertion instead.".to_string(),
+        );
+    }
+    if entry.inserted_at.elapsed() > UNDO_INSERTION_WINDOW {
+        clear_last_insertion(&app);
+        refresh_tray_menu(&app);
+        return Err("The undo window has passed. Press Cmd+Z in the app instead.".to_string());
+    }
+    if let (Some(expected), Some(current)) =
+        (entry.app_name.as_deref(), frontmost_app_name().as_deref())
+    {
+        if expected != current {
+            return Err(format!("Switch back to {expected} to undo this dictation."));
+        }
+    }
+
+    // Prefer the precise AX edit: it removes exactly the text Vox typed.
+    #[cfg(target_os = "macos")]
+    if remove_inserted_suffix(&entry.text).is_ok() {
+        clear_last_insertion(&app);
+        refresh_tray_menu(&app);
+        return Ok(UndoInsertionResult {
+            method: "accessibilityValue",
+        });
+    }
+
+    // Mid-field insertions cannot be matched by suffix. Cmd+Z is only safe
+    // while the user is unlikely to have typed since insertion.
+    if entry.inserted_at.elapsed() <= UNDO_SHORTCUT_FALLBACK_WINDOW {
+        simulate_undo_shortcut()?;
+        clear_last_insertion(&app);
+        refresh_tray_menu(&app);
+        return Ok(UndoInsertionResult {
+            method: "undoShortcut",
+        });
+    }
+
+    Err(
+        "The cursor moved after insertion. Select the text and delete it, or press Cmd+Z."
+            .to_string(),
+    )
+}
+
+#[tauri::command]
+fn retry_last_insertion(app: AppHandle) -> Result<(), String> {
+    let entry = last_insertion_snapshot(&app).ok_or_else(|| "Nothing to insert.".to_string())?;
+    if entry.inserted {
+        return Err("That transcript was already inserted.".to_string());
+    }
+    if entry.inserted_at.elapsed() > RETRY_INSERTION_WINDOW {
+        clear_last_insertion(&app);
+        refresh_tray_menu(&app);
+        return Err(
+            "The retry window has passed. Copy the transcript from History instead.".to_string(),
+        );
+    }
+
+    let text = ensure_trailing_space(&entry.text);
+    insert_text(&app, &text)?;
+    remember_last_insertion(&app, text, entry.app_name, true);
+    refresh_tray_menu(&app);
+    show_widget_done_with_actions(&app, "Inserted", false);
     Ok(())
 }
 
@@ -3129,18 +5142,8 @@ fn current_file_from_title(window_title: Option<&str>) -> Option<String> {
     looks_like_file.then(|| first.to_string())
 }
 
-fn build_context_dictionary(
-    user_dictionary: Option<&str>,
-    app_name: Option<&str>,
-    window_title: Option<&str>,
-) -> Option<String> {
+fn build_context_dictionary(app_name: Option<&str>, window_title: Option<&str>) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
-    if let Some(user_dictionary) = user_dictionary
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(user_dictionary.to_string());
-    }
 
     lines.extend(developer_context_entries(app_name, window_title));
 
@@ -3517,6 +5520,35 @@ fn format_transcript_for_context(
 
 // ── General (non-developer) smart formatting ─────────────────────────────────
 
+/// Add a terminal period and initial capital to unpunctuated single-line prose.
+/// Deliberately conservative: any existing `.`/`!`/`?`, multi-line structure,
+/// or list/heading marker leaves the text untouched.
+fn restore_punctuation(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\n')
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+    {
+        return text.to_string();
+    }
+    if trimmed.chars().any(|ch| matches!(ch, '.' | '!' | '?')) {
+        return text.to_string();
+    }
+
+    let capitalized = capitalize_first(trimmed);
+    if capitalized
+        .chars()
+        .last()
+        .is_some_and(|ch| ch.is_alphanumeric())
+    {
+        format!("{capitalized}.")
+    } else {
+        capitalized
+    }
+}
+
 /// Rule-based smart formatting for non-developer dictation: numbered lists,
 /// bullet lists, and headings. Runs before AI cleanup so the model sees a
 /// pre-structured transcript, and also when cleanup is disabled. Falls back to
@@ -3542,10 +5574,9 @@ fn format_general_transcript(text: &str) -> String {
 
 /// Ordinal markers that reliably signal a dictated numbered list.
 const NUMBERED_LIST_MARKERS: &[&str] = &[
-    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth",
-    "fourthly", "fifth", "fifthly", "sixth", "seventh", "eighth", "ninth",
-    "tenth", "lastly", "finally", "one", "two", "three", "four", "five",
-    "six", "seven", "eight", "nine", "ten",
+    "first", "firstly", "second", "secondly", "third", "thirdly", "fourth", "fourthly", "fifth",
+    "fifthly", "sixth", "seventh", "eighth", "ninth", "tenth", "lastly", "finally", "one", "two",
+    "three", "four", "five", "six", "seven", "eight", "nine", "ten",
 ];
 
 /// "first install dependencies second run migration third start the server" →
@@ -3822,7 +5853,15 @@ const SAFE_FILLERS: &[&str] = &["um", "uh", "er", "erm", "hmm", "ah", "uhh", "uh
 
 /// Filler phrases removed only when they sit between commas ("I was, like,
 /// going") so legitimate uses ("I like this") survive.
-const COMMA_FILLERS: &[&str] = &["like", "you know", "i mean", "sort of", "kind of", "basically", "literally"];
+const COMMA_FILLERS: &[&str] = &[
+    "like",
+    "you know",
+    "i mean",
+    "sort of",
+    "kind of",
+    "basically",
+    "literally",
+];
 
 fn remove_fillers(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -3850,7 +5889,8 @@ fn remove_fillers(text: &str) -> String {
             is_filler = true;
             index += 1;
         }
-        if !is_filler && COMMA_FILLERS.contains(&lower.as_str()) && is_between_commas(&words, index) {
+        if !is_filler && COMMA_FILLERS.contains(&lower.as_str()) && is_between_commas(&words, index)
+        {
             is_filler = true;
             index += 1;
         }
@@ -3888,8 +5928,17 @@ fn is_between_commas(words: &[&str], index: usize) -> bool {
 /// Markers that signal a spoken self-correction. Only honored when preceded by
 /// an ellipsis ("...") so ordinary uses ("I actually think…") survive.
 const CORRECTION_MARKERS: &[&str] = &[
-    "actually", "wait", "sorry", "no wait", "i mean", "correction", "scratch that",
-    "no, actually", "no actually", "never mind", "forget it",
+    "actually",
+    "wait",
+    "sorry",
+    "no wait",
+    "i mean",
+    "correction",
+    "scratch that",
+    "no, actually",
+    "no actually",
+    "never mind",
+    "forget it",
 ];
 
 /// "Let's meet at 2 PM... actually 3 PM." → "Let's meet at 3 PM."
@@ -3946,6 +5995,14 @@ fn collapse_self_corrections(text: &str) -> String {
     }
 }
 
+/// Approximate recording duration from its WAV header/length.
+fn wav_duration_seconds(path: &std::path::Path) -> Option<f64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let frames = reader.duration() as f64 / f64::from(spec.channels);
+    Some(frames / f64::from(spec.sample_rate))
+}
+
 /// Remove adjacent repeated words (stutters): "I I want" → "I want".
 fn fix_repeated_words(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -3994,7 +6051,10 @@ fn normalize_capitalization(text: &str) -> String {
 
 /// Map the active application to a writing-style instruction used by AI cleanup
 /// (Context Awareness). Returns `None` for developer contexts and unknown apps.
-fn app_style_instruction(app_name: Option<&str>, window_title: Option<&str>) -> Option<&'static str> {
+fn app_style_instruction(
+    app_name: Option<&str>,
+    window_title: Option<&str>,
+) -> Option<&'static str> {
     let context = format!(
         "{} {}",
         app_name.unwrap_or_default(),
@@ -4933,11 +6993,7 @@ fn focused_input_snapshot() -> Option<FocusedInputSnapshot> {
         frame.width.round() as i64,
         frame.height.round() as i64,
     );
-    Some(FocusedInputSnapshot {
-        id,
-        app_name,
-        text,
-    })
+    Some(FocusedInputSnapshot { id, app_name, text })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -5104,6 +7160,26 @@ fn is_editable_ax_role(role: Option<&str>) -> bool {
     )
 }
 
+/// Read the focused editable field's text for insertion verification. Returns
+/// `None` when the app exposes no editable AX value; callers must treat that
+/// as "unverified", never as failure.
+#[cfg(target_os = "macos")]
+fn focused_text_value() -> Option<String> {
+    let system = OwnedAxElement::new(unsafe { AXUIElementCreateSystemWide() })?;
+    let focused = ax_copy_attribute(system.as_ref(), "AXFocusedUIElement")
+        .and_then(|value| OwnedAxElement::new(value as AXUIElementRef))?;
+    let role = ax_string_attribute(focused.as_ref(), "AXRole");
+    if !is_editable_ax_role(role.as_deref()) {
+        return None;
+    }
+    ax_string_attribute(focused.as_ref(), "AXValue")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn focused_text_value() -> Option<String> {
+    None
+}
+
 fn is_blank_transcription(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -5161,6 +7237,7 @@ fn show_widget_with_elapsed(
                 message: message.to_string(),
                 elapsed_seconds,
                 show_enhance: false,
+                show_undo: false,
                 app_name,
                 window_title,
             },
@@ -5169,10 +7246,10 @@ fn show_widget_with_elapsed(
     }
 }
 
-/// Show the widget in a "done" state with an Enhance action and a close button.
-/// Unlike the transient done state, this stays visible until dismissed or a new
-/// recording starts.
-fn show_widget_done_with_enhance(app: &AppHandle, message: &str) {
+/// Show the widget in a "done" state with Undo (and optionally Enhance)
+/// actions. Unlike the transient done state, this stays visible until dismissed
+/// or a new recording starts.
+fn show_widget_done_with_actions(app: &AppHandle, message: &str, show_enhance: bool) {
     if !is_widget_enabled(app) {
         return;
     }
@@ -5186,7 +7263,8 @@ fn show_widget_done_with_enhance(app: &AppHandle, message: &str) {
                 mode: "done",
                 message: message.to_string(),
                 elapsed_seconds: None,
-                show_enhance: true,
+                show_enhance,
+                show_undo: true,
                 app_name: None,
                 window_title: None,
             },
@@ -5411,6 +7489,13 @@ fn show_enhance_overlay_state(app: &AppHandle, mode: &'static str, message: &str
 }
 
 fn position_widget_bottom_right(window: &WebviewWindow) {
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+    position_widget_with_size(window, window_size.width as i32, window_size.height as i32);
+}
+
+fn position_widget_with_size(window: &WebviewWindow, window_width: i32, window_height: i32) {
     const MARGIN: i32 = 24;
 
     // current_monitor() returns None when called from a background thread on macOS.
@@ -5426,14 +7511,10 @@ fn position_widget_bottom_right(window: &WebviewWindow) {
         return;
     };
 
-    let Ok(window_size) = window.outer_size() else {
-        return;
-    };
-
     let monitor_position = monitor.position();
     let monitor_size = monitor.size();
-    let x = monitor_position.x + monitor_size.width as i32 - window_size.width as i32 - MARGIN;
-    let y = monitor_position.y + monitor_size.height as i32 - window_size.height as i32 - MARGIN;
+    let x = monitor_position.x + monitor_size.width as i32 - window_width - MARGIN;
+    let y = monitor_position.y + monitor_size.height as i32 - window_height - MARGIN;
 
     let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
 }
@@ -5492,9 +7573,17 @@ fn start_recording_timer(app: AppHandle) {
             // Elapsed counter (every ~1 s)
             if ticks % 20 == 0 {
                 let elapsed = ticks / 20;
+                let private = recorder_state
+                    .session
+                    .lock()
+                    .ok()
+                    .and_then(|session| session.as_ref().map(|session| session.private))
+                    .unwrap_or(false);
                 let message = if elapsed >= LONG_RECORDING_WARN_SECS && !long_warned {
                     long_warned = true;
                     "Long recording — transcription may take a while"
+                } else if private {
+                    "Private · Listening…"
                 } else if hands_free {
                     "Hands-free…"
                 } else {
@@ -5537,6 +7626,7 @@ fn hide_widget_after_delay(app: AppHandle, delay_ms: u64) {
                     message: String::new(),
                     elapsed_seconds: None,
                     show_enhance: false,
+                    show_undo: false,
                     app_name: None,
                     window_title: None,
                 },
@@ -5595,7 +7685,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[f32], _| {
                         write_f32_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_f32_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_f32_windowed(&bar_window, data),
+                        );
                         update_vad_f32(&vad, data);
                     },
                     on_error,
@@ -5613,7 +7706,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[i16], _| {
                         write_i16_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_i16_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_i16_windowed(&bar_window, data),
+                        );
                         update_vad_i16(&vad, data);
                     },
                     on_error,
@@ -5631,7 +7727,10 @@ fn build_input_stream(
                     &stream_config,
                     move |data: &[u16], _| {
                         write_u16_samples(data, &writer, &whisper_mode);
-                        update_audio_bars(&bars, compute_bar_levels_u16_windowed(&bar_window, data));
+                        update_audio_bars(
+                            &bars,
+                            compute_bar_levels_u16_windowed(&bar_window, data),
+                        );
                         update_vad_u16(&vad, data);
                     },
                     on_error,
@@ -5790,7 +7889,11 @@ fn push_bar_window_f32(window: &Arc<Mutex<Vec<f32>>>, samples: &[f32]) {
 
 fn push_bar_window_i16(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) {
     if let Ok(mut window) = window.lock() {
-        window.extend(samples.iter().map(|sample| *sample as f32 / i16::MAX as f32));
+        window.extend(
+            samples
+                .iter()
+                .map(|sample| *sample as f32 / i16::MAX as f32),
+        );
         if window.len() > BAR_WINDOW_SAMPLES {
             let excess = window.len() - BAR_WINDOW_SAMPLES;
             window.drain(0..excess);
@@ -5800,9 +7903,11 @@ fn push_bar_window_i16(window: &Arc<Mutex<Vec<f32>>>, samples: &[i16]) {
 
 fn push_bar_window_u16(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16]) {
     if let Ok(mut window) = window.lock() {
-        window.extend(samples.iter().map(|sample| {
-            (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32
-        }));
+        window.extend(
+            samples
+                .iter()
+                .map(|sample| (*sample as i32 - i16::MAX as i32 - 1) as f32 / i16::MAX as f32),
+        );
         if window.len() > BAR_WINDOW_SAMPLES {
             let excess = window.len() - BAR_WINDOW_SAMPLES;
             window.drain(0..excess);
@@ -5830,8 +7935,6 @@ fn compute_bar_levels_u16_windowed(window: &Arc<Mutex<Vec<f32>>>, samples: &[u16
     let guard = window.lock().unwrap();
     compute_bar_levels(&guard, |sample| sample.clamp(-1.0, 1.0))
 }
-
-
 
 fn compute_bar_levels<T>(samples: &[T], normalize: impl Fn(&T) -> f32) -> [f32; 7] {
     let mut bars = [0.0; 7];
@@ -5871,6 +7974,27 @@ fn compute_bar_levels<T>(samples: &[T], normalize: impl Fn(&T) -> f32) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wav_duration_matches_sample_count() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("vox-duration-test.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..32_000 {
+            writer.write_sample(0i16).unwrap();
+        }
+        drop(writer);
+
+        let duration = wav_duration_seconds(&path).unwrap();
+        assert!((duration - 2.0).abs() < 0.01, "got {duration}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn treats_blank_audio_marker_as_blank_transcription() {
@@ -5957,10 +8081,7 @@ mod tests {
     #[test]
     fn formats_bullet_lists_from_intent() {
         let text = "things I need milk and eggs and bread";
-        assert_eq!(
-            format_general_transcript(text),
-            "• Milk\n• Eggs\n• Bread"
-        );
+        assert_eq!(format_general_transcript(text), "• Milk\n• Eggs\n• Bread");
         let comma_text = "my list apples, bananas, oranges";
         assert_eq!(
             format_general_transcript(comma_text),
@@ -5978,7 +8099,10 @@ mod tests {
 
     #[test]
     fn formats_known_heading_phrase() {
-        assert_eq!(format_general_transcript("meeting notes"), "## Meeting Notes");
+        assert_eq!(
+            format_general_transcript("meeting notes"),
+            "## Meeting Notes"
+        );
     }
 
     #[test]
@@ -6002,8 +8126,16 @@ mod tests {
 
     #[test]
     fn browser_gmail_is_not_developer_context() {
-        assert!(!is_developer_app_context(Some("Google Chrome"), Some("Inbox - Gmail"), true));
-        assert!(is_developer_app_context(Some("Google Chrome"), Some("localhost:3000"), true));
+        assert!(!is_developer_app_context(
+            Some("Google Chrome"),
+            Some("Inbox - Gmail"),
+            true
+        ));
+        assert!(is_developer_app_context(
+            Some("Google Chrome"),
+            Some("localhost:3000"),
+            true
+        ));
     }
 
     #[test]
@@ -6011,7 +8143,9 @@ mod tests {
         assert!(whisper::is_english_only_model("/models/ggml-base.en.bin"));
         assert!(whisper::is_english_only_model("ggml-small.en.bin"));
         assert!(!whisper::is_english_only_model("ggml-large-v3.bin"));
-        assert!(!whisper::is_english_only_model("parakeet-tdt-0.6b-v3-Q8_0.gguf"));
+        assert!(!whisper::is_english_only_model(
+            "parakeet-tdt-0.6b-v3-Q8_0.gguf"
+        ));
     }
 
     #[test]
@@ -6096,18 +8230,57 @@ mod tests {
             split_sentences("One. Two! Three? Four"),
             vec!["One.", "Two!", "Three?", "Four"]
         );
-        assert_eq!(split_sentences("No punctuation here"), vec!["No punctuation here"]);
+        assert_eq!(
+            split_sentences("No punctuation here"),
+            vec!["No punctuation here"]
+        );
+    }
+
+    #[test]
+    fn restores_punctuation_only_for_unpunctuated_single_lines() {
+        assert_eq!(restore_punctuation("hello world"), "Hello world.");
+        assert_eq!(restore_punctuation("42 is the answer"), "42 is the answer.");
+        assert_eq!(restore_punctuation("Hello world."), "Hello world.");
+        assert_eq!(restore_punctuation("what now?"), "what now?");
+        assert_eq!(restore_punctuation("# heading"), "# heading");
+        assert_eq!(restore_punctuation("- item"), "- item");
+        assert_eq!(
+            restore_punctuation("line one\nline two"),
+            "line one\nline two"
+        );
+        assert_eq!(restore_punctuation(""), "");
+    }
+
+    #[test]
+    fn ensure_trailing_space_after_final_punctuation() {
+        assert_eq!(ensure_trailing_space("20.09.2026."), "20.09.2026. ");
+        assert_eq!(ensure_trailing_space("Great!"), "Great! ");
+        assert_eq!(
+            ensure_trailing_space("He said \"stop.\""),
+            "He said \"stop.\" "
+        );
+        assert_eq!(ensure_trailing_space("plain words"), "plain words");
+        assert_eq!(
+            ensure_trailing_space("already spaced. "),
+            "already spaced. "
+        );
+        assert_eq!(ensure_trailing_space("1. one\n2. two"), "1. one\n2. two");
+        assert_eq!(ensure_trailing_space(""), "");
     }
 
     #[test]
     fn detects_voice_commands() {
         assert!(matches!(
             detect_voice_command("make this professional"),
-            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Professional))
+            Some(VoiceCommand::Transform(
+                text_enhancement::TransformPreset::Professional
+            ))
         ));
         assert!(matches!(
             detect_voice_command("summarize this"),
-            Some(VoiceCommand::Transform(text_enhancement::TransformPreset::Summarize))
+            Some(VoiceCommand::Transform(
+                text_enhancement::TransformPreset::Summarize
+            ))
         ));
         assert!(matches!(
             detect_voice_command("translate this to Hindi"),
@@ -6125,7 +8298,10 @@ mod tests {
             detect_voice_command("I want to make this professional report look better for the client meeting tomorrow"),
             None
         );
-        assert_eq!(detect_voice_command("The summary of this quarter is strong"), None);
+        assert_eq!(
+            detect_voice_command("The summary of this quarter is strong"),
+            None
+        );
     }
 
     #[test]
@@ -6134,19 +8310,57 @@ mod tests {
             Snippet {
                 trigger: "my email".to_string(),
                 expansion: "rajeshwar@example.com".to_string(),
+                app_pattern: None,
             },
             Snippet {
                 trigger: "my github".to_string(),
                 expansion: "github.com/imrj05".to_string(),
+                app_pattern: None,
             },
         ];
         assert_eq!(
-            expand_snippets("Please send it to my email", &snippets),
+            expand_snippets("Please send it to my email", &snippets, None),
             "Please send it to rajeshwar@example.com"
         );
         assert_eq!(
-            expand_snippets("Check my github and my email", &snippets),
+            expand_snippets("Check my github and my email", &snippets, None),
             "Check github.com/imrj05 and rajeshwar@example.com"
+        );
+    }
+
+    #[test]
+    fn snippet_app_scope_and_variables() {
+        let snippets = vec![
+            Snippet {
+                trigger: "my signature".to_string(),
+                expansion: "— {app} on {date}".to_string(),
+                app_pattern: Some("Slack".to_string()),
+            },
+            Snippet {
+                trigger: "meeting link".to_string(),
+                expansion: "https://meet.example/{date}".to_string(),
+                app_pattern: None,
+            },
+        ];
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        assert_eq!(
+            expand_snippets("my signature", &snippets, Some("Slack")),
+            format!("— Slack on {today}")
+        );
+        // App-scoped snippet stays inert in another app.
+        assert_eq!(
+            expand_snippets("my signature", &snippets, Some("Mail")),
+            "my signature"
+        );
+        // Unscoped snippet applies everywhere and expands variables.
+        assert_eq!(
+            expand_snippets("send meeting link", &snippets, Some("Mail")),
+            format!("send https://meet.example/{today}")
+        );
+        assert_eq!(
+            expand_snippet_variables("keep {unknown} intact", None),
+            "keep {unknown} intact"
         );
     }
 
@@ -6155,16 +8369,74 @@ mod tests {
         let snippets = vec![Snippet {
             trigger: "my email".to_string(),
             expansion: "x@y.com".to_string(),
+            app_pattern: None,
         }];
         // "my emailaddress" must not match "my email".
         assert_eq!(
-            expand_snippets("my emailaddress is long", &snippets),
+            expand_snippets("my emailaddress is long", &snippets, None),
             "my emailaddress is long"
         );
         // Case-insensitive match.
         assert_eq!(
-            expand_snippets("Send to MY EMAIL now", &snippets),
+            expand_snippets("Send to MY EMAIL now", &snippets, None),
             "Send to x@y.com now"
+        );
+    }
+
+    #[test]
+    fn parses_macro_steps_and_blocks_quit_shortcuts() {
+        let steps = parse_macro_steps("Hello{enter}{cmd+a}{wait:120}{tab}", None);
+        assert_eq!(
+            steps,
+            vec![
+                MacroStep::Text("Hello".to_string()),
+                MacroStep::Key(MacroKey::Return),
+                MacroStep::Combo(vec![MacroModifier::Cmd], MacroKey::Char('a')),
+                MacroStep::Wait(120),
+                MacroStep::Key(MacroKey::Tab),
+            ]
+        );
+        assert!(is_macro_expansion("x{enter}"));
+        assert!(!is_macro_expansion("{date} and {clipboard}"));
+        assert_eq!(parse_macro_action("cmd+q"), None);
+        // Variables inside text segments still expand.
+        let steps = parse_macro_steps("sent to {app}{enter}", Some("Slack"));
+        assert_eq!(
+            steps,
+            vec![
+                MacroStep::Text("sent to Slack".to_string()),
+                MacroStep::Key(MacroKey::Return),
+            ]
+        );
+    }
+
+    #[test]
+    fn macro_requires_whole_utterance_and_app_scope() {
+        let snippets = vec![Snippet {
+            trigger: "deploy the app".to_string(),
+            expansion: "{cmd+shift+p}{enter}".to_string(),
+            app_pattern: Some("Visual Studio Code".to_string()),
+        }];
+
+        assert!(
+            find_macro_for_utterance(&snippets, "Deploy the app.", Some("Visual Studio Code"))
+                .is_some()
+        );
+        assert!(find_macro_for_utterance(
+            &snippets,
+            "please deploy the app",
+            Some("Visual Studio Code")
+        )
+        .is_none());
+        assert!(find_macro_for_utterance(&snippets, "deploy the app", Some("Mail")).is_none());
+        // Macro triggers are not expanded as inline text.
+        assert_eq!(
+            expand_snippets(
+                "please deploy the app now",
+                &snippets,
+                Some("Visual Studio Code")
+            ),
+            "please deploy the app now"
         );
     }
 
@@ -6199,7 +8471,10 @@ mod tests {
         use custom_models::{detect_model_kind, CustomModelKind};
         // whisper.cpp GGML → STT
         assert_eq!(
-            detect_model_kind("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin").unwrap(),
+            detect_model_kind(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+            )
+            .unwrap(),
             CustomModelKind::Stt
         );
         // Parakeet GGUF → STT
@@ -6213,8 +8488,13 @@ mod tests {
             CustomModelKind::Enhance
         );
         // Ambiguous GGUF → error
-        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/mystery.gguf").is_err());
+        assert!(
+            detect_model_kind("https://huggingface.co/foo/bar/resolve/main/mystery.gguf").is_err()
+        );
         // Unsupported extension → error
-        assert!(detect_model_kind("https://huggingface.co/foo/bar/resolve/main/model.safetensors").is_err());
+        assert!(
+            detect_model_kind("https://huggingface.co/foo/bar/resolve/main/model.safetensors")
+                .is_err()
+        );
     }
 }

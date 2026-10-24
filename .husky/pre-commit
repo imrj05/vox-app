@@ -1,1 +1,13 @@
+#!/usr/bin/env sh
+# GUI git clients run hooks with a minimal PATH that may not include node,
+# so look for it in the usual install locations before failing.
+if ! command -v node >/dev/null 2>&1; then
+  for dir in "$HOME/.volta/bin" "$HOME/.local/share/fnm/aliases/default/bin" "$HOME/.nvm/versions/node"/*/bin /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$dir/node" ]; then
+      PATH="$dir:$PATH"
+      break
+    fi
+  done
+fi
+
 node scripts/check-version-consistency.mjs

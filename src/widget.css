@@ -36,37 +36,67 @@ body,
 /*  Capsule                                                           */
 /* ------------------------------------------------------------------ */
 
+/* Glass capsule: the window itself is an NSVisualEffectView (macOS
+   vibrancy), so the pill reads as real frosted glass over the desktop.
+   The CSS layer only tints, lights the edge, and lifts the top highlight —
+   never an opaque fill. */
 .widget-capsule {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 12px;
-    min-height: 40px;
-    max-width: calc(100% - 12px);
-    background: #141111;
-    border: none;
+    /* Never let the (window-sized) root compress the pill: it must keep its
+       natural content width so the ResizeObserver can grow the window back
+       out — otherwise window and pill cap each other and content squashes. */
+    flex-shrink: 0;
+    padding: 10px 14px;
+    min-height: 44px;
+    /* Absolute cap only: a %-based max-width would deadlock (window caps
+       capsule, capsule caps window), so the pill sizes to its content and
+       the window follows it. */
+    max-width: 360px;
+    /* Single flat tint layer — no gradient sheen, no active-state overlay,
+       so only one background shows inside the border. */
+    background: rgba(18, 16, 16, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 999px;
+
 
     color: #f7ede8;
     overflow: hidden;
     transition:
-        transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 200ms ease;
+        opacity 200ms ease,
+        background 200ms ease,
+        border-color 200ms ease,
+        box-shadow 200ms ease;
+}
+
+.widget-active {
+    border-color: rgba(255, 255, 255, 0.22);
 }
 
 :root[data-theme="light"] .widget-capsule {
-    background: #fdfcfc;
+    /* Premium light glass: soft white tint over the vibrancy, a barely-there
+       warm edge, and inset top-light / bottom-shade for volume. Outer drop
+       shadows are impossible here — the window hugs the pill and clips them. */
+    background: rgba(255, 255, 255, 0.58);
+    border-color: rgba(32, 29, 29, 0.08);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        inset 0 -1px 0 rgba(32, 29, 29, 0.06);
 
     color: #201d1d;
 }
 
+:root[data-theme="light"] .widget-active {
+    background: rgba(255, 255, 255, 0.68);
+    border-color: rgba(32, 29, 29, 0.1);
+}
+
 .widget-visible {
     opacity: 1;
-    transform: translateY(0) scale(1);
     pointer-events: auto;
     transition:
-        transform 240ms cubic-bezier(0.34, 1.56, 0.64, 1),
         opacity 120ms ease,
         border-color 200ms ease,
         box-shadow 200ms ease;
@@ -74,10 +104,8 @@ body,
 
 .widget-hidden {
     opacity: 0;
-    transform: translateY(6px) scale(0.96);
     pointer-events: none;
     transition:
-        transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
         opacity 320ms ease,
         border-color 200ms ease,
         box-shadow 200ms ease;
@@ -94,19 +122,26 @@ body,
     align-items: center;
     gap: 10px;
     justify-content: center;
-    min-width: 0;
+    border: none;
+    /* No min-width: 0 here — the row must keep its natural width so the
+       ResizeObserver can grow the window with it instead of wrapping. */
 }
 
-/* Theme-aware Vox logo. Default (dark) shows the dark mark; light overrides. */
+
 .widget-logo-wrap {
     position: relative;
     z-index: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 26px;
+    height: 26px;
     flex-shrink: 0;
+    /* Rounded dark tile behind the glyph, with an extra lit border ring —
+       reads in both appearances, so no theme swap is needed. */
+    border-radius: 8px;
+    background: #141111;
+    border: 1px solid rgba(255, 255, 255, 0.22);
 }
 
 .widget-logo {
@@ -116,21 +151,6 @@ body,
     flex-shrink: 0;
 }
 
-.widget-logo-dark {
-    display: block;
-}
-
-.widget-logo-light {
-    display: none;
-}
-
-:root[data-theme="light"] .widget-logo-dark {
-    display: none;
-}
-
-:root[data-theme="light"] .widget-logo-light {
-    display: block;
-}
 
 /* Soft radial glow behind the content, scales with audio level */
 .widget-glow {
@@ -312,6 +332,56 @@ body,
     animation: widget-content-in 200ms ease both;
 }
 
+.widget-undo-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 5%);
+    color: rgb(247 237 232 / 78%);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.widget-undo-btn:hover {
+    background: rgb(255 255 255 / 12%);
+    color: rgb(247 237 232 / 92%);
+}
+
+.widget-undo-btn:active {
+    transform: translateY(1px);
+}
+
+.widget-undo-btn:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 45%);
+    outline-offset: 2px;
+}
+
+:root[data-theme="light"] .widget-undo-btn {
+    border-color: rgb(15 0 0 / 10%);
+    background: rgb(15 0 0 / 3%);
+    color: rgb(24 20 20 / 68%);
+}
+
+:root[data-theme="light"] .widget-undo-btn:hover {
+    background: rgb(15 0 0 / 8%);
+    color: rgb(24 20 20 / 88%);
+}
+
+:root[data-theme="light"] .widget-undo-btn:focus-visible {
+    outline-color: rgb(15 0 0 / 45%);
+}
+
 .widget-close-btn:focus-visible {
     outline: 2px solid rgb(255 255 255 / 45%);
     outline-offset: 2px;
@@ -412,18 +482,32 @@ body,
     text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
 }
 
+/* Latest live-preview words while recording (Apple Speech). */
+.widget-live-text {
+    position: relative;
+    z-index: 1;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    color: rgb(247 237 232 / 72%);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+    animation: widget-content-in 160ms ease both;
+}
+
+:root[data-theme="light"] .widget-live-text {
+    color: rgb(24 20 20 / 62%);
+    text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Live app-context line ("In Visual Studio Code · file.ts")         */
 /* ------------------------------------------------------------------ */
-
-.widget-capsule.widget-has-context {
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 10px 16px 9px;
-    border-radius: 18px;
-    max-width: 340px;
-}
 
 .widget-context {
     position: relative;
@@ -464,6 +548,7 @@ body,
 }
 
 @keyframes widget-dot-pulse {
+
     0%,
     100% {
         opacity: 1;

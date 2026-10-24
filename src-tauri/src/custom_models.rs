@@ -21,7 +21,8 @@ pub enum CustomModelKind {
     Enhance,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomModel {
     /// File name derived from the URL (e.g. "qwen2.5-3b-instruct-q4_k_m.gguf").
     pub name: String,
@@ -56,7 +57,11 @@ fn save_registry(app: &AppHandle, models: &[CustomModel]) -> Result<(), String> 
 }
 
 /// Resolve the on-disk file for a custom model.
-pub fn model_file_path(app: &AppHandle, name: &str, kind: CustomModelKind) -> Result<PathBuf, String> {
+pub fn model_file_path(
+    app: &AppHandle,
+    name: &str,
+    kind: CustomModelKind,
+) -> Result<PathBuf, String> {
     let dir = match kind {
         CustomModelKind::Stt => app
             .path()
@@ -76,6 +81,24 @@ pub fn model_file_path(app: &AppHandle, name: &str, kind: CustomModelKind) -> Re
 /// models dir under its file name.
 pub fn stt_model_path(models_dir: &Path, name: &str) -> PathBuf {
     models_dir.join(name)
+}
+
+/// Whether any user-added whisper.cpp-compatible model file exists in
+/// `models_dir` (`.bin`/`.ggml`). GGUF files belong to the Parakeet engine and
+/// are deliberately not counted here.
+#[allow(dead_code)]
+pub fn has_downloaded_stt_models(models_dir: &Path) -> bool {
+    fs::read_dir(models_dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| matches!(extension, "bin" | "ggml"))
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Resolution helper for text_enhancement.rs: a custom LLM lives directly in
@@ -105,9 +128,31 @@ fn model_name_from_url(url: &str) -> Result<String, String> {
 
 /// LLM model families that the text-enhancement sidecar can load.
 const LLM_FAMILIES: &[&str] = &[
-    "qwen", "llama", "mistral", "phi", "gemma", "deepseek", "olmo", "falcon", "yi-",
-    "baichuan", "internlm", "granite", "smollm", "stablelm", "gpt", "aya", "command-r",
-    "nemotron", "minicpm", "glm", "starcoder", "codellama", "dbrx", "jais", "mpt",
+    "qwen",
+    "llama",
+    "mistral",
+    "phi",
+    "gemma",
+    "deepseek",
+    "olmo",
+    "falcon",
+    "yi-",
+    "baichuan",
+    "internlm",
+    "granite",
+    "smollm",
+    "stablelm",
+    "gpt",
+    "aya",
+    "command-r",
+    "nemotron",
+    "minicpm",
+    "glm",
+    "starcoder",
+    "codellama",
+    "dbrx",
+    "jais",
+    "mpt",
 ];
 
 /// Detect which pipeline a model URL belongs to based on file extension and
@@ -155,7 +200,10 @@ async fn download_to(
         .await
         .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("Model download failed with HTTP {}", response.status()));
+        return Err(format!(
+            "Model download failed with HTTP {}",
+            response.status()
+        ));
     }
 
     let total = response
@@ -170,11 +218,7 @@ async fn download_to(
         .await
         .map_err(|error| error.to_string())?;
     let mut downloaded: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| error.to_string())?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         use tokio::io::AsyncWriteExt;
         file.write_all(&chunk)
             .await

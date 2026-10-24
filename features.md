@@ -71,12 +71,12 @@ The main work is making every native feature explicit per operating system inste
 ### Text Insertion
 
 - [x] Keep direct text insertion where `enigo` works.
-- [ ] Add clipboard paste fallback.
+- [x] Add clipboard paste fallback.
 - [ ] Add Windows-specific paste behavior.
 - [x] Add Linux X11 support through `xdotool`.
 - [x] Add Linux Wayland support through `wtype` or `dotool`.
 - [x] Detect missing Linux helper tools and show install guidance.
-- [ ] Preserve clipboard contents when using clipboard fallback.
+- [x] Preserve clipboard contents when using clipboard fallback.
 - [ ] Add retry and focus-delay handling after transcription.
 
 ### Permissions

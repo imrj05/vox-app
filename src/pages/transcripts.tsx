@@ -1,7 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowTurnBackward, Check, Copy, Pencil, Search, Trash2 } from "@/components/icons";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import {
+  ArrowTurnBackward,
+  Check,
+  Copy,
+  FileText,
+  Mail,
+  Pencil,
+  Search,
+  Trash2,
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,23 +30,20 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { correctionPairs } from "@/lib/dictionary";
+import { recordVocabularyCorrection } from "@/lib/vocabulary";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { deleteTranscript, getTranscripts, pruneTranscripts, updateTranscriptText, type TranscriptRow } from "@/lib/db";
 import { resolveAppIcon } from "@/lib/native";
 import { openExternalLink } from "@/lib/external-link";
 import { useAppStore } from "@/store/app-store";
-import {
-  dedupeDictionaryEntries,
-  parseDictionaryEntries,
-  serializeDictionaryEntries,
-  wordsToLearn,
-} from "@/lib/dictionary";
 
 const TRANSCRIPT_LIBRARY_LIMIT = 1000;
 
 export function TranscriptsPage() {
+  const reduceMotion = useReducedMotion();
   const [history, setHistory] = useState<TranscriptRow[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -38,7 +51,7 @@ export function TranscriptsPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
-  const [learnedMessage, setLearnedMessage] = useState<string | null>(null);
+  const [rawViewId, setRawViewId] = useState<number | null>(null);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
@@ -75,7 +88,11 @@ export function TranscriptsPage() {
 
     return history.filter((item) => {
       const appName = item.app_name ?? "Unknown app";
-      return item.text.toLowerCase().includes(needle) || appName.toLowerCase().includes(needle);
+      return (
+        item.text.toLowerCase().includes(needle) ||
+        (item.asr_text ?? "").toLowerCase().includes(needle) ||
+        appName.toLowerCase().includes(needle)
+      );
     });
   }, [history, query]);
 
@@ -114,17 +131,10 @@ export function TranscriptsPage() {
     const next = editDraft.trim();
     if (!next) return;
     await updateTranscriptText(item.id, next);
-    // Auto-learn corrected words into the personal dictionary (Wispr-style).
-    const learned = wordsToLearn(item.text, next);
-    if (learned.length > 0) {
-      const store = useAppStore.getState();
-      const entries = dedupeDictionaryEntries([
-        ...parseDictionaryEntries(store.dictionary),
-        ...learned.map((word) => ({ word, hint: "", category: "Learned" })),
-      ]);
-      await store.setDictionary(serializeDictionaryEntries(entries));
-      setLearnedMessage(`Learned ${learned.length} ${learned.length === 1 ? "word" : "words"} into your dictionary.`);
-      window.setTimeout(() => setLearnedMessage(null), 3000);
+    // Vocabulary Packs learning (spec §17): feed word-level corrections to the
+    // local vocabulary engine so repeated corrections rank higher. Best-effort.
+    for (const pair of correctionPairs(item.text, next)) {
+      void recordVocabularyCorrection(pair.source, pair.canonical).catch(() => undefined);
     }
     setHistory((items) =>
       items.map((entry) => (entry.id === item.id ? { ...entry, text: next } : entry))
@@ -167,7 +177,7 @@ export function TranscriptsPage() {
   return (
     <div className="h-full overflow-hidden bg-background">
       <ScrollArea className="h-full">
-        <div className="page-shell max-w-5xl">
+        <div className="page-shell">
           <header className="page-header">
             <div>
               <h1 className="page-title">Transcript Library</h1>
@@ -195,139 +205,266 @@ export function TranscriptsPage() {
             <LibraryStat label="Words" value={history.reduce((sum, item) => sum + countWords(item.text), 0).toLocaleString()} />
           </div>
 
-          {learnedMessage && (
-            <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-primary">
-              {learnedMessage}
-            </div>
-          )}
-
           {loading ? (
-            <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">
-              <Spinner className="size-4" />
-              Loading transcript history
+            <div className="panel divide-y divide-border overflow-hidden">
+              {[0, 1, 2].map((row) => (
+                <div key={row} className="flex gap-3.5 p-5">
+                  <Skeleton className="size-8 shrink-0 rounded-lg" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-44" />
+                    <Skeleton className="h-3.5 w-full max-w-2xl" />
+                    <Skeleton className="h-3.5 w-2/3 max-w-lg" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : error ? (
-            <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-4 text-sm text-destructive">
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-4 text-sm text-destructive">
               {error}
             </div>
           ) : filtered.length > 0 ? (
             <div className="panel divide-y divide-border overflow-hidden">
               {filtered.map((item) => (
-                <article key={item.id} className="p-4 transition-colors hover:bg-muted/25">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="min-w-0">
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <AppBadge
-                          name={item.app_name ?? "Unknown app"}
-                          iconSrc={appIcons[item.app_name ?? "Unknown app"] ?? null}
-                        />
-                        <p className="text-sm font-medium text-foreground">{item.app_name ?? "Unknown app"}</p>
-                        <span className="text-xs text-muted-foreground">{formatTranscriptDate(item.created_at)}</span>
-                        {item.language ? (
-                          <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
-                            {item.language}
-                          </Badge>
-                        ) : null}
-                        {hasAiCleanup(item) ? (
-                          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
-                            AI cleaned
-                          </Badge>
-                        ) : null}
-                      </div>
-                      {editingId === item.id ? (
-                        <div className="space-y-2">
-                          <Textarea
-                            value={editDraft}
-                            onChange={(event) => setEditDraft(event.target.value)}
-                            rows={Math.min(8, Math.max(3, editDraft.split("\n").length))}
-                            className="min-h-20 text-sm leading-6"
-                            autoFocus
-                          />
-                          <div className="flex gap-2">
-                            <Button size="sm" onClick={() => void saveEdit(item)} disabled={!editDraft.trim()}>
-                              <Check className="h-4 w-4" />
-                              Save
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={cancelEdit}>
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{item.text}</p>
-                      )}
-                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                        <span className="font-mono tabular-nums">
-                          {countWords(item.text)} words
+                <article
+                  key={item.id}
+                  className="flex gap-3.5 p-4 transition-colors hover:bg-muted/25 sm:p-5"
+                >
+                  <AppBadge
+                    name={item.app_name ?? "Unknown app"}
+                    iconSrc={appIcons[item.app_name ?? "Unknown app"] ?? null}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        {item.app_name ?? "Unknown app"}
+                      </p>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {formatTranscriptDate(item.created_at)}
+                      </span>
+                      {item.language ? (
+                        <span className="text-xs text-muted-foreground">
+                          · {item.language}
                         </span>
-                        {item.duration_seconds ? (
+                      ) : null}
+                      {item.engine ? (
+                        <span className="text-xs capitalize text-muted-foreground">
+                          · {item.engine}
+                        </span>
+                      ) : null}
+                      {hasAiCleanup(item) ? (
+                        <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                          AI cleaned
+                        </Badge>
+                      ) : null}
+                      {editingId === item.id ? null : (
+                        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                          <RowAction label="Edit" onClick={() => startEdit(item)}>
+                            <Pencil className="h-4 w-4" />
+                          </RowAction>
+                          {hasAiCleanup(item) ? (
+                            <RowAction
+                              label="Undo AI edit"
+                              onClick={() => void undoAiEdit(item)}
+                            >
+                              <ArrowTurnBackward className="h-4 w-4" />
+                            </RowAction>
+                          ) : null}
+                          <RowAction
+                            label={copiedId === item.id ? "Copied" : "Copy"}
+                            onClick={() => void copyTranscript(item)}
+                          >
+                            <span className="relative grid size-4 place-items-center [&>*]:col-start-1 [&>*]:row-start-1">
+                              <AnimatePresence initial={false}>
+                                {copiedId === item.id ? (
+                                  <motion.span
+                                    key="copied"
+                                    initial={reduceMotion ? false : { opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                                    animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                                    exit={reduceMotion ? undefined : { opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                                    transition={reduceMotion ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 }}
+                                  >
+                                    <Check className="h-4 w-4 text-primary" />
+                                  </motion.span>
+                                ) : (
+                                  <motion.span
+                                    key="copy"
+                                    initial={reduceMotion ? false : { opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                                    animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                                    exit={reduceMotion ? undefined : { opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+                                    transition={reduceMotion ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 }}
+                                  >
+                                    <Copy className="h-4 w-4" />
+                                  </motion.span>
+                                )}
+                              </AnimatePresence>
+                            </span>
+                          </RowAction>
+                          <RowAction label="Report an issue" onClick={() => reportTranscript(item)}>
+                            <Mail className="h-4 w-4" />
+                          </RowAction>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <RowAction label="Delete" destructive>
+                                <Trash2 className="h-4 w-4" />
+                              </RowAction>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete transcript?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  This permanently removes the transcript from your local history.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  variant="destructive"
+                                  onClick={() => void removeTranscript(item.id)}
+                                >
+                                  Delete transcript
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      )}
+                    </div>
+                    {editingId === item.id ? (
+                      <div className="mt-2 space-y-2">
+                        <Textarea
+                          value={editDraft}
+                          onChange={(event) => setEditDraft(event.target.value)}
+                          rows={Math.min(8, Math.max(3, editDraft.split("\n").length))}
+                          className="min-h-20 text-sm leading-6"
+                          autoFocus
+                        />
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => void saveEdit(item)} disabled={!editDraft.trim()}>
+                            <Check className="h-4 w-4" />
+                            Save
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={cancelEdit}>
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {rawViewId === item.id ? (
+                          <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                            Final
+                          </p>
+                        ) : null}
+                        <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground/90">
+                          {item.text}
+                        </p>
+                        {rawViewId === item.id && item.asr_text ? (
+                          <div
+                            id={`raw-${item.id}`}
+                            className="mt-3 rounded-lg border border-border/70 bg-muted/30 px-3 py-2.5"
+                          >
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                                Raw speech
+                              </p>
+                              <span className="text-[11px] text-muted-foreground">
+                                Before formatting, cleanup, and corrections
+                              </span>
+                            </div>
+                            <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                              {item.asr_text}
+                            </p>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                    <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                      <span className="font-mono tabular-nums">
+                        {countWords(item.text)} words
+                      </span>
+                      {item.duration_seconds ? (
+                        <>
+                          <span aria-hidden>·</span>
                           <span className="font-mono tabular-nums">
                             {formatDurationCompact(item.duration_seconds)} audio
                           </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 gap-2">
-                      {editingId === item.id ? null : (
-                        <Button variant="outline" size="sm" onClick={() => startEdit(item)}>
-                          <Pencil className="h-4 w-4" />
-                          Edit
-                        </Button>
-                      )}
-                      {hasAiCleanup(item) ? (
-                        <Button variant="outline" size="sm" onClick={() => void undoAiEdit(item)}>
-                          <ArrowTurnBackward className="h-4 w-4" />
-                          Undo AI edit
-                        </Button>
+                        </>
                       ) : null}
-                      <Button variant="outline" size="sm" onClick={() => void copyTranscript(item)}>
-                        {copiedId === item.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                        {copiedId === item.id ? "Copied" : "Copy"}
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => reportTranscript(item)}>
-                        Report
-                      </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive">
-                            <Trash2 className="h-4 w-4" />
-                            Delete
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Delete Transcript?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              This permanently removes the transcript from your local history.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction
-                              variant="destructive"
-                              onClick={() => void removeTranscript(item.id)}
-                            >
-                              Delete Transcript
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                      {hasRawAsr(item) && editingId !== item.id ? (
+                        <>
+                          <span aria-hidden>·</span>
+                          <button
+                            type="button"
+                            className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline"
+                            aria-expanded={rawViewId === item.id}
+                            aria-controls={
+                              rawViewId === item.id ? `raw-${item.id}` : undefined
+                            }
+                            onClick={() =>
+                              setRawViewId((current) =>
+                                current === item.id ? null : item.id
+                              )
+                            }
+                          >
+                            {rawViewId === item.id ? "Hide raw" : "Show raw"}
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 </article>
               ))}
             </div>
           ) : (
-            <div className="rounded-2xl border border-dashed border-border bg-card px-5 py-10 text-center">
-              <p className="text-sm font-medium text-foreground">No transcripts found</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Try a different search, or start dictating to build your local history.
+            <div className="flex flex-col items-center rounded-2xl border border-dashed border-border bg-card px-5 py-12 text-center">
+              <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+                <FileText className="size-5 text-muted-foreground" />
+              </div>
+              <p className="mt-3 text-sm font-medium text-foreground">
+                {query.trim() ? "No matching transcripts" : "No transcripts yet"}
+              </p>
+              <p className="mt-1 max-w-xs text-xs leading-5 text-muted-foreground">
+                {query.trim()
+                  ? "Try a different search — you can match on transcript text or app name."
+                  : "Start dictating anywhere with your hotkey and your history will appear here."}
               </p>
             </div>
           )}
         </div>
       </ScrollArea>
     </div>
+  );
+}
+
+function RowAction({
+  label,
+  destructive,
+  children,
+  ...props
+}: React.ComponentProps<"button"> & {
+  label: string;
+  destructive?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={label}
+          className={cn(
+            "text-muted-foreground",
+            destructive
+              ? "hover:bg-destructive/10 hover:text-destructive"
+              : "hover:text-foreground"
+          )}
+          {...props}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -357,7 +494,14 @@ function AppBadge({
   return (
     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 font-mono text-[11px] font-semibold text-primary">
       {iconSrc ? (
-        <img src={iconSrc} alt="" width="28" height="28" loading="lazy" className="h-7 w-7 rounded-md object-cover" />
+        <img
+          src={iconSrc}
+          alt=""
+          width="28"
+          height="28"
+          loading="lazy"
+          className="size-7 rounded-md object-cover outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
+        />
       ) : (
         initials
       )}
@@ -372,6 +516,12 @@ function countWords(text: string) {
 function hasAiCleanup(item: TranscriptRow): boolean {
   if (!item.raw_text) return false;
   return item.raw_text.trim() !== item.text.trim();
+}
+
+/** True when the engine output differs from the final text in any way. */
+function hasRawAsr(item: TranscriptRow): boolean {
+  if (!item.asr_text) return false;
+  return item.asr_text.trim() !== item.text.trim();
 }
 
 function formatDurationCompact(seconds: number) {

@@ -11,7 +11,7 @@ import {
 } from "@/lib/about"
 import { openExternalLink } from "@/lib/external-link"
 import { cn } from "@/lib/utils"
-import { Logo } from "@/components/logo"
+import { Wordmark } from "@/components/wordmark"
 import {
   getHotkeyDiagnostics,
   getNativeStatus,
@@ -72,20 +72,16 @@ export function AboutPage() {
     <div className="h-full overflow-hidden bg-background">
 
       <ScrollArea className="h-full">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-6 lg:p-8">
+        <div className="page-shell">
           <section className="rounded-2xl border border-border bg-card">
             <div className="flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:justify-between lg:p-8">
               <div className="min-w-0 max-w-2xl">
-                <div className="flex items-center gap-4">
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-border bg-background">
-                    <Logo className="h-7 w-7" alt="Vox logo" />
-                  </div>
-                  <div className="min-w-0">
-                    <h1 className="text-2xl font-bold text-foreground sm:text-3xl">Vox</h1>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      Private local dictation for a fast desktop workflow.
-                    </p>
-                  </div>
+                <div className="min-w-0">
+                  <h1 className="sr-only">Vox</h1>
+                  <Wordmark className="h-9 w-auto" alt="Vox logo" />
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Private local dictation for a fast desktop workflow.
+                  </p>
                 </div>
                 <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
                   Voice capture, transcription, and AI cleanup all run on this device — your audio never leaves your machine.

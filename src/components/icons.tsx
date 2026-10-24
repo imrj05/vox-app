@@ -1,47 +1,128 @@
 import type { SVGProps } from "react";
 import {
-  ArrowCounterClockwise as PhArrowCounterClockwise,
-  ArrowSquareOut as PhArrowSquareOut,
-  Briefcase as PhBriefcase,
-  ChatCircle as PhChatCircle,
-  Check as PhCheck,
-  CheckCircle as PhCheckCircle,
-  Code as PhCode,
-  Copy as PhCopy,
-  Cpu as PhCpu,
-  Database as PhDatabase,
-  Download as PhDownload,
-  Envelope as PhEnvelope,
-  FileText as PhFileText,
-  Gear as PhGear,
-  Globe as PhGlobe,
-  House as PhHouse,
-  ListBullets as PhListBullets,
-  MagicWand as PhMagicWand,
-  MagnifyingGlass as PhMagnifyingGlass,
-  Microphone as PhMicrophone,
-  Monitor as PhMonitor,
-  Moon as PhMoon,
-  Pencil as PhPencil,
-  Question as PhQuestion,
-  ShieldWarning as PhShieldWarning,
-  Sparkle as PhSparkle,
-  Square as PhSquare,
-  Sun as PhSun,
-  Trash as PhTrash,
-  X as PhX,
-} from "@phosphor-icons/react";
+  HugeiconsIcon,
+  type HugeiconsProps,
+  type IconSvgElement,
+} from "@hugeicons/react";
+import {
+  ArrowUpRight01Icon,
+  BookOpenTextIcon,
+  Briefcase01Icon,
+  Cancel01Icon,
+  CancelCircleIcon as HugeCancelCircleIcon,
+  CheckmarkCircle01Icon,
+  CodeIcon,
+  Comment01Icon,
+  Copy01Icon,
+  CpuIcon,
+  Database01Icon,
+  Delete01Icon,
+  Download01Icon,
+  File01Icon,
+  GlobeIcon,
+  Home01Icon,
+  InformationCircleIcon,
+  KeyboardIcon,
+  Loading02Icon,
+  Login01Icon,
+  MagicWand01Icon,
+  Mail01Icon,
+  Mic01Icon,
+  Moon01Icon,
+  MoreHorizontalIcon as HugeMoreHorizontalIcon,
+  OctagonXIcon as HugeOctagonXIcon,
+  PanelLeftIcon as HugePanelLeftIcon,
+  PencilIcon,
+  PlusSignIcon,
+  QuestionIcon,
+  RotateLeft01Icon,
+  Search01Icon,
+  Settings01Icon,
+  SparklesIcon,
+  Square01Icon,
+  Sun01Icon,
+  VolumeHighIcon,
+} from "@hugeicons/core-free-icons";
 
-// Inline SVG fallbacks for icons without a direct Phosphor equivalent.
-function BookOpenTextSvg({ ...props }: SVGProps<SVGSVGElement>) {
+// Wrapper that turns a Huge Icons glyph definition into a React component.
+// Acccepts standard SVG props (className, strokeWidth, aria-*) so these exports
+// are drop-in replacements for the previous icon library. Huge icons default to
+// `currentColor` with a 1.5px stroke, matching the rest of the UI.
+function hi(icon: IconSvgElement) {
+  return function Hugeicon(props: SVGProps<SVGSVGElement>) {
+    return <HugeiconsIcon icon={icon} {...(props as unknown as HugeiconsProps)} />;
+  };
+}
+
+// Huge Icons equivalents for each previously-Poppins icon, preserved under
+// the `Ph*` names so every alias and re-export below keeps working.
+const PhArrowCounterClockwise = hi(RotateLeft01Icon);
+const PhArrowSquareOut = hi(ArrowUpRight01Icon);
+const PhBriefcase = hi(Briefcase01Icon);
+const PhChatCircle = hi(Comment01Icon);
+const PhCheckCircle = hi(CheckmarkCircle01Icon);
+const PhCode = hi(CodeIcon);
+const PhCopy = hi(Copy01Icon);
+const PhCpu = hi(CpuIcon);
+const PhDatabase = hi(Database01Icon);
+const PhDownload = hi(Download01Icon);
+const PhEnvelope = hi(Mail01Icon);
+const PhFileText = hi(File01Icon);
+const PhGear = hi(Settings01Icon);
+const PhGlobe = hi(GlobeIcon);
+const PhHouse = hi(Home01Icon);
+const PhMagicWand = hi(MagicWand01Icon);
+const PhMagnifyingGlass = hi(Search01Icon);
+const PhMicrophone = hi(Mic01Icon);
+const PhMoon = hi(Moon01Icon);
+const PhPencil = hi(PencilIcon);
+const PhQuestion = hi(QuestionIcon);
+const PhSparkle = hi(SparklesIcon);
+const PhSquare = hi(Square01Icon);
+const PhSun = hi(Sun01Icon);
+const PhTrash = hi(Delete01Icon);
+const PhX = hi(Cancel01Icon);
+
+// Inline SVG components kept for glyphs without a faithful Huge Icons
+// equivalent (chevrons, brand marks, bare check/minus, status shields,
+// bullet lists and a plain monitor).
+function CheckSvg({ ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ListBulletsSvg({ ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
-      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
-      <path d="M6 7h2" />
-      <path d="M6 11h2" />
-      <path d="M16 7h2" />
-      <path d="M16 11h2" />
+      <path d="M8 6h13" />
+      <path d="M8 12h13" />
+      <path d="M8 18h13" />
+      <circle cx="3.5" cy="6" r="1" fill="currentColor" />
+      <circle cx="3.5" cy="12" r="1" fill="currentColor" />
+      <circle cx="3.5" cy="18" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function MonitorSvg({ ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+    </svg>
+  );
+}
+
+function ShieldWarningSvg({ ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <path d="M12 8v4" />
+      <path d="M12 16h.01" />
     </svg>
   );
 }
@@ -78,50 +159,6 @@ function ChevronUpSvg({ ...props }: SVGProps<SVGSVGElement>) {
   );
 }
 
-function InfoSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-function KeyboardSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <rect width="20" height="16" x="2" y="4" rx="2" />
-      <path d="M6 8h.01" />
-      <path d="M10 8h.01" />
-      <path d="M14 8h.01" />
-      <path d="M18 8h.01" />
-      <path d="M8 12h.01" />
-      <path d="M12 12h.01" />
-      <path d="M16 12h.01" />
-      <path d="M7 16h10" />
-    </svg>
-  );
-}
-
-function LoaderSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-    </svg>
-  );
-}
-
-function LogInSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-      <polyline points="10 17 15 12 10 7" />
-      <line x1="15" x2="3" y1="12" y2="12" />
-    </svg>
-  );
-}
-
 function MinusSvg({ ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -130,50 +167,10 @@ function MinusSvg({ ...props }: SVGProps<SVGSVGElement>) {
   );
 }
 
-function MoreHorizontalSvg({ ...props }: SVGProps<SVGSVGElement>) {
+function GithubSvg({ ...props }: SVGProps<SVGSVGElement>) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="19" cy="12" r="1" />
-      <circle cx="5" cy="12" r="1" />
-    </svg>
-  );
-}
-
-function OctagonXSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M7.5 3.5h9l5 5v9l-5 5h-9l-5-5v-9z" />
-      <path d="m9 9 6 6" />
-      <path d="m15 9-6 6" />
-    </svg>
-  );
-}
-
-function PanelLeftSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-      <path d="M9 3v18" />
-    </svg>
-  );
-}
-
-function PlusSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M5 12h14" />
-      <path d="M12 5v14" />
-    </svg>
-  );
-}
-
-function VolumeHighSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19" />
-      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.69 1.25 3.35.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
     </svg>
   );
 }
@@ -183,24 +180,6 @@ function ShieldCheckSvg({ ...props }: SVGProps<SVGSVGElement>) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
       <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
-
-function CancelCircleSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <circle cx="12" cy="12" r="10" />
-      <path d="m15 9-6 6" />
-      <path d="m9 9 6 6" />
-    </svg>
-  );
-}
-
-function GithubSvg({ ...props }: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
-      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.69 1.25 3.35.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
     </svg>
   );
 }
@@ -215,9 +194,26 @@ function AlertTriangleSvg({ ...props }: SVGProps<SVGSVGElement>) {
   );
 }
 
+const BookOpenTextComp = hi(BookOpenTextIcon);
+const InfoSvg = hi(InformationCircleIcon);
+const KeyboardSvg = hi(KeyboardIcon);
+const LoaderSvg = hi(Loading02Icon);
+const LogInSvg = hi(Login01Icon);
+const MoreHorizontalSvg = hi(HugeMoreHorizontalIcon);
+const OctagonXSvg = hi(HugeOctagonXIcon);
+const PanelLeftSvg = hi(HugePanelLeftIcon);
+const PlusSvg = hi(PlusSignIcon);
+const VolumeHighSvg = hi(VolumeHighIcon);
+const CancelCircleSvg = hi(HugeCancelCircleIcon);
+
+const PhCheck = CheckSvg;
+const PhListBullets = ListBulletsSvg;
+const PhMonitor = MonitorSvg;
+const PhShieldWarning = ShieldWarningSvg;
+
 // App-specific aliases — keep these stable so imports across the app keep working.
 export const ArrowTurnBackward = PhArrowCounterClockwise;
-export const BookOpenText = BookOpenTextSvg;
+export const BookOpenText = BookOpenTextComp;
 export const Briefcase = PhBriefcase;
 export const CancelIcon = PhX;
 export const Check = PhCheck;
@@ -281,34 +277,4 @@ export const TriangleAlertIcon = AlertTriangleSvg;
 export const CancelCircleIcon = CancelCircleSvg;
 
 // Direct re-exports for components that prefer the Phosphor names.
-export {
-  PhArrowCounterClockwise as ArrowCounterClockwise,
-  PhArrowSquareOut as ArrowSquareOut,
-  PhBriefcase,
-  PhChatCircle as ChatCircle,
-  PhCheck,
-  PhCheckCircle as CheckCircle,
-  PhCode,
-  PhCopy,
-  PhCpu,
-  PhDatabase,
-  PhDownload,
-  PhEnvelope as Envelope,
-  PhFileText,
-  PhGear,
-  PhGlobe,
-  PhHouse as House,
-  PhListBullets as ListBullets,
-  PhMagicWand as MagicWand,
-  PhMagnifyingGlass as MagnifyingGlass,
-  PhMicrophone as Microphone,
-  PhMoon,
-  PhPencil,
-  PhQuestion as Question,
-  PhShieldWarning as ShieldWarning,
-  PhSparkle as Sparkle,
-  PhSquare,
-  PhSun,
-  PhTrash as Trash,
-  PhX,
-};
+export { PhArrowCounterClockwise as ArrowCounterClockwise, PhArrowSquareOut as ArrowSquareOut, PhBriefcase, PhChatCircle as ChatCircle, PhCheck, PhCheckCircle as CheckCircle, PhCode, PhCopy, PhCpu, PhDatabase, PhDownload, PhEnvelope as Envelope, PhFileText, PhGear, PhGlobe, PhHouse as House, PhListBullets as ListBullets, PhMagicWand as MagicWand, PhMagnifyingGlass as MagnifyingGlass, PhMicrophone as Microphone, PhMoon, PhPencil, PhQuestion as Question, PhShieldWarning as ShieldWarning, PhSparkle as Sparkle, PhSquare, PhSun, PhTrash as Trash, PhX };

@@ -11,7 +11,7 @@ Vox is a private, local-first voice dictation app for macOS. Press a global hotk
 1. Press the global hotkey (`⌘ Shift Space` by default) anywhere on macOS.
 2. Speak. A floating overlay shows a live waveform while recording.
 3. Whisper runs locally using Metal GPU acceleration.
-4. The transcript is injected at the cursor position — no clipboard involved.
+4. The transcript is injected at the cursor position — cursor typing by default, with an optional clipboard-paste mode that restores the previous clipboard.
 
 ---
 
@@ -109,15 +109,6 @@ Developer mode converts spoken phrases to code: camelCase, PascalCase, snake_cas
 - Full model picker with download progress inline.
 - Hotkey test step detects the keypress via both `keydown` and a Tauri event.
 
-### GitHub sign-in (PocketBase)
-
-- On first launch, Vox shows a **Continue with GitHub** page before onboarding.
-- Authentication is handled by a PocketBase server via OAuth2; the GitHub page opens in your **default browser** and the result is delivered back to the app over PocketBase's realtime connection, which brings the app window back to the front.
-- **Skip for now** lets you use Vox without an account — everything works locally. You can sign in later from **Settings → Account**.
-- The session token is persisted locally, so returning users skip the sign-in page.
-- The signed-in account is shown under **Settings → Account**, with a sign-out option.
-- Point Vox at your server with `VITE_POCKETBASE_URL` (defaults to `http://127.0.0.1:8090`).
-
 ### App updates
 
 - `tauri-plugin-updater` checks GitHub Releases for a signed `latest.json` manifest.
@@ -153,7 +144,6 @@ All settings persisted to SQLite and hydrated on startup.
 | Icons | Lucide React |
 | State | Zustand |
 | Desktop shell | Tauri v2 |
-| Auth | PocketBase (GitHub OAuth2) |
 | Audio capture | cpal (Rust) |
 | Transcription | whisper-rs / whisper.cpp (Metal GPU) |
 | Database | SQLite via tauri-plugin-sql |
@@ -174,14 +164,6 @@ Start the Tauri desktop app in development mode:
 pnpm desktop:dev
 ```
 
-### PocketBase setup (GitHub sign-in)
-
-1. Download and run a [PocketBase](https://pocketbase.io) server (default `http://127.0.0.1:8090`).
-2. In the PocketBase dashboard, create a **users** collection (or use the default one) and enable **OAuth2** in its options.
-3. Create a GitHub OAuth app at github.com/settings/developers and set the callback URL to `http://127.0.0.1:8090/api/oauth2-redirect` (or your server's URL).
-4. Paste the GitHub **Client ID** and **Client Secret** into the PocketBase OAuth2 provider settings.
-5. If your server runs elsewhere, set `VITE_POCKETBASE_URL` in `.env` before building.
-
 Other commands:
 
 ```bash
@@ -189,6 +171,7 @@ pnpm dev          # Vite dev server only (no Tauri shell)
 pnpm build        # production build
 pnpm typecheck    # TypeScript check
 pnpm lint         # ESLint
+pnpm icons:build  # regenerate app icons from app-icon.png
 cd src-tauri && cargo check   # Rust check
 ```
 
@@ -238,7 +221,7 @@ Vox is designed to be private by default:
 - No usage analytics or tracking. Anonymous crash reporting is optional, off by
   default, and strips messages, transcripts, audio details, local paths, and
   personal identity before transmission.
-- No account or sign-in required.
+- No account, sign-in, sync, team, or cloud features. Vox is a single-device local app.
 - All audio is processed locally and never transmitted.
 - Downloaded model files stay on your machine.
 - SQLite database is stored in the macOS app data directory.

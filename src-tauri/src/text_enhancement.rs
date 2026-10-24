@@ -1,14 +1,18 @@
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncWriteExt};
 
 pub const DEFAULT_TEXT_ENHANCEMENT_MODEL: &str = "qwen2.5-1.5b-instruct-q4-k-m";
+/// Faster, lower-quality 0.5B model recommended on low-memory machines.
+pub const FAST_TEXT_ENHANCEMENT_MODEL: &str = "qwen2.5-0.5b-instruct-q4_k_m";
 
 /// Aggressiveness of automatic AI cleanup applied to dictated transcripts.
 /// `None` keeps the raw transcription; higher levels rephrase more.
@@ -71,19 +75,24 @@ pub struct TextEnhancementModelInfo {
     pub recommended: bool,
 }
 
+/// Catalogue of built-in enhancement models. `downloaded` and `recommended` are
+/// placeholders here: both are computed at runtime ([`materialize`]) from the
+/// files on disk and this machine's memory.
 const MODELS: &[TextEnhancementModelInfo] = &[
     TextEnhancementModelInfo {
         name: DEFAULT_TEXT_ENHANCEMENT_MODEL,
         display_name: "Qwen2.5 1.5B Instruct Q4",
-        size: 986_000_000,
+        // Exact upstream file size so the download progress bar and the
+        // post-download sanity check are accurate.
+        size: 1_117_320_736,
         url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
         downloaded: false,
-        recommended: true,
+        recommended: false,
     },
     TextEnhancementModelInfo {
-        name: "qwen2.5-0.5b-instruct-q4_k_m",
-        display_name: "Qwen2.5 0.5B Instruct Q4",
-        size: 397_000_000,
+        name: FAST_TEXT_ENHANCEMENT_MODEL,
+        display_name: "Qwen2.5 0.5B Instruct Q4 (faster, lower quality)",
+        size: 491_400_032,
         url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
         downloaded: false,
         recommended: false,
@@ -91,7 +100,7 @@ const MODELS: &[TextEnhancementModelInfo] = &[
     TextEnhancementModelInfo {
         name: "qwen2.5-3b-instruct-q4_k_m",
         display_name: "Qwen2.5 3B Instruct Q4",
-        size: 1_980_000_000,
+        size: 2_104_932_768,
         url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         downloaded: false,
         recommended: false,
@@ -102,13 +111,66 @@ pub fn models_dir(app_data_dir: PathBuf) -> PathBuf {
     app_data_dir.join("text-models")
 }
 
+/// The model a fresh install should use on this machine. Enhancement runs
+/// synchronously on the dictation critical path, so low-memory machines get
+/// the faster 0.5B model. The 3B is never auto-selected: it is slower than the
+/// 1.5B with only a minor quality gain for a constrained rewrite.
+pub fn recommended_model_name() -> &'static str {
+    recommended_model_name_for_memory(crate::hardware::total_memory_bytes_cached())
+}
+
+fn recommended_model_name_for_memory(total_memory_bytes: u64) -> &'static str {
+    const GB: u64 = 1024 * 1024 * 1024;
+    if total_memory_bytes < 12 * GB {
+        FAST_TEXT_ENHANCEMENT_MODEL
+    } else {
+        DEFAULT_TEXT_ENHANCEMENT_MODEL
+    }
+}
+
+/// The model to activate when the user has never pinned one. Prefers the
+/// hardware recommendation when it is on disk, but falls back to any downloaded
+/// model (best first) so a fresh install never points enhancement at a file
+/// that isn't there. With nothing downloaded, returns the hardware
+/// recommendation so the UI can prompt for that download.
+pub fn resolve_recommended_model(models_dir: &Path) -> String {
+    let recommended = recommended_model_name();
+    let mut names: Vec<&'static str> = MODELS.iter().map(|model| model.name).collect();
+    // Recommended first, then the general-quality default, then the rest —
+    // stable sort preserves the catalogue order within each rank.
+    names.sort_by_key(|name| {
+        if *name == recommended {
+            0
+        } else if *name == DEFAULT_TEXT_ENHANCEMENT_MODEL {
+            1
+        } else {
+            2
+        }
+    });
+    names
+        .into_iter()
+        .find(|name| model_path(models_dir, name).exists())
+        .unwrap_or(recommended)
+        .to_string()
+}
+
+fn materialize(
+    model: &TextEnhancementModelInfo,
+    models_dir: &Path,
+    recommended: &str,
+) -> TextEnhancementModelInfo {
+    TextEnhancementModelInfo {
+        downloaded: model_path(models_dir, model.name).exists(),
+        recommended: model.name == recommended,
+        ..model.clone()
+    }
+}
+
 pub fn list_models(models_dir: &Path) -> Vec<TextEnhancementModelInfo> {
+    let recommended = recommended_model_name();
     MODELS
         .iter()
-        .map(|model| TextEnhancementModelInfo {
-            downloaded: model_path(models_dir, model.name).exists(),
-            ..model.clone()
-        })
+        .map(|model| materialize(model, models_dir, recommended))
         .collect()
 }
 
@@ -122,9 +184,7 @@ pub async fn download_model(
 
     let path = model_path(models_dir, model.name);
     if path.exists() {
-        let mut model = model.clone();
-        model.downloaded = true;
-        return Ok(model);
+        return Ok(materialize(model, models_dir, recommended_model_name()));
     }
 
     let tmp_path = path.with_extension("part");
@@ -138,12 +198,15 @@ pub async fn download_model(
         ));
     }
 
-    let total = response
+    // Prefer the server's Content-Length: it drives the progress bar and the
+    // post-download sanity check, so the hardcoded sizes are only a fallback
+    // for servers that omit the header.
+    let server_size = response
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(model.size);
+        .and_then(|value| value.parse::<u64>().ok());
+    let total = server_size.unwrap_or(model.size);
 
     let mut file = File::create(&tmp_path)
         .await
@@ -164,15 +227,18 @@ pub async fn download_model(
     let downloaded_size = fs::metadata(&tmp_path)
         .map_err(|error| error.to_string())?
         .len();
-    if downloaded_size < model.size / 2 {
+    // Compare against the size the server actually advertised (falling back
+    // to the hardcoded upstream size), so a truncated download is caught even
+    // if the upstream file size changed. Allow a small tolerance for
+    // chunk-boundary rounding.
+    let expected_size = server_size.unwrap_or(model.size);
+    if downloaded_size < expected_size - expected_size / 10 {
         let _ = fs::remove_file(&tmp_path);
         return Err("Downloaded enhancement model is unexpectedly small".to_string());
     }
 
     fs::rename(&tmp_path, &path).map_err(|error| error.to_string())?;
-    let mut model = model.clone();
-    model.downloaded = true;
-    Ok(model)
+    Ok(materialize(model, models_dir, recommended_model_name()))
 }
 
 pub fn delete_model(models_dir: &Path, model_name: &str) -> Result<(), String> {
@@ -227,14 +293,25 @@ pub fn enhance_text_with_level(
     let model_name = model_name.unwrap_or(DEFAULT_TEXT_ENHANCEMENT_MODEL);
     let path = resolve_model_path(models_dir, model_name)?;
     if !path.exists() {
-        return Err(format!("Download {model_name} before cleaning up transcripts"));
+        return Err(format!(
+            "Download {model_name} before cleaning up transcripts"
+        ));
     }
 
     let prompt = cleanup_prompt(text, level, style);
     match run_sidecar(&path, &prompt).map(clean_model_output) {
         Ok(output) if !output.trim().is_empty() => Ok(output),
-        // Never let a failed/empty cleanup block transcription.
-        _ => Ok(text.to_string()),
+        Ok(_) => {
+            eprintln!("[VOX][AI] cleanup returned empty output; keeping transcription");
+            Ok(text.to_string())
+        }
+        Err(error) => {
+            // Never let a failed cleanup block transcription, but keep the
+            // reason visible in diagnostics instead of silently hiding model
+            // or sidecar failures.
+            eprintln!("[VOX][AI] cleanup failed; keeping transcription: {error}");
+            Ok(text.to_string())
+        }
     }
 }
 
@@ -357,17 +434,249 @@ fn clean_model_output(output: String) -> String {
         .to_string()
 }
 
-#[derive(Serialize)]
-struct SidecarRequest {
-    model_path: String,
-    prompt: String,
+// ── Persistent sidecar session ─────────────────────────────────────...
+// The sidecar stays alive in `--serve` mode with the GGUF model (and compiled
+// Metal kernels) kept warm, which removes the per-request model-load cost —
+// seconds per call when spawning a fresh process each time. One global session
+// serializes requests; an exited sidecar is transparently respawned once.
+struct EnhanceServeSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_request_id: u64,
 }
 
-#[derive(Deserialize)]
-struct SidecarResponse {
-    ok: bool,
-    text: Option<String>,
-    error: Option<String>,
+fn serve_session_cell() -> &'static Mutex<Option<EnhanceServeSession>> {
+    static SERVE_SESSION: OnceLock<Mutex<Option<EnhanceServeSession>>> = OnceLock::new();
+    SERVE_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+fn spawn_serve_session() -> Result<EnhanceServeSession, String> {
+    let sidecar = sidecar_path()?;
+    let mut child = Command::new(&sidecar)
+        .arg("--serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // The sidecar's stderr is diagnostic-only. Do not pipe it without a
+        // reader: enough model/runtime logs could fill the pipe and deadlock
+        // an otherwise healthy enhancement request.
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Failed to start text enhancement sidecar: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Text enhancement sidecar stdin unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Text enhancement sidecar stdout unavailable".to_string())?;
+    Ok(EnhanceServeSession {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        next_request_id: 0,
+    })
+}
+
+fn stop_serve_session(session: EnhanceServeSession) {
+    let mut session = session;
+    let _ = session.child.kill();
+    let _ = session.child.wait();
+}
+
+/// Kills the persistent sidecar process, if one is running. Called on app exit
+/// so the child is not orphaned.
+pub fn shutdown_serve_session() {
+    let lock = serve_session_cell();
+    if let Ok(mut guard) = lock.lock() {
+        if let Some(session) = guard.take() {
+            stop_serve_session(session);
+        }
+    }
+}
+
+/// Sends one enhancement request over the persistent session. `Ok(response)`
+/// includes application-level errors (`ok: false`); a transport-level `Err`
+/// means the sidecar is gone and the request never completed.
+fn request_enhancement(
+    session: &mut EnhanceServeSession,
+    model_path: &str,
+    prompt: &str,
+) -> Result<serde_json::Value, String> {
+    request_sidecar(session, model_path, prompt, false)
+}
+
+fn request_warm_model(
+    session: &mut EnhanceServeSession,
+    model_path: &str,
+) -> Result<serde_json::Value, String> {
+    request_sidecar(session, model_path, "", true)
+}
+
+fn request_sidecar(
+    session: &mut EnhanceServeSession,
+    model_path: &str,
+    prompt: &str,
+    warm: bool,
+) -> Result<serde_json::Value, String> {
+    session.next_request_id += 1;
+    let id = session.next_request_id;
+    let request = serde_json::json!({
+        "id": id,
+        "model_path": model_path,
+        "prompt": prompt,
+        "warm": warm,
+    });
+    let mut line = serde_json::to_string(&request)
+        .map_err(|error| format!("Text enhancement request encoding failed: {error}"))?;
+    line.push('\n');
+
+    session
+        .stdin
+        .write_all(line.as_bytes())
+        .map_err(|error| format!("Text enhancement sidecar stopped accepting requests: {error}"))?;
+    session
+        .stdin
+        .flush()
+        .map_err(|error| format!("Text enhancement sidecar stopped accepting requests: {error}"))?;
+
+    loop {
+        let mut response = String::new();
+        let bytes = session
+            .stdout
+            .read_line(&mut response)
+            .map_err(|error| format!("Text enhancement sidecar failed: {error}"))?;
+        if bytes == 0 {
+            return Err("Text enhancement sidecar exited unexpectedly".to_string());
+        }
+        let parsed: serde_json::Value = match serde_json::from_str(response.trim()) {
+            Ok(value) => value,
+            Err(_) => continue, // diagnostics line from the sidecar — skip
+        };
+        if parsed.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+            return Ok(parsed);
+        }
+        // A response for an older attempt — skip.
+    }
+}
+
+fn sidecar_error(response: &serde_json::Value) -> String {
+    response
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Text enhancement sidecar failed")
+        .to_string()
+}
+
+fn sidecar_succeeded(response: &serde_json::Value) -> bool {
+    response
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn sidecar_output(response: serde_json::Value) -> Result<String, String> {
+    if sidecar_succeeded(&response) {
+        return response
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "Text enhancement sidecar returned no text".to_string());
+    }
+    Err(sidecar_error(&response))
+}
+
+/// Load the selected model in the persistent sidecar without generating text.
+/// This moves GGUF loading and Metal kernel setup off the first user action.
+pub fn warm_model(models_dir: &Path, model_name: &str) -> Result<(), String> {
+    let path = resolve_model_path(models_dir, model_name)?;
+    if !path.exists() {
+        return Err(format!(
+            "Download {model_name} before warming text enhancement"
+        ));
+    }
+
+    let started = Instant::now();
+    let lock = serve_session_cell();
+    let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let model_arg = path.to_string_lossy().into_owned();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        if guard.is_none() {
+            *guard = Some(spawn_serve_session()?);
+        }
+        let session = guard.as_mut().unwrap();
+        match request_warm_model(session, &model_arg) {
+            Ok(response) if sidecar_succeeded(&response) => {
+                eprintln!(
+                    "[VOX][AI] text-enhance model warmed in {}ms (attempt {})",
+                    started.elapsed().as_millis(),
+                    attempts
+                );
+                return Ok(());
+            }
+            Ok(response) => return Err(sidecar_error(&response)),
+            Err(transport_error) => {
+                if let Some(session) = guard.take() {
+                    stop_serve_session(session);
+                }
+                if attempts >= 2 {
+                    return Err(format!(
+                        "Text enhancement sidecar failed while warming: {transport_error}"
+                    ));
+                }
+                eprintln!(
+                    "[VOX][AI] text-enhance warm session died ({transport_error}); respawning"
+                );
+            }
+        }
+    }
+}
+
+/// Runs one enhancement request against the persistent sidecar session.
+/// A dead sidecar is transparently respawned and the request retried once.
+fn run_sidecar(model_path: &Path, prompt: &str) -> Result<String, String> {
+    let started = Instant::now();
+    let lock = serve_session_cell();
+    // A poisoned lock only matters if a panic happened mid-request; recover so
+    // enhancement never gets permanently wedged.
+    let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let model_arg = model_path.to_string_lossy().into_owned();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        if guard.is_none() {
+            *guard = Some(spawn_serve_session()?);
+        }
+        let session = guard.as_mut().unwrap();
+        match request_enhancement(session, &model_arg, prompt) {
+            Ok(response) => {
+                let result = sidecar_output(response);
+                // First cold request includes process spawn + model load; log
+                // it so warm vs cold requests are distinguishable in logs.
+                eprintln!(
+                    "[VOX][AI] text-enhance request finished in {}ms (attempt {})",
+                    started.elapsed().as_millis(),
+                    attempts
+                );
+                return result;
+            }
+            Err(transport_error) => {
+                if let Some(session) = guard.take() {
+                    stop_serve_session(session);
+                }
+                if attempts >= 2 {
+                    return Err(format!(
+                        "Text enhancement sidecar failed: {transport_error}"
+                    ));
+                }
+                eprintln!("[VOX][AI] text-enhance session died ({transport_error}); respawning");
+            }
+        }
+    }
 }
 
 fn sidecar_path() -> Result<PathBuf, String> {
@@ -405,54 +714,52 @@ fn find_sidecar_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn run_sidecar(model_path: &Path, prompt: &str) -> Result<String, String> {
-    let sidecar = sidecar_path()?;
-    let request = SidecarRequest {
-        model_path: model_path.to_string_lossy().into_owned(),
-        prompt: prompt.to_string(),
-    };
-    let input = serde_json::to_string(&request).map_err(|error| error.to_string())?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut child = Command::new(&sidecar)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Failed to start text enhancement sidecar: {error}"))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|error| format!("Failed to write to text enhancement sidecar: {error}"))?;
+    #[test]
+    fn low_memory_prefers_fast_model() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(
+            recommended_model_name_for_memory(4 * GB),
+            FAST_TEXT_ENHANCEMENT_MODEL
+        );
+        assert_eq!(
+            recommended_model_name_for_memory(8 * GB),
+            FAST_TEXT_ENHANCEMENT_MODEL
+        );
+        assert_eq!(
+            recommended_model_name_for_memory(12 * GB),
+            DEFAULT_TEXT_ENHANCEMENT_MODEL
+        );
+        assert_eq!(
+            recommended_model_name_for_memory(32 * GB),
+            DEFAULT_TEXT_ENHANCEMENT_MODEL
+        );
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Failed to run text enhancement sidecar: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let message = if stderr.is_empty() {
-            format!(
-                "Text enhancement sidecar exited with status {}",
-                output.status
-            )
-        } else {
-            stderr
-        };
-        return Err(message);
-    }
+    #[test]
+    fn resolve_prefers_recommended_then_downloaded() {
+        let dir = std::env::temp_dir().join(format!("vox-enhance-resolve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("Text enhancement sidecar returned invalid UTF-8: {error}"))?;
-    let response: SidecarResponse = serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("Text enhancement sidecar returned invalid JSON: {error}"))?;
-    if response.ok {
-        response
-            .text
-            .ok_or_else(|| "Text enhancement sidecar returned no text".to_string())
-    } else {
-        Err(response
-            .error
-            .unwrap_or_else(|| "Text enhancement sidecar failed".to_string()))
+        // Nothing downloaded: a known catalogue model is returned.
+        let none = resolve_recommended_model(&dir);
+        assert!(MODELS.iter().any(|model| model.name == none));
+
+        // Only the default on disk wins over a missing hardware recommendation.
+        fs::write(model_path(&dir, DEFAULT_TEXT_ENHANCEMENT_MODEL), b"").unwrap();
+        assert_eq!(
+            resolve_recommended_model(&dir),
+            DEFAULT_TEXT_ENHANCEMENT_MODEL
+        );
+
+        // With the fast model also present, the hardware choice applies.
+        fs::write(model_path(&dir, FAST_TEXT_ENHANCEMENT_MODEL), b"").unwrap();
+        assert_eq!(resolve_recommended_model(&dir), recommended_model_name());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

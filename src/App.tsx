@@ -6,7 +6,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
-import { GithubLogin } from "@/components/github-login";
 import { TransformOverlay } from "@/components/transform-overlay";
 import {
   Dialog,
@@ -20,16 +19,20 @@ import {
   setGlobalShortcut,
   setEditableFocusContext,
   setCleanupLevel,
-  setNativeDictionary,
   setNativeEnhanceIconEnabled,
   setNativeEnhancementModel,
   setNativeErrorReporting,
   setNativeLanguage,
+  setNativeSelectedModel,
   setNativeVoiceCommandsEnabled,
   setNativeWhisperMode,
   setNativeWidgetEnabled,
   setTranscriptFormattingMode,
   setTriggerMode,
+  setTranscriptionEngine,
+  setEngineFallback,
+  setPreferredEngineFallback,
+  setDockIcon,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 import { pruneTranscripts } from "@/lib/db";
@@ -38,6 +41,7 @@ import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
+const CorrectionsPage = lazy(() => import("@/pages/corrections").then(({ CorrectionsPage }) => ({ default: CorrectionsPage })));
 const NotesPage = lazy(() => import("@/pages/notes").then(({ NotesPage }) => ({ default: NotesPage })));
 const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
@@ -59,7 +63,6 @@ function App() {
     onboardingComplete,
     hotkey,
     triggerMode,
-    dictionary,
     theme,
     widgetEnabled,
     enhanceIconEnabled,
@@ -69,12 +72,14 @@ function App() {
     errorReportingEnabled,
     transcriptRetention,
     language,
+    selectedModel,
     voiceCommandsEnabled,
     whisperMode,
+    engine,
+    engineFallbackEnabled,
+    preferredEngineFallback,
     hydrate,
     loadSnippets,
-    authStatus,
-    initAuth,
     updateInfo,
     updateStatus,
     updateProgress,
@@ -139,10 +144,6 @@ function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
-  // Restore PocketBase session (validates any persisted token)
-  useEffect(() => {
-    void initAuth();
-  }, [initAuth]);
   // Load voice-triggered snippets and sync them to Rust
   useEffect(() => {
     void loadSnippets().catch(() => {});
@@ -172,14 +173,15 @@ function App() {
     if (!triggerMode) return;
     void setTriggerMode(triggerMode).catch(() => {});
   }, [triggerMode]);
-  // Sync dictionary for background hotkey transcriptions handled in Rust
-  useEffect(() => {
-    void setNativeDictionary(dictionary).catch(() => {});
-  }, [dictionary]);
   // Sync dictation language for background hotkey transcriptions handled in Rust
   useEffect(() => {
     void setNativeLanguage(language).catch(() => {});
   }, [language]);
+  // Keep the global hotkey path on the same Whisper pin as page-based
+  // transcription. Apple Speech and Parakeet ignore this state.
+  useEffect(() => {
+    void setNativeSelectedModel(selectedModel).catch(() => {});
+  }, [selectedModel]);
   // Sync voice-command toggle for background hotkey transcriptions handled in Rust
   useEffect(() => {
     void setNativeVoiceCommandsEnabled(voiceCommandsEnabled).catch(() => {});
@@ -194,6 +196,17 @@ function App() {
   useEffect(() => {
     void setCleanupLevel(cleanupLevel).catch(() => {});
   }, [cleanupLevel]);
+  // Sync engine selection + fallback so background hotkey transcriptions are
+  // routed with the user's preferences (spec §6–§8).
+  useEffect(() => {
+    void setTranscriptionEngine(engine).catch(() => {});
+  }, [engine]);
+  useEffect(() => {
+    void setEngineFallback(engineFallbackEnabled).catch(() => {});
+  }, [engineFallbackEnabled]);
+  useEffect(() => {
+    void setPreferredEngineFallback(preferredEngineFallback).catch(() => {});
+  }, [preferredEngineFallback]);
   useEffect(() => {
     void setNativeWidgetEnabled(widgetEnabled).catch(() => {});
   }, [widgetEnabled]);
@@ -234,10 +247,11 @@ function App() {
   useEffect(() => {
     const applyTheme = () => {
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.classList.toggle(
-        "dark",
-        theme === "dark" || (theme === "system" && prefersDark)
-      );
+      const dark = theme === "dark" || (theme === "system" && prefersDark);
+      document.documentElement.classList.toggle("dark", dark);
+      // Keep the Dock icon in sync: dark logo tile in dark mode, light tile
+      // in light mode. Fire-and-forget — a failed swap must never break theming.
+      void setDockIcon(dark).catch(() => {});
     };
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     applyTheme();
@@ -251,7 +265,7 @@ function App() {
       : null;
   const updateBusy = updateStatus === "downloading" || updateStatus === "installing" || updateStatus === "restarting";
 
-  if (onboardingComplete === null || authStatus === "loading") {
+  if (onboardingComplete === null) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background px-6">
         <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3">
@@ -264,15 +278,14 @@ function App() {
       </div>
     );
   }
-  if (authStatus === "signedOut") {
-    return <GithubLogin />;
-  }
   const renderPage = () => {
     switch (activeNav) {
       case "home":
         return <HomePage />;
       case "transcripts":
         return <TranscriptsPage />;
+      case "corrections":
+        return <CorrectionsPage />;
       case "notes":
         return <NotesPage />;
       case "models":

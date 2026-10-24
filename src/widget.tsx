@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
-import { hideWidget } from "@/lib/native";
+import { hideWidget, setWidgetSize, undoLastInsertion } from "@/lib/native";
 import { X } from "@/components/icons";
 import "./widget.css";
 
@@ -11,6 +11,7 @@ import "./widget.css";
 
 const BAR_COUNT = 7;
 const THEME_KEY = "theme";
+const LIVE_PREVIEW_ENABLED_KEY = "live_preview_enabled";
 
 type WidgetMode = "idle" | "recording" | "transcribing" | "done" | "error";
 
@@ -19,6 +20,8 @@ interface WidgetState {
   message: string;
   elapsedSeconds?: number;
   showEnhance?: boolean;
+  /** Show the Undo action for the transcript that was just inserted. */
+  showUndo?: boolean;
   /** Active app detected at recording start (e.g. "Visual Studio Code"). */
   appName?: string | null;
   /** Active window title (e.g. "user.service.ts — my-project — VS Code"). */
@@ -47,38 +50,15 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-/**
- * Build a compact "what am I doing right now" label from the detected app
- * context: "Visual Studio Code · user.service.ts", "WhatsApp",
- * "Google Chrome · Gmail - rajeshwar@gmail.com". Returns null when no context
- * was detected (e.g. non-macOS or no frontmost app).
- */
-function buildContextLabel(
-  appName?: string | null,
-  windowTitle?: string | null
-): string | null {
-  const app = appName?.trim();
-  const title = windowTitle?.trim();
-  if (!app && !title) return null;
-
-  if (!app) return title || null;
-  if (!title) return app;
-
-  // Skip redundant titles (WhatsApp window titled "WhatsApp").
-  if (title.toLowerCase() === app.toLowerCase()) return app;
-
-  // Editor titles: "user.service.ts — my-project — Visual Studio Code" →
-  // show the file name instead of the full title.
-  const first = title.split(" — ")[0]?.split(" - ")[0]?.trim();
-  const looksLikeFile =
-    !!first && (first.includes(".") || first.includes("/") || first.includes("\\"));
-  if (looksLikeFile && first !== app) return `${app} · ${first}`;
-
-  return `${app} · ${title}`;
-}
-
 function shapeVoiceLevel(value: number): number {
   return Math.pow(clamp01(value), 0.55);
+}
+
+/** Keep the most recent words visible when a partial overflows the pill. */
+function tailText(text: string, maxChars = 90): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `…${trimmed.slice(-maxChars)}`;
 }
 
 function mapAudioBarsToMeter(bars: number[]): number[] {
@@ -137,16 +117,20 @@ function VoiceDots({
   audioLevel,
   elapsed,
   message,
-  contextLabel,
+  liveText,
+  canUndo,
   onClose,
+  onUndo,
 }: {
   mode: WidgetMode;
   meterLevels: number[];
   audioLevel: number;
   elapsed: number | undefined;
   message: string;
-  contextLabel: string | null;
+  liveText: string;
+  canUndo: boolean;
   onClose: () => void;
+  onUndo: () => void;
 }) {
   const isRecording = mode === "recording";
 
@@ -160,10 +144,9 @@ function VoiceDots({
   return (
     <>
       <div className="widget-voice-container">
-        {/* Theme-aware Vox logo (light mark on light, dark mark on dark) */}
+        {/* Menu-bar mic glyph — white on dark glass, inverted for light glass */}
         <div className="widget-logo-wrap">
-          <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
-          <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
+          <img src="/menubar-icon.png" alt="" className="widget-logo" />
         </div>
 
         <div className="widget-glow" style={{ opacity: glowAlpha }} />
@@ -182,6 +165,17 @@ function VoiceDots({
               <CheckIcon />
               <span className="widget-status-text">{message || "Done"}</span>
             </div>
+            {canUndo && (
+              <button
+                type="button"
+                className="widget-undo-btn"
+                onClick={onUndo}
+                onMouseDown={(event) => event.preventDefault()}
+                aria-label="Undo last dictation"
+              >
+                Undo
+              </button>
+            )}
             <button
               type="button"
               className="widget-close-btn"
@@ -219,24 +213,18 @@ function VoiceDots({
               })}
             </div>
 
-            {elapsed !== undefined && elapsed > 0 && (
-              <span className="widget-timer">{formatElapsed(elapsed)}</span>
-            )}
+            <span className="widget-timer">{formatElapsed(elapsed ?? 0)}</span>
 
-            {message && message !== "Listening…" && (
+            {liveText ? (
+              <span className="widget-live-text" title={liveText}>
+                {tailText(liveText)}
+              </span>
+            ) : message && message !== "Listening…" ? (
               <span className="widget-mode-label">{message}</span>
-            )}
+            ) : null}
           </>
         )}
       </div>
-
-      {/* Live app-context line: what the user is doing right now */}
-      {isRecording && contextLabel && (
-        <span className="widget-context" role="status">
-          <span className="widget-context-dot" aria-hidden="true" />
-          <span className="widget-context-text">{contextLabel}</span>
-        </span>
-      )}
     </>
   );
 }
@@ -319,7 +307,41 @@ export function Widget() {
   });
   const [audioLevel, setAudioLevel] = useState(0);
   const [meterLevels, setMeterLevels] = useState<number[]>(Array(BAR_COUNT).fill(0));
+  const [liveText, setLiveText] = useState("");
+  const pendingLiveText = useRef("");
+  const liveTextTimer = useRef<number | null>(null);
   const prevMode = useRef<WidgetMode>("idle");
+  const capsuleRef = useRef<HTMLDivElement>(null);
+
+  // The window *is* the capsule: report its layout size so Rust can resize
+  // the (transparent, vibrancy-backed) window to hug the pill exactly.
+  useEffect(() => {
+    const el = capsuleRef.current;
+    if (!el) return;
+    let frame = 0;
+    let last = "";
+    const report = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const key = `${w}x${h}`;
+        if (w >= 1 && h >= 1 && key !== last) {
+          last = key;
+          void setWidgetSize(w, h).catch((err) => {
+            console.error("[vox-widget] setWidgetSize failed (window won't hug the pill):", err);
+          });
+        }
+      });
+    };
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    report();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -352,6 +374,16 @@ export function Widget() {
       if (soundOn && prev === "recording" && next !== "recording") playStopTone();
       prevMode.current = next;
       setState(event.payload);
+      // Partials only belong to the recording phase; clear them as soon as the
+      // widget moves to transcribing/done/error.
+      if (next !== "recording") {
+        if (liveTextTimer.current !== null) {
+          window.clearTimeout(liveTextTimer.current);
+          liveTextTimer.current = null;
+        }
+        pendingLiveText.current = "";
+        setLiveText("");
+      }
     }).then((cleanup) => {
       unlisten = cleanup;
     }).catch((err) => console.error("[vox-widget] failed to listen vox-widget-state:", err));
@@ -372,6 +404,44 @@ export function Widget() {
     };
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ text: string; isFinal: boolean }>("vox-live-transcript", (event) => {
+      const enabled = localStorage.getItem(LIVE_PREVIEW_ENABLED_KEY) !== "false";
+      if (!enabled) {
+        pendingLiveText.current = "";
+        setLiveText("");
+        return;
+      }
+
+      // Partial results arrive continuously. Coalesce them so the native
+      // window is not resized on every token, but apply finals immediately.
+      pendingLiveText.current = event.payload.text?.trim() ?? "";
+      if (event.payload.isFinal) {
+        if (liveTextTimer.current !== null) {
+          window.clearTimeout(liveTextTimer.current);
+          liveTextTimer.current = null;
+        }
+        setLiveText(pendingLiveText.current);
+        return;
+      }
+      if (liveTextTimer.current !== null) return;
+      liveTextTimer.current = window.setTimeout(() => {
+        liveTextTimer.current = null;
+        setLiveText(pendingLiveText.current);
+      }, 150);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    }).catch((err) => console.error("[vox-widget] failed to listen vox-live-transcript:", err));
+    return () => {
+      unlisten?.();
+      if (liveTextTimer.current !== null) {
+        window.clearTimeout(liveTextTimer.current);
+        liveTextTimer.current = null;
+      }
+    };
+  }, []);
+
   // Listen for audio level events
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -387,8 +457,6 @@ export function Widget() {
   }, []);
 
   const isActive = state.mode === "recording" || state.mode === "transcribing";
-  const isRecording = state.mode === "recording";
-  const contextLabel = buildContextLabel(state.appName, state.windowTitle);
 
   const isVisible =
     state.mode === "recording" ||
@@ -400,10 +468,31 @@ export function Widget() {
     void hideWidget().catch(() => {});
   };
 
+  const undo = async () => {
+    try {
+      await undoLastInsertion();
+      setState((prev) => ({
+        ...prev,
+        message: "Dictation undone",
+        showUndo: false,
+      }));
+      window.setTimeout(() => close(), 900);
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        mode: "error",
+        message: error instanceof Error ? error.message : String(error),
+        showUndo: false,
+      }));
+      window.setTimeout(() => close(), 2600);
+    }
+  };
+
   return (
     <div className="widget-root">
       <div
-        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"} ${isRecording && contextLabel ? "widget-has-context" : ""}`}
+        ref={capsuleRef}
+        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}
       >
         <VoiceDots
           mode={state.mode}
@@ -411,8 +500,10 @@ export function Widget() {
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
           message={state.message}
-          contextLabel={contextLabel}
+          liveText={state.mode === "recording" ? liveText : ""}
+          canUndo={Boolean(state.showUndo) && state.mode === "done"}
           onClose={close}
+          onUndo={() => void undo()}
         />
       </div>
     </div>

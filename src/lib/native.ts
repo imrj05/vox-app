@@ -1,9 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  disable as disableAutostart,
-  enable as enableAutostart,
-  isEnabled as isAutostartEnabled,
-} from "@tauri-apps/plugin-autostart";
 
 export interface NativeStatus {
   platform: string;
@@ -24,6 +19,19 @@ export interface RecordingStatus {
   appName: string | null;
   windowTitle: string | null;
   durationSeconds: number | null;
+  /** Final Apple Speech live result, when it can be reused by the final pass. */
+  previewText?: string | null;
+  /** Average confidence of the live final, when Apple reports it. */
+  previewConfidence?: number | null;
+  /** True for an incognito dictation (nothing is persisted). */
+  private?: boolean;
+}
+
+export interface TranscriptTimings {
+  audioPreflightMs: number;
+  transcribeMs: number;
+  postprocessMs: number;
+  totalMs: number;
 }
 
 export interface TranscriptionResult {
@@ -31,10 +39,44 @@ export interface TranscriptionResult {
   text: string;
   appName: string | null;
   durationSeconds: number | null;
+  /** Raw text exactly as the ASR engine produced it, before any processing. */
+  asrText?: string | null;
   /** Raw transcription before AI cleanup, when cleanup was applied. */
   rawText?: string | null;
   /** Language actually used for transcription (auto-detected or pinned). */
   language?: string | null;
+  /** Engine confidence for the raw transcript (0.0–1.0), when available. */
+  confidence?: number | null;
+  /** Per-stage processing timings. */
+  timings?: TranscriptTimings | null;
+  /** Engine that produced the raw transcript ("whisper" | "parakeet" | …). */
+  engine?: string | null;
+  /** Vocabulary corrections applied to the final text ("shad can" → "shadcn"). */
+  corrections?: {
+    source: string;
+    canonical: string;
+    confidence?: number;
+    asrConfidence?: number | null;
+  }[];
+}
+
+/** Hardware awareness (spec §25): what this Mac can comfortably run. */
+export interface HardwareInfo {
+  platform: string;
+  arch: string;
+  appleSilicon: boolean;
+  totalMemoryBytes: number;
+  cpuCores: number;
+  tier: "fast" | "balanced" | "accurate";
+  maxRecommendedModelBytes: number;
+}
+
+/** Availability info for one registered transcription engine (spec §3). */
+export interface TranscriptionEngineStatus {
+  id: string;
+  displayName: string;
+  available: boolean;
+  reason?: string | null;
 }
 
 export type CleanupLevel = "none" | "light" | "medium" | "high";
@@ -91,12 +133,32 @@ export async function getNativeStatus() {
   return invoke<NativeStatus>("native_status");
 }
 
+/** Hardware capabilities + recommendation tier for this machine. */
+export async function getHardwareInfo() {
+  return invoke<HardwareInfo>("get_hardware_info");
+}
+
+/** Availability info for one registered transcription engine (spec §3). */
+export async function getTranscriptionEngines() {
+  return invoke<TranscriptionEngineStatus[]>("get_transcription_engines");
+}
+
 export async function requestMicrophonePermission() {
   return invoke<void>("request_microphone_permission");
 }
 
 export async function checkMicrophonePermission() {
   return invoke<boolean>("check_microphone_permission");
+}
+
+/** Raw macOS mic authorization: 0 not-determined, 1 restricted, 2 denied, 3 authorized. */
+export async function microphoneAuthorizationStatus() {
+  return invoke<number>("microphone_authorization_status");
+}
+
+/** Deep-link into a macOS System Settings privacy pane. */
+export function openSystemSettings(pane: "microphone" | "accessibility" | "input_monitoring") {
+  return invoke<void>("open_system_settings", { pane });
 }
 
 export async function transcribeSample() {
@@ -118,16 +180,18 @@ export async function stopRecording() {
 export async function transcribeRecording(
   audioPath: string,
   modelName?: string,
-  dictionary?: string,
   contextAppName?: string | null,
-  contextWindowTitle?: string | null
+  contextWindowTitle?: string | null,
+  previewText?: string | null,
+  previewConfidence?: number | null
 ) {
   return invoke<TranscriptionResult>("transcribe_recording", {
     audioPath,
     modelName,
-    dictionary,
     contextAppName,
     contextWindowTitle,
+    previewText,
+    previewConfidence,
   });
 }
 
@@ -159,6 +223,11 @@ export async function listTextEnhancementModels() {
   return invoke<TextEnhancementModelInfo[]>("text_enhancement_models");
 }
 
+/** Enhancement model recommended for this machine's hardware (spec §25). */
+export async function getRecommendedEnhancementModel() {
+  return invoke<string>("recommended_enhancement_model");
+}
+
 export async function downloadTextEnhancementModel(modelName: string) {
   return invoke<TextEnhancementModelInfo>("download_text_enhancement_model", { modelName });
 }
@@ -185,6 +254,22 @@ export async function enhanceFocusedInputNow() {
 
 export async function hideWidget() {
   return invoke<void>("hide_widget");
+}
+
+/** Remove the most recently inserted transcript at the cursor. */
+export async function undoLastInsertion() {
+  return invoke<{ method: "accessibilityValue" | "undoShortcut" }>(
+    "undo_last_insertion"
+  );
+}
+
+/** Retry an insertion that failed (used by the menu bar action). */
+export async function retryLastInsertion() {
+  return invoke<void>("retry_last_insertion");
+}
+
+export async function setWidgetSize(width: number, height: number) {
+  return invoke<void>("widget_set_size", { width, height });
 }
 
 export async function deleteRecordingFile(audioPath: string) {
@@ -231,12 +316,32 @@ export async function setTriggerMode(mode: "toggle" | "pushToTalk" | "handsFree"
   return invoke<void>("set_trigger_mode", { mode });
 }
 
-export async function setNativeDictionary(dictionary: string) {
-  return invoke<void>("set_dictionary", { dictionary });
+export type InsertionMethod = "typing" | "clipboard";
+
+/** Choose cursor typing or a clipboard paste that restores the clipboard. */
+export async function setInsertionMethod(method: InsertionMethod) {
+  return invoke<void>("set_insertion_method", { method });
 }
+
 
 export async function setNativeLanguage(language: string) {
   return invoke<void>("set_language", { language });
+}
+
+export async function setTranscriptionEngine(engine: string) {
+  return invoke<void>("set_transcription_engine", { engine });
+}
+
+export async function setNativeSelectedModel(modelName: string) {
+  return invoke<void>("set_selected_model", { modelName });
+}
+
+export async function setEngineFallback(enabled: boolean) {
+  return invoke<void>("set_engine_fallback", { enabled });
+}
+
+export async function setPreferredEngineFallback(engine: string) {
+  return invoke<void>("set_engine_fallback_target", { engine });
 }
 
 export async function setNativeVoiceCommandsEnabled(enabled: boolean) {
@@ -250,6 +355,8 @@ export async function setNativeWhisperMode(enabled: boolean) {
 export interface NativeSnippet {
   trigger: string;
   expansion: string;
+  /** Optional app-name filter; null/empty applies everywhere. */
+  appPattern?: string | null;
 }
 
 export async function setNativeSnippets(snippets: NativeSnippet[]) {
@@ -317,16 +424,16 @@ export async function resolveAppIcon(appName: string) {
 }
 
 export async function getStartAtLogin() {
-  return isAutostartEnabled();
+  return invoke<boolean>("is_login_item_enabled");
+}
+
+/// Swap the macOS Dock icon between the light and dark logo tiles.
+export async function setDockIcon(dark: boolean) {
+  return invoke<void>("set_dock_icon", { theme: dark ? "dark" : "light" });
 }
 
 export async function setStartAtLogin(enabled: boolean) {
-  if (enabled) {
-    await enableAutostart();
-    return;
-  }
-
-  await disableAutostart();
+  return invoke<void>("set_login_item", { enabled });
 }
 
 const EVENT_TAP_ONLY_SHORTCUTS = new Set([
@@ -359,6 +466,13 @@ export async function applyTransform(
   customInstruction?: string
 ) {
   return invoke<void>("apply_transform", { text, preset, customInstruction });
+}
+
+export type NoteTask = "summarizeMeeting" | "extractActionItems";
+
+/** Run a local meeting task and return generated Markdown (no paste). */
+export async function noteTransform(task: NoteTask, text: string) {
+  return invoke<string>("note_transform", { task, text });
 }
 
 /** Human-readable label for a shortcut string like "Meta+Shift+Space" */

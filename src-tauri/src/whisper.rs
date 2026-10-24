@@ -1,8 +1,15 @@
+//! Whisper model management: the bundled model catalog, download pipeline and
+//! model-path resolution.
+//!
+//! Transcription itself lives behind the engine abstraction in
+//! [`crate::engines`]: [`transcribe`] resolves the selected model to a path and
+//! hands it to the router, which dispatches to the whisper.cpp engine, the
+//! Parakeet engine, or (later) Apple Speech based on the model format.
+
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -12,10 +19,11 @@ use std::{
 use tokio::{fs::File, io::AsyncWriteExt};
 
 use serde::Serialize;
-use whisper_rs::{
-    convert_integer_to_float_audio, convert_stereo_to_mono_audio, FullParams, SamplingStrategy,
-    WhisperContext, WhisperContextParameters,
-};
+
+/// Kept reachable at the historical `whisper::is_english_only_model` path; the
+/// implementation lives with the whisper engine.
+#[allow(unused_imports)]
+pub use crate::engines::whisper_engine::is_english_only_model;
 
 /// Per-model cancellation/pause flags shared with the frontend. Toggling `pause`
 /// makes the download loop stop pulling from the stream; toggling `cancel` aborts
@@ -272,321 +280,6 @@ pub async fn download_model(
     Ok(model)
 }
 
-/// Transcribe audio and return `(text, detected_language)`. `language` is the
-/// user's preferred language code ("en", "hi", …) or "auto"/None for
-/// automatic detection. The detected language is reported back so the frontend
-/// can store it with the transcript.
-pub fn transcribe(
-    models_dir: &Path,
-    audio_path: &Path,
-    model_name: Option<&str>,
-    dictionary: Option<&str>,
-    context: Option<&str>,
-    language: Option<&str>,
-) -> Result<(String, Option<String>), String> {
-    let model_path = selected_model_path(models_dir, model_name)?;
-
-    // Parakeet is a different architecture (FastConformer + TDT) than Whisper and
-    // cannot be loaded by whisper.cpp. Route it to the bundled transcribe.cpp CLI.
-    if is_parakeet_path(&model_path) {
-        return transcribe_with_parakeet(&model_path, audio_path);
-    }
-
-    transcribe_with_backend(&model_path, audio_path, dictionary, context, language)
-}
-
-fn is_parakeet_path(path: &Path) -> bool {
-    path.extension()
-        .map(|extension| extension == "gguf")
-        .unwrap_or(false)
-}
-
-fn parakeet_cli_path() -> Result<PathBuf, String> {
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            if let Some(path) = find_cli_in_dir(dir) {
-                return Ok(path);
-            }
-        }
-    }
-
-    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin");
-    if let Some(path) = find_cli_in_dir(&dev_dir) {
-        return Ok(path);
-    }
-
-    Err(
-        "Parakeet runtime not found. Run `pnpm build:parakeet-asr` and rebuild the app."
-            .to_string(),
-    )
-}
-
-fn find_cli_in_dir(dir: &Path) -> Option<PathBuf> {
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if file_name.starts_with("transcribe-cli") {
-            let path = entry.path();
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-fn transcribe_with_parakeet(model_path: &Path, audio_path: &Path) -> Result<(String, Option<String>), String> {
-    let cli = parakeet_cli_path()?;
-    let model_arg = model_path
-        .to_str()
-        .ok_or_else(|| "Model path contains invalid UTF-8".to_string())?;
-
-    // transcribe.cpp v1 only accepts 16 kHz mono WAV input, but Vox records at
-    // the device's native rate (commonly 48 kHz). Resample to a temp 16 kHz mono
-    // WAV before invoking the runtime.
-    let temp_wav = temp_16khz_wav_path();
-    let resample_result = resample_to_16khz_mono_wav(audio_path, &temp_wav);
-    if let Err(error) = resample_result {
-        let _ = fs::remove_file(&temp_wav);
-        return Err(error);
-    }
-    let audio_arg = temp_wav
-        .to_str()
-        .ok_or_else(|| "Temp audio path contains invalid UTF-8".to_string())?;
-
-    let output = Command::new(&cli)
-        .arg("-m")
-        .arg(model_arg)
-        .arg("-q")
-        .arg("--timestamps")
-        .arg("none")
-        .arg(audio_arg)
-        .output()
-        .map_err(|error| format!("Failed to run Parakeet runtime: {error}"));
-
-    let _ = fs::remove_file(&temp_wav);
-    let output = output?;
-
-    if !output.status.success() {
-        // transcribe-cli writes diagnostics (e.g. "gguf load error") to stdout
-        // rather than stderr, so combine both for a useful message.
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if stderr.is_empty() { stdout } else { stderr };
-        return Err(if detail.is_empty() {
-            format!("Parakeet runtime exited with {}", output.status)
-        } else {
-            format!("Parakeet runtime failed: {detail}")
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let text = extract_transcript(&stdout);
-    if text.is_empty() {
-        return Err("Parakeet returned an empty transcript".to_string());
-    }
-
-    // Parakeet TDT models auto-detect language; the CLI does not expose it.
-    Ok((text, None))
-}
-
-/// transcribe-cli prints a `text: <transcript>` line amid a header block. Extract
-/// just the transcript text so the app pastes clean output.
-fn extract_transcript(stdout: &str) -> String {
-    for line in stdout.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("text:") else {
-            continue;
-        };
-        let rest = rest.trim();
-        if rest.is_empty() || rest == "(empty)" {
-            return String::new();
-        }
-        return rest.to_string();
-    }
-    String::new()
-}
-
-fn temp_16khz_wav_path() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!("vox-parakeet-{}-{nanos}.wav", std::process::id()))
-}
-
-/// Read any WAV and write a fresh 16 kHz mono, 16-bit PCM WAV in its place. This
-/// is required because transcribe.cpp (unlike whisper.cpp) does not resample.
-fn resample_to_16khz_mono_wav(input: &Path, output: &Path) -> Result<(), String> {
-    let audio = read_wav_as_16khz_mono(input)?;
-    if audio.len() < 8_000 {
-        return Err("Recording too short to transcribe".to_string());
-    }
-
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16_000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(output, spec).map_err(|error| error.to_string())?;
-    for sample in audio {
-        let value = (sample * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
-        writer
-            .write_sample(value)
-            .map_err(|error| error.to_string())?;
-    }
-    writer.finalize().map_err(|error| error.to_string())
-}
-
-fn transcribe_with_backend(
-    model_path: &Path,
-    audio_path: &Path,
-    dictionary: Option<&str>,
-    context: Option<&str>,
-    language: Option<&str>,
-) -> Result<(String, Option<String>), String> {
-    let model_path = model_path
-        .to_str()
-        .ok_or_else(|| "Model path contains invalid UTF-8".to_string())?;
-
-    // English-only models (tiny.en, base.en, …) cannot transcribe other
-    // languages; fail fast with a helpful message instead of garbage output.
-    let requested = language.map(str::trim).filter(|value| !value.is_empty());
-    if let Some(requested) = requested {
-        if requested != "auto" && requested != "en" && is_english_only_model(model_path) {
-            return Err(
-                "The selected model is English-only. Download a multilingual model (Whisper Large v3, Turbo, or Parakeet v3) to dictate in other languages."
-                    .to_string(),
-            );
-        }
-    }
-
-    let mut ctx_params = WhisperContextParameters::default();
-    ctx_params.use_gpu(true);
-
-    let whisper_context = WhisperContext::new_with_params(model_path, ctx_params)
-        .or_else(|_| {
-            let mut cpu_params = WhisperContextParameters::default();
-            cpu_params.use_gpu(false);
-            WhisperContext::new_with_params(model_path, cpu_params)
-        })
-        .map_err(|error| error.to_string())?;
-
-    let audio = read_wav_as_16khz_mono(audio_path)?;
-    if audio.len() < 8_000 {
-        return Err("Recording too short to transcribe".to_string());
-    }
-
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 5,
-        patience: -1.0,
-    });
-    // "auto" / "hinglish" → None so whisper.cpp auto-detects the language;
-    // explicit codes ("en", "hi", …) pin the language.
-    let whisper_language = match requested {
-        Some("auto") | Some("hinglish") | None => None,
-        Some(code) => Some(code),
-    };
-    params.set_language(whisper_language);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    params.set_suppress_blank(true);
-    let prompt = dictionary_prompt(dictionary, context);
-    if let Some(prompt) = prompt.as_deref() {
-        params.set_initial_prompt(prompt);
-    }
-    params.set_n_threads(
-        std::thread::available_parallelism()
-            .map(|threads| threads.get().saturating_sub(1).max(1) as i32)
-            .unwrap_or(4),
-    );
-
-    let mut state = whisper_context
-        .create_state()
-        .map_err(|error| error.to_string())?;
-    state
-        .full(params, &audio)
-        .map_err(|error| error.to_string())?;
-
-    let mut text = String::new();
-    for segment in state.as_iter() {
-        text.push_str(&segment.to_string());
-        text.push(' ');
-    }
-
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return Err("Whisper returned an empty transcript".to_string());
-    }
-
-    // Report the language whisper.cpp actually used (auto-detected or pinned).
-    let detected = whisper_rs::get_lang_str(state.full_lang_id_from_state())
-        .map(str::to_string);
-
-    Ok((text, detected))
-}
-
-/// True for whisper.cpp English-only models (names ending in `.en`).
-pub fn is_english_only_model(model_path: &str) -> bool {
-    let name = model_path.rsplit(['/', '\\']).next().unwrap_or(model_path);
-    name.to_ascii_lowercase().contains(".en.") || name.to_ascii_lowercase().ends_with(".en")
-}
-
-fn dictionary_prompt(dictionary: Option<&str>, context: Option<&str>) -> Option<String> {
-    let entries: Vec<String> = dictionary
-        .into_iter()
-        .flat_map(|dictionary| dictionary.lines())
-        .flat_map(dictionary_entries_from_line)
-        .take(100)
-        .collect();
-
-    let context = context.and_then(|context| {
-        let context = context.trim();
-        (!context.is_empty()).then_some(context)
-    });
-
-    if entries.is_empty() && context.is_none() {
-        return None;
-    }
-
-    let mut prompt = String::new();
-    if let Some(context) = context {
-        prompt.push_str(context);
-        prompt.push(' ');
-    }
-    if !entries.is_empty() {
-        prompt.push_str("Prefer these vocabulary terms when relevant: ");
-        prompt.push_str(&entries.join(", "));
-        prompt.push('.');
-    }
-
-    Some(prompt)
-}
-
-fn dictionary_entries_from_line(line: &str) -> Vec<String> {
-    if line.contains('|') {
-        let parts: Vec<&str> = line.split('|').map(str::trim).collect();
-        let word = parts.first().copied().unwrap_or_default();
-        let hint = parts.get(1).copied().unwrap_or_default();
-        if word.is_empty() {
-            Vec::new()
-        } else if hint.is_empty() {
-            vec![word.to_string()]
-        } else {
-            vec![format!("{word} (pronounced {hint})")]
-        }
-    } else {
-        line.split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-}
-
 fn find_model(model_name: &str) -> Result<&'static WhisperModelInfo, String> {
     MODELS
         .iter()
@@ -594,104 +287,41 @@ fn find_model(model_name: &str) -> Result<&'static WhisperModelInfo, String> {
         .ok_or_else(|| format!("Unknown model: {model_name}"))
 }
 
-fn selected_model_path(models_dir: &Path, model_name: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(model_name) = model_name {
-        // Built-in model first, then custom models (file present in the dir).
-        if let Ok(model) = find_model(model_name) {
-            let path = model_path(models_dir, model.name);
-            return path
-                .exists()
-                .then_some(path)
-                .ok_or_else(|| format!("Model is not downloaded: {}", model.display_name));
-        }
-        let custom_path = crate::custom_models::stt_model_path(models_dir, model_name);
-        return custom_path
+/// Resolve a model by name — bundled catalog first, then custom models — and
+/// require it to exist on disk. Used when the user (or the Models page test
+/// widget) explicitly names a model.
+pub fn resolve_model_file(models_dir: &Path, model_name: &str) -> Result<PathBuf, String> {
+    if let Ok(model) = find_model(model_name) {
+        let path = model_path(models_dir, model.name);
+        return path
             .exists()
-            .then_some(custom_path)
-            .ok_or_else(|| format!("Unknown model: {model_name}"));
+            .then_some(path)
+            .ok_or_else(|| format!("Model is not downloaded: {}", model.display_name));
     }
+    let custom_path = crate::custom_models::stt_model_path(models_dir, model_name);
+    return custom_path
+        .exists()
+        .then_some(custom_path)
+        .ok_or_else(|| format!("Unknown model: {model_name}"));
+}
 
-    for model in MODELS.iter().filter(|model| model.recommended) {
-        let path = model_path(models_dir, model.name);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    for model in MODELS {
-        let path = model_path(models_dir, model.name);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    Err("Download a Whisper model before transcribing".to_string())
+/// Model file for a specific bundled model, if downloaded.
+#[allow(dead_code)]
+pub fn bundled_model_path(models_dir: &Path, model_name: &str) -> Option<PathBuf> {
+    let path = model_path(models_dir, model_name);
+    path.exists().then_some(path)
 }
 
 fn model_path(models_dir: &Path, model_name: &str) -> PathBuf {
     // Custom models carry their own extension in the name (e.g. "x.gguf").
-    if model_name.ends_with(".gguf") || model_name.ends_with(".bin") || model_name.ends_with(".ggml") {
+    if model_name.ends_with(".gguf")
+        || model_name.ends_with(".bin")
+        || model_name.ends_with(".ggml")
+    {
         models_dir.join(model_name)
     } else {
         models_dir.join(format!("{model_name}.{}", model_extension(model_name)))
     }
-}
-
-fn read_wav_as_16khz_mono(audio_path: &Path) -> Result<Vec<f32>, String> {
-    let mut reader = hound::WavReader::open(audio_path).map_err(|error| error.to_string())?;
-    let spec = reader.spec();
-
-    if spec.bits_per_sample != 16 {
-        return Err(format!(
-            "Unsupported WAV bit depth: {}. Expected 16-bit PCM.",
-            spec.bits_per_sample
-        ));
-    }
-
-    let samples_i16 = reader
-        .samples::<i16>()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let mut audio = vec![0.0; samples_i16.len()];
-    convert_integer_to_float_audio(&samples_i16, &mut audio).map_err(|error| error.to_string())?;
-
-    let audio = match spec.channels {
-        1 => audio,
-        2 => convert_stereo_to_mono_audio(&audio).map_err(|error| error.to_string())?,
-        channels => average_channels_to_mono(&audio, channels as usize),
-    };
-
-    if spec.sample_rate == 16_000 {
-        Ok(audio)
-    } else {
-        Ok(linear_resample(&audio, spec.sample_rate, 16_000))
-    }
-}
-
-fn average_channels_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
-    samples
-        .chunks(channels)
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect()
-}
-
-fn linear_resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if samples.is_empty() || from_rate == to_rate {
-        return samples.to_vec();
-    }
-
-    let output_len = samples.len() * to_rate as usize / from_rate as usize;
-    let ratio = from_rate as f64 / to_rate as f64;
-
-    (0..output_len)
-        .map(|index| {
-            let source = index as f64 * ratio;
-            let left = source.floor() as usize;
-            let right = (left + 1).min(samples.len() - 1);
-            let fraction = (source - left as f64) as f32;
-            samples[left] * (1.0 - fraction) + samples[right] * fraction
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -699,59 +329,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resamples_48khz_stereo_to_16khz_mono() {
-        let dir = std::env::temp_dir();
-        let input = dir.join("vox-resample-test-in.wav");
-        let output = dir.join("vox-resample-test-out.wav");
+    fn selected_prefers_requested_bundled_model() {
+        let dir = std::env::temp_dir().join("vox-model-select-test");
+        fs::create_dir_all(&dir).unwrap();
+        let target = model_path(&dir, "small");
+        fs::write(&target, b"fake").unwrap();
 
-        // 1s of 48 kHz stereo, 16-bit PCM (48000 frames, 96000 samples).
-        let spec = hound::WavSpec {
-            channels: 2,
-            sample_rate: 48_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(&input, spec).unwrap();
-        for index in 0..48000 {
-            let value = (index % 1000) as i16;
-            writer.write_sample(value).unwrap();
-            writer.write_sample(value).unwrap();
-        }
-        writer.finalize().unwrap();
+        assert_eq!(
+            resolve_model_file(&dir, "small").unwrap(),
+            target,
+            "explicit model selection should resolve even with other models present"
+        );
 
-        resample_to_16khz_mono_wav(&input, &output).unwrap();
-
-        let reader = hound::WavReader::open(&output).unwrap();
-        let out_spec = reader.spec();
-        assert_eq!(out_spec.sample_rate, 16_000);
-        assert_eq!(out_spec.channels, 1);
-        assert_eq!(out_spec.bits_per_sample, 16);
-
-        // 48000 frames at 48 kHz -> 16000 samples at 16 kHz mono.
-        let samples: Vec<i16> = reader.into_samples().map(|s| s.unwrap()).collect();
-        assert_eq!(samples.len(), 16000);
-
-        let _ = std::fs::remove_file(&input);
-        let _ = std::fs::remove_file(&output);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn extracts_transcript_from_cli_output() {
-        let stdout = "\
-audio: /tmp/foo.wav\n\
-  samples: 32000\n\
-  duration: 2.000 s\n\
-model: /path/model.gguf -> ok\n\
-  backend: MTL0\n\
-run: ok\n\
-text: I want to just check it's working or not.\n\
-  realtime: 27x\n";
-        assert_eq!(
-            extract_transcript(stdout),
-            "I want to just check it's working or not."
-        );
+    fn missing_requested_model_is_an_error() {
+        let dir = std::env::temp_dir().join("vox-model-missing-test");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(model_path(&dir, "base"), b"fake").unwrap();
 
-        let empty = "run: ok\ntext: (empty)\n  realtime: 5x\n";
-        assert_eq!(extract_transcript(empty), "");
+        assert!(resolve_model_file(&dir, "medium").is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn custom_model_names_keep_their_extension() {
+        let dir = std::env::temp_dir().join("vox-model-custom-test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = model_path(&dir, "my-model.gguf");
+        fs::write(&path, b"fake").unwrap();
+
+        assert_eq!(resolve_model_file(&dir, "my-model.gguf").unwrap(), path);
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -8,80 +8,139 @@
 
 :root {
     color-scheme: light;
-    --background: #fdfcfc;
-    --foreground: #201d1d;
-    --card: #fdfcfc;
-    --card-foreground: #201d1d;
-    --popover: #fdfcfc;
-    --popover-foreground: #201d1d;
-    --primary: #201d1d;
-    --primary-foreground: #fdfcfc;
-    --secondary: #f1eeee;
-    --secondary-foreground: #201d1d;
-    --muted: #f8f7f7;
-    --muted-foreground: #646262;
-    --accent: #f1eeee;
-    --accent-foreground: #201d1d;
-    --destructive: #ff3b30;
-    --destructive-foreground: #fdfcfc;
-    --border: rgba(15, 0, 0, 0.12);
-    --input: rgba(15, 0, 0, 0.12);
-    --ring: #201d1d;
-    --chart-1: #201d1d;
-    --chart-2: #646262;
-    --chart-3: #9a9898;
-    --chart-4: #302c2c;
-    --chart-5: #424245;
-    --radius: 0.25rem;
-    --sidebar: #fdfcfc;
-    --sidebar-foreground: #201d1d;
-    --sidebar-primary: #201d1d;
-    --sidebar-primary-foreground: #fdfcfc;
-    --sidebar-accent: #f1eeee;
-    --sidebar-accent-foreground: #201d1d;
-    --sidebar-border: rgba(15, 0, 0, 0.12);
-    --sidebar-ring: #201d1d;
+    --background: #ffffff;
+    --foreground: #101214;
+    --card: #ffffff;
+    --card-foreground: #101214;
+    --popover: #ffffff;
+    --popover-foreground: #101214;
+    --primary: #1868db;
+    --primary-foreground: #ffffff;
+    --secondary: #f0f1f2;
+    --secondary-foreground: #101214;
+    --muted: #f0f1f2;
+    --muted-foreground: #42526e;
+    --accent: #e9f2fe;
+    --accent-foreground: #1c2b42;
+    --destructive: #de350b;
+    --destructive-foreground: #ffffff;
+    --border: rgba(16, 18, 20, 0.14);
+    --input: rgba(41, 42, 46, 0.5);
+    --ring: #1868db;
+    --chart-1: #1868db;
+    --chart-2: #42526e;
+    --chart-3: #1c2b42;
+    --chart-4: #b7b9be;
+    --chart-5: #292a2e;
+    --radius: 0.625rem;
+    --sidebar: #ffffff;
+    --sidebar-foreground: #101214;
+    --sidebar-primary: #1868db;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #f0f1f2;
+    --sidebar-accent-foreground: #101214;
+    --sidebar-border: rgba(16, 18, 20, 0.12);
+    --sidebar-ring: #1868db;
+    --chart-background: var(--card);
+    --chart-foreground: var(--foreground);
+    --chart-foreground-muted: var(--muted-foreground);
+    --chart-line-primary: var(--foreground);
+    --chart-line-secondary: color-mix(in oklab, var(--foreground) 45%, var(--background));
+    --chart-crosshair: var(--border);
+    --chart-grid: var(--border);
+    --chart-brush-border: var(--chart-grid);
+    --chart-tooltip-background: color-mix(in oklab, var(--foreground) 88%, transparent);
+    --chart-tooltip-foreground: var(--background);
+    --chart-tooltip-muted: color-mix(in oklab, var(--background) 70%, var(--foreground));
+    --chart-marker-background: var(--card);
+    --chart-marker-border: var(--border);
+    --chart-marker-foreground: var(--foreground);
+    --chart-label: var(--muted-foreground);
+    --chart-scale-01: var(--secondary);
+    --chart-scale-02: color-mix(in oklab, var(--primary) 22%, var(--background));
+    --chart-scale-03: color-mix(in oklab, var(--primary) 45%, var(--background));
+    --chart-scale-04: color-mix(in oklab, var(--primary) 70%, var(--background));
+    --chart-scale-05: var(--primary);
+    --chart-scale-pattern-color: var(--background);
 }
 
 .dark {
     color-scheme: dark;
-    --background: #0d0a0a;
-    --foreground: #f7ede8;
-    --card: #141111;
-    --card-foreground: #f7ede8;
-    --popover: #1a1616;
-    --popover-foreground: #f7ede8;
-    --primary: #f7ede8;
-    --primary-foreground: #0d0a0a;
-    --secondary: #201b1b;
-    --secondary-foreground: #f7ede8;
-    --muted: #181414;
-    --muted-foreground: #9e9590;
-    --accent: #251f1f;
-    --accent-foreground: #f7ede8;
+    --background: #101214;
+    --foreground: #f0f1f2;
+    --card: #16181c;
+    --card-foreground: #f0f1f2;
+    --popover: #1c1f24;
+    --popover-foreground: #f0f1f2;
+    --primary: #4a9bed;
+    --primary-foreground: #ffffff;
+    --secondary: #1c1f24;
+    --secondary-foreground: #f0f1f2;
+    --muted: #1c1f24;
+    --muted-foreground: #9aa0a8;
+    --accent: #232830;
+    --accent-foreground: #f0f1f2;
     --destructive: #ff6b5e;
-    --destructive-foreground: #0d0a0a;
-    --border: rgba(247, 237, 232, 0.12);
-    --input: rgba(247, 237, 232, 0.14);
-    --ring: #f7ede8;
-    --chart-1: #f7ede8;
-    --chart-2: #9e9590;
-    --chart-3: #6b6560;
-    --chart-4: #251f1f;
-    --chart-5: #424245;
-    --sidebar: #0d0a0a;
-    --sidebar-foreground: #f7ede8;
-    --sidebar-primary: #f7ede8;
-    --sidebar-primary-foreground: #0d0a0a;
-    --sidebar-accent: #201b1b;
-    --sidebar-accent-foreground: #f7ede8;
-    --sidebar-border: rgba(247, 237, 232, 0.12);
-    --sidebar-ring: #f7ede8;
+    --destructive-foreground: #101214;
+    --border: rgba(240, 241, 242, 0.14);
+    --input: rgba(240, 241, 242, 0.2);
+    --ring: #4a9bed;
+    --chart-1: #4a9bed;
+    --chart-2: #9aa0a8;
+    --chart-3: #6b7178;
+    --chart-4: #2a2f37;
+    --chart-5: #42526e;
+    --sidebar: #101214;
+    --sidebar-foreground: #f0f1f2;
+    --sidebar-primary: #4a9bed;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #1c1f24;
+    --sidebar-accent-foreground: #f0f1f2;
+    --sidebar-border: rgba(240, 241, 242, 0.12);
+    --sidebar-ring: #4a9bed;
+    --chart-background: var(--card);
+    --chart-foreground: var(--foreground);
+    --chart-foreground-muted: var(--muted-foreground);
+    --chart-line-primary: var(--foreground);
+    --chart-line-secondary: color-mix(in oklab, var(--foreground) 45%, var(--background));
+    --chart-tooltip-background: color-mix(in oklab, var(--foreground) 88%, transparent);
+    --chart-tooltip-foreground: var(--background);
+    --chart-tooltip-muted: color-mix(in oklab, var(--background) 70%, var(--foreground));
+    --chart-crosshair: var(--border);
+    --chart-grid: var(--border);
+    --chart-brush-border: var(--chart-grid);
+    --chart-marker-background: var(--card);
+    --chart-marker-border: var(--border);
+    --chart-marker-foreground: var(--foreground);
+    --chart-label: var(--muted-foreground);
+    --chart-scale-01: var(--secondary);
+    --chart-scale-02: color-mix(in oklab, var(--primary) 22%, var(--background));
+    --chart-scale-03: color-mix(in oklab, var(--primary) 45%, var(--background));
+    --chart-scale-04: color-mix(in oklab, var(--primary) 70%, var(--background));
+    --chart-scale-05: var(--primary);
+    --chart-scale-pattern-color: var(--background);
 }
 
 @theme inline {
     --font-sans: 'JetBrains Mono', 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
     --font-heading: var(--font-sans);
+
+    /* Atlassian brand palette — decorative & editorial colors (safe to use directly) */
+    --color-atlassian-blue: #1868db;
+    --color-midnight-navy: #101214;
+    --color-carbon-edge: #292a2e;
+    --color-slate-current: #1c2b42;
+    --color-muted-indigo: #42526e;
+    --color-pure-white: #ffffff;
+    --color-fog-white: #f0f1f2;
+    --color-ash-gray: #b7b9be;
+    --color-taxicab-yellow: #fca700;
+    --color-lavender-wash: #eed7fc;
+    --color-confetti-gradient: #bf63f3;
+
+    /* Shadows */
+    --shadow-subtle: rgba(9, 30, 66, 0.31) 0px 0px 1px 0px, rgba(9, 30, 66, 0.25) 0px 1px 1px 0px;
+
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -120,6 +179,27 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    --color-chart-scale-pattern-color: var(--chart-scale-pattern-color);
+    --color-chart-scale-05: var(--chart-scale-05);
+    --color-chart-scale-04: var(--chart-scale-04);
+    --color-chart-scale-03: var(--chart-scale-03);
+    --color-chart-scale-02: var(--chart-scale-02);
+    --color-chart-scale-01: var(--chart-scale-01);
+    --color-chart-label: var(--chart-label);
+    --color-chart-marker-foreground: var(--chart-marker-foreground);
+    --color-chart-marker-border: var(--chart-marker-border);
+    --color-chart-marker-background: var(--chart-marker-background);
+    --color-chart-tooltip-muted: var(--chart-tooltip-muted);
+    --color-chart-tooltip-foreground: var(--chart-tooltip-foreground);
+    --color-chart-tooltip-background: var(--chart-tooltip-background);
+    --chart-brush-border: var(--chart-brush-border);
+    --color-chart-grid: var(--chart-grid);
+    --color-chart-crosshair: var(--chart-crosshair);
+    --chart-line-secondary: var(--chart-line-secondary);
+    --chart-line-primary: var(--chart-line-primary);
+    --color-chart-foreground-muted: var(--chart-foreground-muted);
+    --color-chart-foreground: var(--chart-foreground);
+    --color-chart-background: var(--chart-background);
 }
 
 @layer base {
@@ -168,7 +248,7 @@
     }
 
     .page-shell {
-        @apply mx-auto flex min-h-full w-full max-w-6xl flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
+        @apply flex min-h-full w-full flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
     }
 
     .page-header {

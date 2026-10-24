@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, FileText, Mic, Plus, Search, Trash2 } from "@/components/icons";
+import { Check, Copy, FileText, Mic, Plus, Search, Sparkles, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,21 +9,27 @@ import { cn } from "@/lib/utils";
 import {
   deleteNote,
   getNotes,
+  saveCorrections,
   saveNote,
   updateNote,
   type Note,
 } from "@/lib/db";
 import {
+  noteTransform,
   startRecording,
   stopRecording,
   transcribeRecording,
+  type NoteTask,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
 
 const AUTOSAVE_DELAY_MS = 600;
 
 export function NotesPage() {
-  const { selectedModel, dictionary } = useAppStore();
+  const { selectedModel, engine } = useAppStore();
+  // Same rule as home: the pinned model only applies for the Whisper engine
+  // (spec §7 — explicit engine selection is honored).
+  const requestedModel = engine === "whisper" ? selectedModel : undefined;
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [title, setTitle] = useState("");
@@ -35,6 +41,7 @@ export function NotesPage() {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [meetingBusy, setMeetingBusy] = useState<NoteTask | null>(null);
   const saveTimer = useRef<number | null>(null);
 
   const selectNote = (note: Note) => {
@@ -132,6 +139,64 @@ export function NotesPage() {
     window.setTimeout(() => setCopied(false), 1400);
   };
 
+  const createMeetingNote = async () => {
+    setError(null);
+    try {
+      const now = new Date();
+      const noteTitle = `Meeting — ${now.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      })}`;
+      const template = [
+        `# ${noteTitle}`,
+        "",
+        "## Attendees",
+        "- ",
+        "",
+        "## Notes",
+        "",
+        "## Decisions",
+        "",
+        "## Action items",
+        "- [ ] ",
+        "",
+        "## Transcript",
+        "",
+      ].join("\n");
+      const id = await saveNote(noteTitle, template);
+      const rows = await getNotes();
+      setNotes(rows);
+      const created = rows.find((note) => note.id === id);
+      if (created) selectNote(created);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const runMeetingTask = async (task: NoteTask) => {
+    if (!content.trim() || meetingBusy) return;
+    setMeetingBusy(task);
+    setError(null);
+    try {
+      const generated = await noteTransform(task, content);
+      const stamp = new Date().toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const heading =
+        task === "summarizeMeeting" ? "AI summary" : "AI action items";
+      const next = `${content.trimEnd()}\n\n---\n\n## ${heading} · ${stamp}\n\n${generated.trim()}\n`;
+      setContent(next);
+      scheduleSave(title, next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMeetingBusy(null);
+    }
+  };
+
   const toggleDictate = async () => {
     setError(null);
     if (recording) {
@@ -141,14 +206,23 @@ export function NotesPage() {
         if (status.path) {
           const result = await transcribeRecording(
             status.path,
-            selectedModel,
-            dictionary,
+            requestedModel,
             status.appName,
-            status.windowTitle
+            status.windowTitle,
+            status.previewText,
+            status.previewConfidence
           );
           const nextContent = content.trim()
-            ? `${content.trim()}\n\n${result.text}`
+            ? `${content.trim()}\n\n${
+                title.trim().toLowerCase().startsWith("meeting")
+                  ? `### Transcript · ${new Date().toLocaleTimeString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}\n${result.text}`
+                  : result.text
+              }`
             : result.text;
+          await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
           setContent(nextContent);
           scheduleSave(title, nextContent);
         }
@@ -200,6 +274,15 @@ export function NotesPage() {
               aria-label="New note"
             >
               <Plus className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="outline"
+              onClick={() => void createMeetingNote()}
+              aria-label="New meeting note"
+              title="New meeting note"
+            >
+              <Sparkles className="h-4 w-4" />
             </Button>
           </div>
           <ScrollArea className="min-h-0 flex-1">
@@ -292,6 +375,40 @@ export function NotesPage() {
                   {error}
                 </p>
               )}
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/20 px-4 py-2">
+                <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  Meeting tools
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!content.trim() || meetingBusy !== null}
+                  onClick={() => void runMeetingTask("summarizeMeeting")}
+                >
+                  {meetingBusy === "summarizeMeeting" ? (
+                    <Spinner className="size-4" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  Summarize
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!content.trim() || meetingBusy !== null}
+                  onClick={() => void runMeetingTask("extractActionItems")}
+                >
+                  {meetingBusy === "extractActionItems" ? (
+                    <Spinner className="size-4" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                  Action items
+                </Button>
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  Runs on-device
+                </span>
+              </div>
               <div className="min-h-0 flex-1">
                 {preview ? (
                   <ScrollArea className="h-full">
@@ -329,11 +446,29 @@ function renderMarkdown(markdown: string): React.ReactNode[] {
 
   const flushList = (key: string) => {
     if (listItems.length === 0) return;
+    const hasTasks = listItems.some((item) => /^\[[ xX]\](?:\s|$)/.test(item));
     nodes.push(
-      <ul key={key} className="my-2 list-disc space-y-1 pl-5">
-        {listItems.map((item, index) => (
-          <li key={index}>{inlineMarkdown(item)}</li>
-        ))}
+      <ul
+        key={key}
+        className={cn("my-2 space-y-1 pl-5", hasTasks ? "list-none" : "list-disc")}
+      >
+        {listItems.map((item, index) => {
+          const task = /^\[([ xX])\](?:\s+(.*))?$/.exec(item);
+          if (!task) {
+            return <li key={index}>{inlineMarkdown(item)}</li>;
+          }
+          const checked = task[1].toLowerCase() === "x";
+          return (
+            <li key={index} className="flex items-start gap-2">
+              <span aria-hidden className="mt-0.5 select-none text-muted-foreground">
+                {checked ? "☑" : "☐"}
+              </span>
+              <span className={checked ? "text-muted-foreground line-through" : undefined}>
+                {inlineMarkdown(task[2] ?? "")}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     );
     listItems = [];

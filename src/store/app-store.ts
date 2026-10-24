@@ -3,16 +3,12 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { withTimeout } from "@/lib/async";
 import { getSetting, setSetting, getSnippets, saveSnippet, updateSnippet, deleteSnippet, type Snippet } from "@/lib/db";
-import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets } from "@/lib/native";
-import {
-  initAuth as initPocketBaseAuth,
-  signInWithGithub as signInWithGithubOAuth,
-  signOut as signOutPocketBase,
-} from "@/lib/pocketbase";
-import type { RecordModel } from "pocketbase";
+import { migrateLegacyDictionary } from "@/lib/vocabulary";
+import { downloadWhisperModel, pauseWhisperDownload, resumeWhisperDownload, cancelWhisperDownload, setNativeSnippets, getRecommendedEnhancementModel, setInsertionMethod as setNativeInsertionMethod } from "@/lib/native";
 export const HOTKEY_KEY = "hotkey";
 export const ONBOARDING_KEY = "onboarding_complete";
 export const TRIGGER_MODE_KEY = "trigger_mode";
+export const INSERTION_METHOD_KEY = "insertion_method";
 export const SOUND_ENABLED_KEY = "sound_enabled";
 export const SELECTED_MODEL_KEY = "selected_model";
 export const DICTIONARY_KEY = "dictionary";
@@ -27,8 +23,11 @@ export const TRANSCRIPT_RETENTION_KEY = "transcript_retention";
 export const PRIVACY_MODE_KEY = "privacy_mode";
 export const LANGUAGE_KEY = "language";
 export const VOICE_COMMANDS_KEY = "voice_commands_enabled";
+export const LIVE_PREVIEW_ENABLED_KEY = "live_preview_enabled";
 export const WHISPER_MODE_KEY = "whisper_mode";
-export const AUTH_SKIPPED_KEY = "auth_skipped";
+export const ENGINE_KEY = "engine";
+export const ENGINE_FALLBACK_ENABLED_KEY = "engine_fallback_enabled";
+export const ENGINE_FALLBACK_TARGET_KEY = "engine_fallback_target";
 export const DEFAULT_SELECTED_MODEL = "base.en";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
@@ -39,17 +38,25 @@ export interface ModelDownloadProgress {
 }
 
 export type TriggerMode = "toggle" | "pushToTalk" | "handsFree";
+export type InsertionMethod = "typing" | "clipboard";
 export type AppTheme = "system" | "light" | "dark";
 export type TranscriptFormattingMode = "auto" | "plain" | "developer";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
 export type TranscriptRetention = "forever" | "7" | "30" | "90";
 export type DictationLanguage = "auto" | "en" | "hi" | "hinglish";
+/** Which ASR engine to use (spec §6). "auto" lets the router decide. */
+export type TranscriptionEngine = "auto" | "apple" | "whisper" | "parakeet";
+export type EngineFallbackTarget = "apple" | "whisper" | "parakeet";
 export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
+export const DEFAULT_INSERTION_METHOD: InsertionMethod = "typing";
 export const DEFAULT_THEME: AppTheme = "system";
 export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "auto";
 export const DEFAULT_CLEANUP_LEVEL: CleanupLevel = "none";
 export const DEFAULT_TRANSCRIPT_RETENTION: TranscriptRetention = "forever";
 export const DEFAULT_LANGUAGE: DictationLanguage = "auto";
+export const DEFAULT_ENGINE: TranscriptionEngine = "auto";
+export const DEFAULT_ENGINE_FALLBACK_ENABLED = true;
+export const DEFAULT_ENGINE_FALLBACK_TARGET: EngineFallbackTarget = "whisper";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
 export type UpdateStatus =
   | "idle"
@@ -63,16 +70,14 @@ export type UpdateStatus =
 function parseBooleanSetting(value: string | null, fallback: boolean) {
   return value === null ? fallback : value === "true";
 }
-export type AuthStatus = "loading" | "signedOut" | "signedIn" | "skipped";
-
 export interface AppState {
   /** null = not yet loaded from DB */
   onboardingComplete: boolean | null;
   hotkey: string;
   triggerMode: TriggerMode;
+  insertionMethod: InsertionMethod;
   soundEnabled: boolean;
   selectedModel: string;
-  dictionary: string;
   theme: AppTheme;
   widgetEnabled: boolean;
   enhanceIconEnabled: boolean;
@@ -83,24 +88,21 @@ export interface AppState {
   transcriptRetention: TranscriptRetention;
   privacyMode: boolean;
   language: DictationLanguage;
+  engine: TranscriptionEngine;
+  engineFallbackEnabled: boolean;
+  preferredEngineFallback: EngineFallbackTarget;
   voiceCommandsEnabled: boolean;
+  livePreviewEnabled: boolean;
   whisperMode: boolean;
   snippets: Snippet[];
-  // PocketBase auth
-  authStatus: AuthStatus;
-  authUser: RecordModel | null;
-  initAuth: () => Promise<void>;
-  signInWithGithub: () => Promise<void>;
-  skipAuth: () => Promise<void>;
-  signOut: () => Promise<void>;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
   setOnboardingComplete: (value: boolean) => Promise<void>;
   setHotkey: (value: string) => Promise<void>;
   setTriggerMode: (value: TriggerMode) => Promise<void>;
+  setInsertionMethod: (value: InsertionMethod) => Promise<void>;
   setSoundEnabled: (value: boolean) => Promise<void>;
   setSelectedModel: (value: string) => Promise<void>;
-  setDictionary: (value: string) => Promise<void>;
   setTheme: (value: AppTheme) => Promise<void>;
   setWidgetEnabled: (value: boolean) => Promise<void>;
   setEnhanceIconEnabled: (value: boolean) => Promise<void>;
@@ -111,11 +113,20 @@ export interface AppState {
   setTranscriptRetention: (value: TranscriptRetention) => Promise<void>;
   setPrivacyMode: (value: boolean) => Promise<void>;
   setLanguage: (value: DictationLanguage) => Promise<void>;
+  setEngine: (value: TranscriptionEngine) => Promise<void>;
+  setEngineFallbackEnabled: (value: boolean) => Promise<void>;
+  setPreferredEngineFallback: (value: EngineFallbackTarget) => Promise<void>;
   setVoiceCommandsEnabled: (value: boolean) => Promise<void>;
+  setLivePreviewEnabled: (value: boolean) => Promise<void>;
   setWhisperMode: (value: boolean) => Promise<void>;
   loadSnippets: () => Promise<void>;
-  addSnippet: (trigger: string, expansion: string) => Promise<void>;
-  updateSnippet: (id: number, trigger: string, expansion: string) => Promise<void>;
+  addSnippet: (trigger: string, expansion: string, appPattern?: string | null) => Promise<void>;
+  updateSnippet: (
+    id: number,
+    trigger: string,
+    expansion: string,
+    appPattern?: string | null
+  ) => Promise<void>;
   removeSnippet: (id: number) => Promise<void>;
   resetAppState: () => void;
   // Model downloads (global, so status survives screen changes)
@@ -144,9 +155,9 @@ const defaultAppState = {
   onboardingComplete: null,
   hotkey: DEFAULT_HOTKEY,
   triggerMode: DEFAULT_TRIGGER_MODE,
+  insertionMethod: DEFAULT_INSERTION_METHOD,
   soundEnabled: true,
   selectedModel: DEFAULT_SELECTED_MODEL,
-  dictionary: "",
   theme: DEFAULT_THEME,
   widgetEnabled: true,
   enhanceIconEnabled: true,
@@ -157,12 +168,13 @@ const defaultAppState = {
   transcriptRetention: DEFAULT_TRANSCRIPT_RETENTION,
   privacyMode: false,
   language: DEFAULT_LANGUAGE,
+  engine: DEFAULT_ENGINE,
+  engineFallbackEnabled: DEFAULT_ENGINE_FALLBACK_ENABLED,
+  preferredEngineFallback: DEFAULT_ENGINE_FALLBACK_TARGET,
   voiceCommandsEnabled: true,
+  livePreviewEnabled: true,
   whisperMode: false,
   snippets: [],
-  // PocketBase auth
-  authStatus: "loading" as AuthStatus,
-  authUser: null,
   // Model downloads
   downloadingModels: [],
   pausedModels: [],
@@ -224,9 +236,9 @@ export const useAppStore = create<AppState>((set) => ({
         onboarding,
         hotkey,
         triggerMode,
+        insertionMethod,
         soundEnabled,
         selectedModel,
-        dictionary,
         theme,
         widgetEnabled,
         enhanceIconEnabled,
@@ -238,15 +250,19 @@ export const useAppStore = create<AppState>((set) => ({
         privacyMode,
         language,
         voiceCommandsEnabled,
+        livePreviewEnabled,
         whisperMode,
+        engine,
+        engineFallbackEnabled,
+        engineFallbackTarget,
       ] = await withTimeout(
         Promise.all([
           getSetting(ONBOARDING_KEY),
           getSetting(HOTKEY_KEY),
           getSetting(TRIGGER_MODE_KEY),
+          getSetting(INSERTION_METHOD_KEY),
           getSetting(SOUND_ENABLED_KEY),
           getSetting(SELECTED_MODEL_KEY),
-          getSetting(DICTIONARY_KEY),
           getSetting(THEME_KEY),
           getSetting(WIDGET_ENABLED_KEY),
           getSetting(ENHANCE_ICON_ENABLED_KEY),
@@ -258,7 +274,11 @@ export const useAppStore = create<AppState>((set) => ({
           getSetting(PRIVACY_MODE_KEY),
           getSetting(LANGUAGE_KEY),
           getSetting(VOICE_COMMANDS_KEY),
+          getSetting(LIVE_PREVIEW_ENABLED_KEY),
           getSetting(WHISPER_MODE_KEY),
+          getSetting(ENGINE_KEY),
+          getSetting(ENGINE_FALLBACK_ENABLED_KEY),
+          getSetting(ENGINE_FALLBACK_TARGET_KEY),
         ]),
         SETTINGS_HYDRATE_TIMEOUT_MS,
         "Timed out loading app settings"
@@ -270,31 +290,61 @@ export const useAppStore = create<AppState>((set) => ({
       );
       const resolvedWidgetEnabled = parseBooleanSetting(widgetEnabled, true);
       const resolvedEnhanceIconEnabled = parseBooleanSetting(enhanceIconEnabled, true);
+      const resolvedInsertionMethod = parseInsertionMethodSetting(insertionMethod);
+      // A fresh install (no pinned model) gets the model that fits this
+      // machine, so low-memory hardware defaults to the faster 0.5B. Once the
+      // user pins a model, the stored value always wins.
+      let resolvedEnhancementModel = enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL;
+      if (enhancementModel === null) {
+        try {
+          resolvedEnhancementModel = await getRecommendedEnhancementModel();
+        } catch {
+          // Native bridge unavailable — keep the static default.
+        }
+      }
       // Sync to localStorage so the widget window can read it without IPC
       localStorage.setItem(SOUND_ENABLED_KEY, String(resolvedSoundEnabled));
       localStorage.setItem(THEME_KEY, resolvedTheme);
       localStorage.setItem(WIDGET_ENABLED_KEY, String(resolvedWidgetEnabled));
+      const resolvedLivePreview = parseBooleanSetting(livePreviewEnabled, true);
+      localStorage.setItem(LIVE_PREVIEW_ENABLED_KEY, String(resolvedLivePreview));
+      void setNativeInsertionMethod(resolvedInsertionMethod).catch(() => undefined);
       set({
         onboardingComplete: onboarding === "true",
         hotkey: hotkey ?? DEFAULT_HOTKEY,
         triggerMode: parseTriggerModeSetting(triggerMode),
+        insertionMethod: resolvedInsertionMethod,
         soundEnabled: resolvedSoundEnabled,
         selectedModel: selectedModel ?? DEFAULT_SELECTED_MODEL,
-        dictionary: dictionary ?? "",
         theme: resolvedTheme,
         widgetEnabled: resolvedWidgetEnabled,
         enhanceIconEnabled: resolvedEnhanceIconEnabled,
-        enhancementModel: enhancementModel ?? DEFAULT_ENHANCEMENT_MODEL,
+        enhancementModel: resolvedEnhancementModel,
         transcriptFormattingMode: resolvedTranscriptFormattingMode,
         cleanupLevel: parseCleanupLevelSetting(cleanupLevel),
         errorReportingEnabled: parseBooleanSetting(errorReportingEnabled, false),
         transcriptRetention: parseTranscriptRetentionSetting(transcriptRetention),
         privacyMode: parseBooleanSetting(privacyMode, false),
         language: parseLanguageSetting(language),
+        engine: parseEngineSetting(engine),
+        engineFallbackEnabled: parseBooleanSetting(engineFallbackEnabled, DEFAULT_ENGINE_FALLBACK_ENABLED),
+        preferredEngineFallback: parseEngineFallbackTargetSetting(engineFallbackTarget),
         voiceCommandsEnabled: parseBooleanSetting(voiceCommandsEnabled, true),
+        livePreviewEnabled: resolvedLivePreview,
         whisperMode: parseBooleanSetting(whisperMode, false),
       });
-    } catch (error) {
+          // One-time migration: fold the legacy free-text dictionary into the
+      // Vocabulary Packs Personal pack, then clear the legacy setting.
+      try {
+        const legacyDictionary = await getSetting(DICTIONARY_KEY);
+        if (legacyDictionary && legacyDictionary.trim()) {
+          await migrateLegacyDictionary(legacyDictionary);
+          await setSetting(DICTIONARY_KEY, "");
+        }
+      } catch {
+        // Migration is best-effort; never block hydration.
+      }
+} catch (error) {
       console.error("Failed to hydrate app settings", error);
       localStorage.setItem(SOUND_ENABLED_KEY, String(true));
       localStorage.setItem(THEME_KEY, DEFAULT_THEME);
@@ -314,6 +364,11 @@ export const useAppStore = create<AppState>((set) => ({
     await setSetting(TRIGGER_MODE_KEY, value);
     set({ triggerMode: value });
   },
+  setInsertionMethod: async (value) => {
+    await setSetting(INSERTION_METHOD_KEY, value);
+    await setNativeInsertionMethod(value).catch(() => undefined);
+    set({ insertionMethod: value });
+  },
   setSoundEnabled: async (value) => {
     await setSetting(SOUND_ENABLED_KEY, String(value));
     // Sync to localStorage so the widget window picks it up immediately
@@ -323,10 +378,6 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedModel: async (value) => {
     await setSetting(SELECTED_MODEL_KEY, value);
     set({ selectedModel: value });
-  },
-  setDictionary: async (value) => {
-    await setSetting(DICTIONARY_KEY, value);
-    set({ dictionary: value });
   },
   setTheme: async (value) => {
     await setSetting(THEME_KEY, value);
@@ -376,9 +427,26 @@ export const useAppStore = create<AppState>((set) => ({
     await setSetting(LANGUAGE_KEY, value);
     set({ language: value });
   },
+  setEngine: async (value) => {
+    await setSetting(ENGINE_KEY, value);
+    set({ engine: value });
+  },
+  setEngineFallbackEnabled: async (value) => {
+    await setSetting(ENGINE_FALLBACK_ENABLED_KEY, String(value));
+    set({ engineFallbackEnabled: value });
+  },
+  setPreferredEngineFallback: async (value) => {
+    await setSetting(ENGINE_FALLBACK_TARGET_KEY, value);
+    set({ preferredEngineFallback: value });
+  },
   setVoiceCommandsEnabled: async (value) => {
     await setSetting(VOICE_COMMANDS_KEY, String(value));
     set({ voiceCommandsEnabled: value });
+  },
+  setLivePreviewEnabled: async (value) => {
+    await setSetting(LIVE_PREVIEW_ENABLED_KEY, String(value));
+    localStorage.setItem(LIVE_PREVIEW_ENABLED_KEY, String(value));
+    set({ livePreviewEnabled: value });
   },
   setWhisperMode: async (value) => {
     await setSetting(WHISPER_MODE_KEY, String(value));
@@ -387,45 +455,12 @@ export const useAppStore = create<AppState>((set) => ({
   loadSnippets: async () => {
     await syncSnippetsToNative();
   },
-  initAuth: async () => {
-    try {
-      const user = await initPocketBaseAuth();
-      if (user) {
-        set({ authUser: user, authStatus: "signedIn" });
-        return;
-      }
-      // No valid session: if the user previously skipped sign-in, keep the
-      // app usable without an account instead of showing the login gate again.
-      const skipped = await getSetting(AUTH_SKIPPED_KEY);
-      set({
-        authUser: null,
-        authStatus: skipped === "true" ? "skipped" : "signedOut",
-      });
-    } catch (error) {
-      console.error("Failed to initialize PocketBase auth", error);
-      set({ authUser: null, authStatus: "signedOut" });
-    }
-  },
-  signInWithGithub: async () => {
-    const user = await signInWithGithubOAuth();
-    // A successful sign-in clears any previous skip.
-    await setSetting(AUTH_SKIPPED_KEY, "false");
-    set({ authUser: user, authStatus: "signedIn" });
-  },
-  skipAuth: async () => {
-    await setSetting(AUTH_SKIPPED_KEY, "true");
-    set({ authUser: null, authStatus: "skipped" });
-  },
-  signOut: async () => {
-    signOutPocketBase();
-    set({ authUser: null, authStatus: "signedOut" });
-  },
-  addSnippet: async (trigger, expansion) => {
-    await saveSnippet(trigger, expansion);
+  addSnippet: async (trigger, expansion, appPattern) => {
+    await saveSnippet(trigger, expansion, appPattern);
     await syncSnippetsToNative();
   },
-  updateSnippet: async (id, trigger, expansion) => {
-    await updateSnippet(id, trigger, expansion);
+  updateSnippet: async (id, trigger, expansion, appPattern) => {
+    await updateSnippet(id, trigger, expansion, appPattern);
     await syncSnippetsToNative();
   },
   removeSnippet: async (id) => {
@@ -433,13 +468,15 @@ export const useAppStore = create<AppState>((set) => ({
     await syncSnippetsToNative();
   },
   resetAppState: () => {
+    void setNativeInsertionMethod(defaultAppState.insertionMethod).catch(() => undefined);
     localStorage.setItem(SOUND_ENABLED_KEY, String(defaultAppState.soundEnabled));
     localStorage.setItem(THEME_KEY, defaultAppState.theme);
     localStorage.setItem(WIDGET_ENABLED_KEY, String(defaultAppState.widgetEnabled));
-    // Full factory reset: drop the account session too so the app returns to
-    // the first-launch sign-in gate instead of hanging on the loading screen.
-    signOutPocketBase();
-    set({ ...defaultAppState, onboardingComplete: false, authStatus: "signedOut", authUser: null });
+    localStorage.setItem(
+      LIVE_PREVIEW_ENABLED_KEY,
+      String(defaultAppState.livePreviewEnabled)
+    );
+    set({ ...defaultAppState, onboardingComplete: false });
   },
   beginModelDownload: (name) =>
     set((state) =>
@@ -563,6 +600,11 @@ function parseTriggerModeSetting(value: string | null): TriggerMode {
     ? value
     : DEFAULT_TRIGGER_MODE;
 }
+function parseInsertionMethodSetting(value: string | null): InsertionMethod {
+  return value === "clipboard" || value === "typing"
+    ? value
+    : DEFAULT_INSERTION_METHOD;
+}
 function parseTranscriptFormattingModeSetting(
   value: string | null
 ): TranscriptFormattingMode {
@@ -585,6 +627,16 @@ function parseLanguageSetting(value: string | null): DictationLanguage {
     ? value
     : DEFAULT_LANGUAGE;
 }
+function parseEngineSetting(value: string | null): TranscriptionEngine {
+  return value === "apple" || value === "whisper" || value === "parakeet" || value === "auto"
+    ? value
+    : DEFAULT_ENGINE;
+}
+function parseEngineFallbackTargetSetting(value: string | null): EngineFallbackTarget {
+  return value === "apple" || value === "whisper" || value === "parakeet"
+    ? value
+    : DEFAULT_ENGINE_FALLBACK_TARGET;
+}
 
 /** Reload snippets from SQLite into the store and push them to the Rust side
  * so background hotkey transcriptions can expand them. */
@@ -592,6 +644,10 @@ async function syncSnippetsToNative() {
   const rows = await getSnippets();
   useAppStore.setState({ snippets: rows });
   await setNativeSnippets(
-    rows.map(({ trigger, expansion }) => ({ trigger, expansion }))
+    rows.map(({ trigger, expansion, app_pattern }) => ({
+      trigger,
+      expansion,
+      appPattern: app_pattern,
+    }))
   );
 }

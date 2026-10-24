@@ -1,6 +1,8 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
+import { hideWidget } from "@/lib/native";
+import { X } from "@/components/icons";
 import "./widget.css";
 
 /* ------------------------------------------------------------------ */
@@ -8,8 +10,6 @@ import "./widget.css";
 /* ------------------------------------------------------------------ */
 
 const BAR_COUNT = 7;
-const BAR_MIN_HEIGHT = 7;
-const BAR_HEIGHT_RANGE = 27;
 const THEME_KEY = "theme";
 
 type WidgetMode = "idle" | "recording" | "transcribing" | "done" | "error";
@@ -18,6 +18,11 @@ interface WidgetState {
   mode: WidgetMode;
   message: string;
   elapsedSeconds?: number;
+  showEnhance?: boolean;
+  /** Active app detected at recording start (e.g. "Visual Studio Code"). */
+  appName?: string | null;
+  /** Active window title (e.g. "user.service.ts — my-project — VS Code"). */
+  windowTitle?: string | null;
 }
 
 interface AudioLevelPayload {
@@ -35,13 +40,41 @@ interface AudioBarsPayload {
 function formatElapsed(s: number): string {
   const m = Math.floor(s / 60);
   const sec = s % 60;
-  return m > 0
-    ? `${m}:${String(sec).padStart(2, "0")}`
-    : `${sec}s`;
+  return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `${sec}s`;
 }
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Build a compact "what am I doing right now" label from the detected app
+ * context: "Visual Studio Code · user.service.ts", "WhatsApp",
+ * "Google Chrome · Gmail - rajeshwar@gmail.com". Returns null when no context
+ * was detected (e.g. non-macOS or no frontmost app).
+ */
+function buildContextLabel(
+  appName?: string | null,
+  windowTitle?: string | null
+): string | null {
+  const app = appName?.trim();
+  const title = windowTitle?.trim();
+  if (!app && !title) return null;
+
+  if (!app) return title || null;
+  if (!title) return app;
+
+  // Skip redundant titles (WhatsApp window titled "WhatsApp").
+  if (title.toLowerCase() === app.toLowerCase()) return app;
+
+  // Editor titles: "user.service.ts — my-project — Visual Studio Code" →
+  // show the file name instead of the full title.
+  const first = title.split(" — ")[0]?.split(" - ")[0]?.trim();
+  const looksLikeFile =
+    !!first && (first.includes(".") || first.includes("/") || first.includes("\\"));
+  if (looksLikeFile && first !== app) return `${app} · ${first}`;
+
+  return `${app} · ${title}`;
 }
 
 function shapeVoiceLevel(value: number): number {
@@ -68,7 +101,34 @@ function mapAudioBarsToMeter(bars: number[]): number[] {
 }
 
 /* ------------------------------------------------------------------ */
-/*  WaveformBars                                                      */
+/*  Icons                                                             */
+/* ------------------------------------------------------------------ */
+
+function CheckIcon() {
+  return (
+    <svg className="widget-status-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.2 8.4 6.6 11.8 12.8 4.6"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg className="widget-status-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 5.2v3.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="8" cy="11.6" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  VoiceDots                                                         */
 /* ------------------------------------------------------------------ */
 
 function VoiceDots({
@@ -76,66 +136,108 @@ function VoiceDots({
   meterLevels,
   audioLevel,
   elapsed,
+  message,
+  contextLabel,
+  onClose,
 }: {
   mode: WidgetMode;
   meterLevels: number[];
   audioLevel: number;
   elapsed: number | undefined;
+  message: string;
+  contextLabel: string | null;
+  onClose: () => void;
 }) {
+  const isRecording = mode === "recording";
+
   // Glow intensity scales with audio level during recording
-  const glowAlpha =
-    mode === "recording"
-      ? Math.min(0.5, Math.max(0, audioLevel - 0.002) * 0.9 + 0.03)
-      : mode === "transcribing"
-        ? 0.1
-        : 0;
+  const glowAlpha = isRecording
+    ? Math.min(0.35, Math.max(0, audioLevel - 0.002) * 0.6 + 0.02)
+    : mode === "transcribing"
+      ? 0.08
+      : 0;
 
   return (
-    <div className="widget-voice-container">
-      {/* Theme-aware Vox logo (dark mark on light, light mark on dark) */}
-      <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
-      <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
-      <div
-        className="widget-glow"
-        style={{ opacity: glowAlpha }}
-      />
-
-      {mode === "transcribing" ? (
-        <div className="widget-transcribing-wrap">
-          <span
-            className="widget-shimmer-text"
-            data-text="Transcribing"
-          >
-            Transcribing
-          </span>
+    <>
+      <div className="widget-voice-container">
+        {/* Theme-aware Vox logo (light mark on light, dark mark on dark) */}
+        <div className="widget-logo-wrap">
+          <img src="/logo-dark.png" alt="" className="widget-logo widget-logo-dark" />
+          <img src="/logo-light.png" alt="" className="widget-logo widget-logo-light" />
         </div>
-      ) : (
-        <div className="widget-bars">
-          {Array.from({ length: BAR_COUNT }).map((_, i) => {
-            const level = mode === "recording" ? shapeVoiceLevel(meterLevels[i] ?? 0) : 0;
-            const style = {
-              height: `${(BAR_MIN_HEIGHT + level * BAR_HEIGHT_RANGE).toFixed(1)}px`,
-              opacity: mode === "recording" ? 0.46 + level * 0.54 : 0.72,
-            };
 
-            return (
-              <div
-                key={i}
-                className="widget-bar"
-                style={style}
-              />
-            );
-          })}
-        </div>
-      )}
+        <div className="widget-glow" style={{ opacity: glowAlpha }} />
 
-      {/* Timer (recording only) */}
-      {mode === "recording" && elapsed !== undefined && elapsed > 0 && (
-        <span className="widget-timer">
-          {formatElapsed(elapsed)}
+        {mode === "transcribing" && (
+          <div className="widget-transcribing-wrap">
+            <span className="widget-shimmer-text" data-text="Transcribing…">
+              Transcribing…
+            </span>
+          </div>
+        )}
+
+        {mode === "done" && (
+          <div className="widget-done-wrap">
+            <div className="widget-status widget-status-done">
+              <CheckIcon />
+              <span className="widget-status-text">{message || "Done"}</span>
+            </div>
+            <button
+              type="button"
+              className="widget-close-btn"
+              onClick={onClose}
+              onMouseDown={(event) => event.preventDefault()}
+              aria-label="Close"
+            >
+              <X className="widget-action-icon" />
+            </button>
+          </div>
+        )}
+
+        {mode === "error" && (
+          <div className="widget-status widget-status-error">
+            <AlertIcon />
+            <span className="widget-status-text">{message || "Something went wrong"}</span>
+          </div>
+        )}
+
+        {isRecording && (
+          <>
+            <div className="widget-bars">
+              {Array.from({ length: BAR_COUNT }).map((_, i) => {
+                const level = shapeVoiceLevel(meterLevels[i] ?? 0);
+                return (
+                  <div
+                    key={i}
+                    className="widget-bar"
+                    style={{
+                      height: `${(6 + level * 26).toFixed(1)}px`,
+                      opacity: 0.5 + level * 0.5,
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            {elapsed !== undefined && elapsed > 0 && (
+              <span className="widget-timer">{formatElapsed(elapsed)}</span>
+            )}
+
+            {message && message !== "Listening…" && (
+              <span className="widget-mode-label">{message}</span>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Live app-context line: what the user is doing right now */}
+      {isRecording && contextLabel && (
+        <span className="widget-context" role="status">
+          <span className="widget-context-dot" aria-hidden="true" />
+          <span className="widget-context-text">{contextLabel}</span>
         </span>
       )}
-    </div>
+    </>
   );
 }
 
@@ -284,9 +386,9 @@ export function Widget() {
     };
   }, []);
 
-  const isActive =
-    state.mode === "recording" ||
-    state.mode === "transcribing";
+  const isActive = state.mode === "recording" || state.mode === "transcribing";
+  const isRecording = state.mode === "recording";
+  const contextLabel = buildContextLabel(state.appName, state.windowTitle);
 
   const isVisible =
     state.mode === "recording" ||
@@ -294,14 +396,23 @@ export function Widget() {
     state.mode === "done" ||
     state.mode === "error";
 
+  const close = () => {
+    void hideWidget().catch(() => {});
+  };
+
   return (
     <div className="widget-root">
-      <div className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"}`}>
+      <div
+        className={`widget-capsule ${isActive ? "widget-active" : ""} ${isVisible ? "widget-visible" : "widget-hidden"} ${isRecording && contextLabel ? "widget-has-context" : ""}`}
+      >
         <VoiceDots
           mode={state.mode}
           meterLevels={meterLevels}
           audioLevel={audioLevel}
           elapsed={state.elapsedSeconds}
+          message={state.message}
+          contextLabel={contextLabel}
+          onClose={close}
         />
       </div>
     </div>

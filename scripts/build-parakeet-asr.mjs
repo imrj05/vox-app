@@ -42,13 +42,20 @@ execSync(`cmake --build ${buildDir} --config Release --target transcribe-cli -j`
   stdio: "inherit",
 });
 
-const buildBinDir =
+// Locate the built binary. CMake's runtime output directory is `bin/`, and on
+// Windows (multi-config MSBuild) the per-config subfolder is `bin/Release/`.
+const candidates =
   process.platform === "win32"
-    ? path.join(buildDir, "Release")
-    : path.join(buildDir, "bin");
-const source = path.join(buildBinDir, `transcribe-cli${ext}`);
-if (!fs.existsSync(source)) {
-  console.error(`transcribe-cli binary not found at ${source}`);
+    ? [
+        path.join(buildDir, "bin", "Release", `transcribe-cli${ext}`),
+        path.join(buildDir, "Release", `transcribe-cli${ext}`),
+      ]
+    : [path.join(buildDir, "bin", `transcribe-cli${ext}`)];
+const source = candidates.find((candidate) => fs.existsSync(candidate));
+if (!source) {
+  console.error(
+    `transcribe-cli binary not found (tried: ${candidates.join(", ")})`
+  );
   process.exit(1);
 }
 

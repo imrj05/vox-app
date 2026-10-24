@@ -282,6 +282,9 @@ jobs:
       - name: Stage text enhancement sidecar
         run: pnpm build:text-enhance-sidecar
 
+      - name: Stage Parakeet ASR sidecar
+        run: pnpm build:parakeet-asr
+
       - name: Build desktop app
         run: pnpm tauri build --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.ci.conf.json
 

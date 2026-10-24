@@ -44,6 +44,29 @@ async function migrate(db: Database) {
   `);
   await db.execute("ALTER TABLE transcripts ADD COLUMN app_name TEXT").catch(() => {});
   await db.execute("ALTER TABLE transcripts ADD COLUMN duration_seconds INTEGER").catch(() => {});
+  await db.execute("ALTER TABLE transcripts ADD COLUMN raw_text TEXT").catch(() => {});
+  await db.execute("ALTER TABLE transcripts ADD COLUMN language TEXT").catch(() => {});
+
+  // snippets table — voice-triggered text expansion
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS snippets (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      trigger    TEXT NOT NULL,
+      expansion  TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `);
+
+  // notes table — scratchpad / voice notes
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      title      TEXT NOT NULL,
+      content    TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
 }
 
 // ── Settings helpers ───────────────────────────────────────────────────────────
@@ -73,6 +96,8 @@ export interface TranscriptRow {
   audio_path: string | null;
   app_name: string | null;
   duration_seconds: number | null;
+  raw_text: string | null;
+  language: string | null;
   created_at: number;
 }
 
@@ -80,19 +105,21 @@ export async function saveTranscript(
   text: string,
   audioPath?: string,
   appName?: string | null,
-  durationSeconds?: number | null
+  durationSeconds?: number | null,
+  rawText?: string | null,
+  language?: string | null
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
-    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, created_at) VALUES ($1, $2, $3, $4, $5)",
-    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, Date.now()]
+    "INSERT INTO transcripts (text, audio_path, app_name, duration_seconds, raw_text, language, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [text, audioPath ?? null, appName ?? null, durationSeconds ?? null, rawText ?? null, language ?? null, Date.now()]
   );
 }
 
 export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
   const db = await getDb();
   return db.select<TranscriptRow[]>(
-    "SELECT id, text, audio_path, app_name, duration_seconds, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
+    "SELECT id, text, audio_path, app_name, duration_seconds, raw_text, language, created_at FROM transcripts ORDER BY created_at DESC LIMIT $1",
     [limit]
   );
 }
@@ -102,13 +129,123 @@ export async function deleteTranscript(id: number): Promise<void> {
   await db.execute("DELETE FROM transcripts WHERE id = $1", [id]);
 }
 
+export async function updateTranscriptText(id: number, text: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("UPDATE transcripts SET text = $1 WHERE id = $2", [text, id]);
+}
+
 export async function clearTranscripts(): Promise<void> {
   const db = await getDb();
   await db.execute("DELETE FROM transcripts");
+}
+
+/**
+ * Delete transcripts older than `olderThanDays` days. Returns the number of
+ * rows removed. Used by configurable transcript retention.
+ */
+export async function pruneTranscripts(olderThanDays: number): Promise<number> {
+  const db = await getDb();
+  const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+  const result = await db.execute(
+    "DELETE FROM transcripts WHERE created_at < $1",
+    [cutoff]
+  );
+  return result.rowsAffected;
 }
 
 export async function clearAppData(): Promise<void> {
   const db = await getDb();
   await db.execute("DELETE FROM transcripts");
   await db.execute("DELETE FROM settings");
+  await db.execute("DELETE FROM snippets");
+  await db.execute("DELETE FROM notes");
+}
+
+// ── Note helpers ──────────────────────────────────────────────────────────────
+
+export interface Note {
+  id: number;
+  title: string;
+  content: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function getNotes(): Promise<Note[]> {
+  const db = await getDb();
+  return db.select<Note[]>(
+    "SELECT id, title, content, created_at, updated_at FROM notes ORDER BY updated_at DESC"
+  );
+}
+
+export async function getNote(id: number): Promise<Note | null> {
+  const db = await getDb();
+  const rows = await db.select<Note[]>(
+    "SELECT id, title, content, created_at, updated_at FROM notes WHERE id = $1",
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+export async function saveNote(title: string, content: string): Promise<number> {
+  const db = await getDb();
+  const now = Date.now();
+  const result = await db.execute(
+    "INSERT INTO notes (title, content, created_at, updated_at) VALUES ($1, $2, $3, $4)",
+    [title, content, now, now]
+  );
+  return result.lastInsertId ?? Date.now();
+}
+
+export async function updateNote(id: number, title: string, content: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("UPDATE notes SET title = $1, content = $2, updated_at = $3 WHERE id = $4", [
+    title,
+    content,
+    Date.now(),
+    id,
+  ]);
+}
+
+export async function deleteNote(id: number): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM notes WHERE id = $1", [id]);
+}
+
+// ── Snippet helpers ─────────────────────────────────────────────────────────────
+
+export interface Snippet {
+  id: number;
+  trigger: string;
+  expansion: string;
+  created_at: number;
+}
+
+export async function getSnippets(): Promise<Snippet[]> {
+  const db = await getDb();
+  return db.select<Snippet[]>(
+    "SELECT id, trigger, expansion, created_at FROM snippets ORDER BY created_at ASC"
+  );
+}
+
+export async function saveSnippet(trigger: string, expansion: string): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "INSERT INTO snippets (trigger, expansion, created_at) VALUES ($1, $2, $3)",
+    [trigger, expansion, Date.now()]
+  );
+}
+
+export async function updateSnippet(id: number, trigger: string, expansion: string): Promise<void> {
+  const db = await getDb();
+  await db.execute("UPDATE snippets SET trigger = $1, expansion = $2 WHERE id = $3", [
+    trigger,
+    expansion,
+    id,
+  ]);
+}
+
+export async function deleteSnippet(id: number): Promise<void> {
+  const db = await getDb();
+  await db.execute("DELETE FROM snippets WHERE id = $1", [id]);
 }

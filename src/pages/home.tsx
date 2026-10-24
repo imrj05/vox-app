@@ -38,7 +38,7 @@ const AnalyticsPanels = lazy(() =>
 );
 
 export function HomePage() {
-  const { hotkey, setHotkey, selectedModel, dictionary } = useAppStore();
+  const { hotkey, setHotkey, selectedModel, dictionary, triggerMode } = useAppStore();
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [recordingStatus, setRecordingStatus] =
     useState<RecordingStatus | null>(null);
@@ -48,6 +48,7 @@ export function HomePage() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryPath, setRetryPath] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [recordingBusy, setRecordingBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -78,7 +79,7 @@ export function HomePage() {
 
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
     setTranscriptionResult(result);
-    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds);
+    await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.language ?? "en");
     await deleteRecordingFile(result.audioPath).catch(() => {});
     setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
   };
@@ -140,6 +141,69 @@ export function HomePage() {
     };
   }, []);
 
+  // Surface background-flow transcription failures (hotkey path) with a retry
+  // path so the user can re-run transcription on the kept recording file.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen<{
+      path?: string | null;
+      error: string;
+      appName?: string | null;
+      windowTitle?: string | null;
+    }>("vox-transcription-error", (event) => {
+      const { path, error: message, appName, windowTitle } = event.payload;
+      setTranscribing(false);
+      setRecordingBusy(false);
+      setError(message);
+      if (path) {
+        setRetryPath(path);
+        setRecordingStatus((prev) => ({
+          isRecording: false,
+          path,
+          appName: appName ?? prev?.appName ?? null,
+          windowTitle: windowTitle ?? prev?.windowTitle ?? null,
+          durationSeconds: prev?.durationSeconds ?? null,
+        }));
+      }
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Hands-free mode: each auto-segmented utterance is transcribed in the
+  // background and emitted here. Save it to history without touching the
+  // recording state (the session is still live).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen<{
+      text: string;
+      rawText?: string | null;
+      appName?: string | null;
+      language?: string | null;
+    }>("vox-hands-free-segment", async (event) => {
+      const { text, rawText, appName, language } = event.payload;
+      if (!text?.trim()) return;
+      try {
+        await saveTranscript(text, undefined, appName ?? null, null, rawText ?? null, language ?? "en");
+        setHistory(await getTranscripts(ANALYTICS_HISTORY_LIMIT));
+      } catch {
+        // DB errors are non-fatal; the text was already inserted.
+      }
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   const checkEngine = async () => {
     setChecking(true);
     setError(null);
@@ -157,13 +221,14 @@ export function HomePage() {
   const toggleRecording = async () => {
     setRecordingBusy(true);
     setError(null);
-    let cleanupPath: string | null = null;
+    setRetryPath(null);
+    let failedPath: string | null = null;
 
     try {
       if (recordingStatus?.isRecording) {
         const status = await stopRecording();
         setRecordingStatus(status);
-        cleanupPath = status.path;
+        failedPath = status.path;
 
         if (status.path) {
           setTranscribing(true);
@@ -181,15 +246,16 @@ export function HomePage() {
         return;
       }
 
-      const status = await startRecording();
+      const status = await startRecording(triggerMode === "handsFree");
       setRecordingStatus(status);
 
       if (status.isRecording) {
         setTranscriptionResult(null);
       }
     } catch (err) {
-      if (cleanupPath) {
-        await deleteRecordingFile(cleanupPath).catch(() => {});
+      // Keep the recording file so the user can retry transcription.
+      if (failedPath) {
+        setRetryPath(failedPath);
       }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -215,8 +281,35 @@ export function HomePage() {
       result.appName = recordingStatus.appName;
       result.durationSeconds = recordingStatus.durationSeconds;
       await applyTranscriptionResult(result);
+      setRetryPath(null);
     } catch (err) {
-      await deleteRecordingFile(recordingStatus.path).catch(() => {});
+      // Keep the recording file so the user can retry transcription.
+      setRetryPath(recordingStatus.path);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const retryTranscription = async () => {
+    if (!retryPath) return;
+
+    setTranscribing(true);
+    setError(null);
+
+    try {
+      const result = await transcribeRecording(
+        retryPath,
+        selectedModel,
+        dictionary,
+        recordingStatus?.appName ?? null,
+        recordingStatus?.windowTitle ?? null
+      );
+      result.appName = recordingStatus?.appName ?? null;
+      result.durationSeconds = recordingStatus?.durationSeconds ?? null;
+      await applyTranscriptionResult(result);
+      setRetryPath(null);
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTranscribing(false);
@@ -416,7 +509,20 @@ export function HomePage() {
 
         {error && (
           <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="min-w-0">{error}</span>
+              {retryPath && !transcribing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void retryTranscription()}
+                  className="shrink-0"
+                >
+                  <Wand2 className="h-4 w-4" />
+                  Retry transcription
+                </Button>
+              )}
+            </div>
           </div>
         )}
 

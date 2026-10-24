@@ -25,6 +25,25 @@ export function EnhanceOverlay() {
   const [message, setMessage] = useState("Enhance text");
   const resetTimer = useRef<number | null>(null);
 
+  // Theme-aware styling, matching the widget window.
+  useEffect(() => {
+    const applyTheme = () => {
+      const storedTheme = localStorage.getItem("theme");
+      const theme = storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system";
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme =
+        theme === "dark" || (theme === "system" && prefersDark) ? "dark" : "light";
+    };
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    applyTheme();
+    media.addEventListener("change", applyTheme);
+    window.addEventListener("storage", applyTheme);
+    return () => {
+      media.removeEventListener("change", applyTheme);
+      window.removeEventListener("storage", applyTheme);
+    };
+  }, []);
+
   useEffect(() => {
     let unlistenOverlay: (() => void) | undefined;
     let unlistenState: (() => void) | undefined;

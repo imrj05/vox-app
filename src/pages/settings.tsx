@@ -6,12 +6,15 @@ import {
   type SettingsSection,
 } from "@/components/settings-sections";
 import {
+  AccountSection,
   DictionarySection,
   DataSection,
   GeneralSection,
   ModelsSection,
   PermissionsSection,
+  PrivacySection,
   ShortcutsSection,
+  SnippetsSection,
 } from "@/components/settings-modal";
 
 const settingsPageSections = settingsSections.filter((section) => section.id !== "about");
@@ -23,12 +26,18 @@ export function SettingsPage() {
     switch (activeSection) {
       case "general":
         return <GeneralSection />;
+      case "account":
+        return <AccountSection />;
       case "models":
         return <ModelsSection />;
       case "dictionary":
         return <DictionarySection />;
+      case "snippets":
+        return <SnippetsSection />;
       case "data":
         return <DataSection />;
+      case "privacy":
+        return <PrivacySection />;
       case "permissions":
         return <PermissionsSection />;
       case "shortcuts":

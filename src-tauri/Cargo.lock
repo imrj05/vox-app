@@ -6284,7 +6284,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vox"
-version = "0.0.10"
+version = "0.0.9"
 dependencies = [
  "arboard",
  "chrono",
@@ -6293,6 +6293,7 @@ dependencies = [
  "cpal",
  "enigo",
  "hound",
+ "libc",
  "objc",
  "objc2 0.6.4",
  "objc2-app-kit",

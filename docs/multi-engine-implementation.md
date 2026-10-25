@@ -52,7 +52,8 @@ Tauri command (transcribe_recording)
 engines::route_transcribe()          ← single funnel, spec §31
   ├── explicit model?  → engine_for_model() (file format decides)
   ├── explicit engine? → engine.pick_model()
-  └── "auto"           → choose_auto_engine()  (§7 strategy)
+  └── "auto"           → choose_auto_engine()  (§7 strategy, backend only —
+                          the Models page selects a model, never "auto")
         │
         │  failure + fallback enabled → fallback engine chain (§8),
         │  switch reported via on_fallback → transcription_engine_fallback event
@@ -76,7 +77,9 @@ chain, and auto mode — no frontend change.
 
 ## 4. Default engine
 
-`auto`: English + Parakeet installed → Parakeet · otherwise Whisper (multilingual,
+`auto` (no longer offered in the UI — keeping a model selected on the Models page
+is the only way to choose an engine): English + Parakeet installed → Parakeet ·
+otherwise Whisper (multilingual,
 "auto"/"hi"/"hinglish" always Whisper) · no third-party model installed → Apple
 Speech · failures degrade through registered engines by availability. Explicit
 model choice (Models page) always wins. Explicit engine is never silently
@@ -132,8 +135,8 @@ Accessibility/Input-Monitoring as before. Apple Speech needs no model download.
 
 ## 15. Licenses to review
 
-- Whisper GGML models — OpenAI Whisper MIT/Apache lineage (check per-file).
-- Distil-Whisper — MIT, but inherits Whisper's terms.
+- Whisper GGML models (Large v3 Turbo, Turbo q5_0, Small) — OpenAI Whisper
+  MIT/Apache lineage (check per-file).
 - `handy-computer/parakeet-*` GGUF — NVIDIA's Parakeet model license (CC-BY-4.0
   upstream); **redistribution of the hosted GGUF conversions should be
   confirmed** with the repo owner.

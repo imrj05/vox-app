@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { curveNatural } from "@visx/curve";
 import {
   Bar,
@@ -70,7 +71,11 @@ const piePalette = [
 
 const barDataKeyColor = "var(--chart-line-primary)";
 
-export function AnalyticsPanels({
+export function InsightsPanel({
+  currentStreak,
+  longestStreak,
+  totalWords,
+  historyCount,
   activitySummary,
   activityDays,
   topApps,
@@ -82,6 +87,10 @@ export function AnalyticsPanels({
   totalDurationSeconds,
   latency,
 }: {
+  currentStreak: number;
+  longestStreak: number;
+  totalWords: number;
+  historyCount: number;
   activitySummary: ActivitySummary;
   activityDays: ActivityDay[];
   topApps: TopApp[];
@@ -94,125 +103,124 @@ export function AnalyticsPanels({
   latency: LatencySummary;
 }) {
   const chartStatus = historyLoading ? ("loading" as const) : ("ready" as const);
+  const wordsPerSession = historyCount > 0 ? Math.round(totalWords / historyCount) : 0;
 
   return (
-    <>
-      <section className="surface-depth-soft rounded-2xl border border-border bg-card p-6">
-        <div className="mb-5 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-foreground">Activity</h3>
-          <p className="text-xs text-muted-foreground">Last 6 months of dictation</p>
+    <section className="panel overflow-hidden" aria-label="Dictation insights">
+      <Tabs defaultValue="activity" className="gap-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+          <TabsList>
+            <TabsTrigger value="activity">Activity</TabsTrigger>
+            <TabsTrigger value="output">Output</TabsTrigger>
+            <TabsTrigger value="apps">Apps</TabsTrigger>
+            <TabsTrigger value="speed">Speed</TabsTrigger>
+          </TabsList>
+          <p className="hidden text-xs text-muted-foreground sm:block">Last 6 months</p>
         </div>
-        <div className="mb-5 grid gap-3 sm:grid-cols-3">
-          <MetricPill label="Active days" value={activitySummary.activeDays.toLocaleString()} />
-          <MetricPill
-            label="Best day"
-            value={activitySummary.bestDayCount > 0 ? `${activitySummary.bestDayCount} sessions` : "No data"}
-            detail={activitySummary.bestDayLabel}
-          />
-          <MetricPill
-            label="Weekly average"
-            value={`${activitySummary.averagePerWeek.toFixed(1)} sessions`}
-          />
-        </div>
-        <ContributionHeatmap days={activityDays} status={chartStatus} />
-      </section>
 
-      <section className="surface-depth-soft rounded-2xl border border-border bg-card p-6">
-        <div className="mb-5 flex items-start justify-between gap-4">
+        <TabsContent
+          value="activity"
+          className="flex flex-col gap-5 p-4 duration-200 animate-in fade-in slide-in-from-top-1 sm:p-5"
+        >
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-4">
+            <InsightStat label="Day streak" value={currentStreak.toLocaleString()} />
+            <InsightStat label="Longest streak" value={longestStreak.toLocaleString()} />
+            <InsightStat label="Active days" value={activitySummary.activeDays.toLocaleString()} />
+            <InsightStat
+              label="Best day"
+              value={
+                activitySummary.bestDayCount > 0
+                  ? `${activitySummary.bestDayCount} sessions`
+                  : "—"
+              }
+            />
+          </div>
+          <ContributionHeatmap days={activityDays} status={chartStatus} />
           <div>
-            <h3 className="text-lg font-semibold text-foreground">Speed</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Processing time for recent dictations, from audio preflight to
-              finished transcript.
-            </p>
-          </div>
-          <p className="shrink-0 text-xs text-muted-foreground tabular-nums">
-            {latency.samples.toLocaleString()} samples
-          </p>
-        </div>
-        {latency.samples > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-4">
-            <MetricPill label="Median total" value={formatMs(latency.totalP50)} />
-            <MetricPill label="p95 total" value={formatMs(latency.totalP95)} />
-            <MetricPill label="Median ASR" value={formatMs(latency.asrP50)} />
-            <MetricPill label="p95 ASR" value={formatMs(latency.asrP95)} />
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Latency appears after your next dictation.
-          </p>
-        )}
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-          <h3 className="mb-4 text-lg font-semibold text-foreground">Top apps</h3>
-          {historyLoading ? (
-            <LoadingInline label="Loading app usage..." />
-          ) : topApps.length > 0 ? (
-            <TopApps apps={topApps} appIcons={appIcons} />
-          ) : (
-            <p className="text-sm text-muted-foreground">App usage will appear after new transcriptions.</p>
-          )}
-        </div>
-
-        <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-lg font-semibold text-foreground">Time of day</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Sessions by hour, so you can spot your peak dictation windows.
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs font-medium text-foreground">Sessions per week</h3>
+              <p className="text-[11px] text-muted-foreground">
+                {formatDurationCompact(totalDurationSeconds)} recorded
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Peak hour</p>
-              <p className="text-sm font-medium text-foreground">{hourlyActivity.peakLabel}</p>
+            <UsageTrendChart points={usageTrend} status={chartStatus} />
+          </div>
+        </TabsContent>
+
+        <TabsContent
+          value="output"
+          className="flex flex-col gap-5 p-4 duration-200 animate-in fade-in slide-in-from-top-1 sm:p-5"
+        >
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-3">
+            <InsightStat label="Words dictated" value={totalWords.toLocaleString()} />
+            <InsightStat label="Per session" value={wordsPerSession.toLocaleString()} />
+            <InsightStat label="Recorded" value={formatDurationCompact(totalDurationSeconds)} />
+          </div>
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-xs font-medium text-foreground">Daily words</h3>
+              <p className="text-[11px] text-muted-foreground">Last 14 days</p>
+            </div>
+            <DailyWordsChart points={dailyWordTrend} status={chartStatus} />
+          </div>
+        </TabsContent>
+
+        <TabsContent
+          value="apps"
+          className="p-4 duration-200 animate-in fade-in slide-in-from-top-1 sm:p-5"
+        >
+          <div className="grid gap-5 xl:grid-cols-2">
+            <div className="min-w-0">
+              <h3 className="mb-3 text-xs font-medium text-foreground">Top apps</h3>
+              {historyLoading ? (
+                <LoadingInline label="Loading app usage…" />
+              ) : topApps.length > 0 ? (
+                <TopApps apps={topApps} appIcons={appIcons} />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  App usage appears after your next dictation.
+                </p>
+              )}
+            </div>
+            <div className="min-w-0">
+              <h3 className="mb-3 text-xs font-medium text-foreground">App share</h3>
+              <AppShareChart apps={topApps} />
             </div>
           </div>
-          <div className="mb-4 grid gap-3 sm:grid-cols-4">
-            <MetricPill label="Night" value={hourlyActivity.segments.night.toLocaleString()} />
-            <MetricPill label="Morning" value={hourlyActivity.segments.morning.toLocaleString()} />
-            <MetricPill label="Afternoon" value={hourlyActivity.segments.afternoon.toLocaleString()} />
-            <MetricPill label="Evening" value={hourlyActivity.segments.evening.toLocaleString()} />
-          </div>
-          <HourlyChart values={hourlyActivity.values} status={chartStatus} />
-        </div>
-      </section>
+        </TabsContent>
 
-      <section className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-semibold text-foreground">Usage over time</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Sessions per week across the last 8 weeks.
+        <TabsContent
+          value="speed"
+          className="flex flex-col gap-5 p-4 duration-200 animate-in fade-in slide-in-from-top-1 sm:p-5"
+        >
+          {latency.samples > 0 ? (
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-4">
+              <InsightStat label="Median total" value={formatMs(latency.totalP50)} />
+              <InsightStat label="p95 total" value={formatMs(latency.totalP95)} />
+              <InsightStat label="Median ASR" value={formatMs(latency.asrP50)} />
+              <InsightStat label="p95 ASR" value={formatMs(latency.asrP95)} />
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Latency appears after your next dictation.
             </p>
+          )}
+          <div>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-foreground">Time of day</h3>
+              <p className="text-[11px] text-muted-foreground">Peak {hourlyActivity.peakLabel}</p>
+            </div>
+            <HourlyChart values={hourlyActivity.values} status={chartStatus} />
+            <div className="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-4">
+              <InsightStat label="Night" value={hourlyActivity.segments.night.toLocaleString()} />
+              <InsightStat label="Morning" value={hourlyActivity.segments.morning.toLocaleString()} />
+              <InsightStat label="Afternoon" value={hourlyActivity.segments.afternoon.toLocaleString()} />
+              <InsightStat label="Evening" value={hourlyActivity.segments.evening.toLocaleString()} />
+            </div>
           </div>
-          <div className="text-right">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Total recorded</p>
-            <p className="text-sm font-medium text-foreground">{formatDurationCompact(totalDurationSeconds)}</p>
-          </div>
-        </div>
-        <UsageTrendChart points={usageTrend} status={chartStatus} />
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-2">
-        <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold text-foreground">Daily words</h3>
-            <p className="mt-1 text-xs text-muted-foreground">Word output over the last two weeks.</p>
-          </div>
-          <DailyWordsChart points={dailyWordTrend} status={chartStatus} />
-        </div>
-
-        <div className="surface-depth-soft rounded-2xl border border-border bg-card p-5">
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold text-foreground">App share</h3>
-            <p className="mt-1 text-xs text-muted-foreground">Where your dictated words are going most often.</p>
-          </div>
-          <AppShareChart apps={topApps} />
-        </div>
-      </section>
-    </>
+        </TabsContent>
+      </Tabs>
+    </section>
   );
 }
 
@@ -230,20 +238,13 @@ function formatMs(ms: number) {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-function MetricPill({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-}) {
+function InsightStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-border bg-background px-4 py-3">
-      <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-medium text-foreground">{value}</p>
-      {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+    <div className="bg-card px-3 py-2.5">
+      <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 font-mono text-sm font-semibold tabular-nums text-foreground">{value}</p>
     </div>
   );
 }
@@ -457,7 +458,7 @@ function AppShareChart({ apps }: { apps: TopApp[] }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <div className="flex h-56 items-center justify-center rounded-xl border border-border bg-background py-4">
         <PieChart data={data} size={190} innerRadius={62} padAngle={0.03} cornerRadius={4}>
           {data.map((slice, index) => (
@@ -497,7 +498,7 @@ function TopApps({
   }));
 
   return (
-    <div className="space-y-2.5">
+    <div className="flex flex-col gap-2.5">
       {data.map((app) => (
         <div
           key={app.name}

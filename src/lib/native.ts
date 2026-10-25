@@ -151,6 +151,19 @@ export async function checkMicrophonePermission() {
   return invoke<boolean>("check_microphone_permission");
 }
 
+/**
+ * Speech Recognition access, required by the built-in Apple engine. The check
+ * never prompts; the request shows the macOS prompt only while the user has
+ * not answered yet.
+ */
+export async function checkSpeechPermission() {
+  return invoke<boolean>("check_speech_permission");
+}
+
+export async function requestSpeechPermission() {
+  return invoke<boolean>("request_speech_permission");
+}
+
 /** Raw macOS mic authorization: 0 not-determined, 1 restricted, 2 denied, 3 authorized. */
 export async function microphoneAuthorizationStatus() {
   return invoke<number>("microphone_authorization_status");
@@ -183,7 +196,12 @@ export async function transcribeRecording(
   contextAppName?: string | null,
   contextWindowTitle?: string | null,
   previewText?: string | null,
-  previewConfidence?: number | null
+  previewConfidence?: number | null,
+  /**
+   * Whether this transcript may teach the corrections learner. Off for an
+   * incognito dictation. Required by the Rust command, which has no default.
+   */
+  learnCorrections = true,
 ) {
   return invoke<TranscriptionResult>("transcribe_recording", {
     audioPath,
@@ -192,6 +210,7 @@ export async function transcribeRecording(
     contextWindowTitle,
     previewText,
     previewConfidence,
+    learnCorrections,
   });
 }
 
@@ -266,6 +285,14 @@ export async function undoLastInsertion() {
 /** Retry an insertion that failed (used by the menu bar action). */
 export async function retryLastInsertion() {
   return invoke<void>("retry_last_insertion");
+}
+
+/**
+ * Read the text currently selected in the frontmost app. Simulates ⌘C, reads
+ * the clipboard, then restores the previous clipboard contents.
+ */
+export async function captureSelectedText() {
+  return invoke<string>("capture_selected_text");
 }
 
 export async function setWidgetSize(width: number, height: number) {

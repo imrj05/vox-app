@@ -1,9 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/source-sans-3";
+/* Only Geist Mono is rendered: `--font-sans` resolves to JetBrains Mono → Geist
+   Mono, and JetBrains Mono is not bundled. Source Sans 3 and Figtree were
+   imported here previously but no rule referenced them (178 KB of fonts that
+   never painted a glyph). Keep this comment after the @import block so the
+   imports stay valid CSS. */
 @import "@fontsource-variable/geist-mono";
-@import "@fontsource-variable/figtree";
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -248,7 +251,7 @@
     }
 
     .page-shell {
-        @apply flex min-h-full w-full flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
+        @apply mx-auto flex min-h-full w-full max-w-[1400px] flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
     }
 
     .page-header {
@@ -273,6 +276,66 @@
 
     .stat-cell {
         @apply min-w-0 px-4 py-3.5;
+    }
+
+    /* Tinted ambient wash for the dictation hero, driven by data-tone. */
+    .hero-surface {
+        position: relative;
+    }
+
+    .hero-surface::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        transition: background 0.6s ease;
+    }
+
+    .hero-surface[data-tone="ready"]::before {
+        background: radial-gradient(140% 130% at 0% 0%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 62%);
+    }
+
+    .hero-surface[data-tone="busy"]::before {
+        background: radial-gradient(140% 130% at 0% 0%, color-mix(in oklab, var(--primary) 5%, transparent), transparent 62%);
+    }
+
+    .hero-surface[data-tone="recording"]::before {
+        background: radial-gradient(140% 130% at 0% 0%, color-mix(in oklab, var(--destructive) 9%, transparent), transparent 62%);
+    }
+
+    .hero-surface > * {
+        position: relative;
+    }
+
+    /* Hairline ring that rotates behind the record button. */
+    .record-state-ring {
+        background: conic-gradient(from 0turn, transparent 0deg, var(--destructive) 80deg, transparent 170deg 360deg);
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+        animation: vox-ring-spin 1.6s linear infinite;
+    }
+
+    .eq-bar {
+        animation: vox-eq 1.1s ease-in-out infinite;
+        transform-origin: bottom;
+        will-change: transform;
+    }
+}
+
+@keyframes vox-ring-spin {
+    to {
+        transform: rotate(1turn);
+    }
+}
+
+@keyframes vox-eq {
+    0%,
+    100% {
+        transform: scaleY(0.35);
+    }
+    50% {
+        transform: scaleY(1);
     }
 }
 

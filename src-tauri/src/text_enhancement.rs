@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -439,6 +439,10 @@ fn clean_model_output(output: String) -> String {
 // Metal kernels) kept warm, which removes the per-request model-load cost —
 // seconds per call when spawning a fresh process each time. One global session
 // serializes requests; an exited sidecar is transparently respawned once.
+/// Generation can run long on a big prompt; the model load on a cold sidecar is
+/// slower still. This breaks a wedge, it does not cap real work.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 struct EnhanceServeSession {
     child: Child,
     stdin: ChildStdin,
@@ -542,14 +546,20 @@ fn request_sidecar(
         .map_err(|error| format!("Text enhancement sidecar stopped accepting requests: {error}"))?;
 
     loop {
-        let mut response = String::new();
-        let bytes = session
-            .stdout
-            .read_line(&mut response)
-            .map_err(|error| format!("Text enhancement sidecar failed: {error}"))?;
-        if bytes == 0 {
-            return Err("Text enhancement sidecar exited unexpectedly".to_string());
-        }
+        let response = match crate::engines::read_line_timeout(&mut session.stdout, RESPONSE_TIMEOUT)
+            .map_err(|error| format!("Text enhancement sidecar failed: {error}"))?
+        {
+            crate::engines::SidecarRead::Line(line) => line,
+            crate::engines::SidecarRead::Eof => {
+                return Err("Text enhancement sidecar exited unexpectedly".to_string())
+            }
+            crate::engines::SidecarRead::TimedOut => {
+                return Err(format!(
+                    "Text enhancement stopped responding after {}s",
+                    RESPONSE_TIMEOUT.as_secs()
+                ))
+            }
+        };
         let parsed: serde_json::Value = match serde_json::from_str(response.trim()) {
             Ok(value) => value,
             Err(_) => continue, // diagnostics line from the sidecar — skip

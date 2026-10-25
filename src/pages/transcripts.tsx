@@ -4,6 +4,7 @@ import {
   ArrowTurnBackward,
   Check,
   Copy,
+  Download,
   FileText,
   Mail,
   Pencil,
@@ -30,6 +31,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { correctionPairs } from "@/lib/dictionary";
 import { recordVocabularyCorrection } from "@/lib/vocabulary";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +41,7 @@ import { deleteTranscript, getTranscripts, pruneTranscripts, updateTranscriptTex
 import { resolveAppIcon } from "@/lib/native";
 import { openExternalLink } from "@/lib/external-link";
 import { useAppStore } from "@/store/app-store";
+import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
 
 const TRANSCRIPT_LIBRARY_LIMIT = 1000;
 
@@ -53,6 +56,8 @@ export function TranscriptsPage() {
   const [editDraft, setEditDraft] = useState("");
   const [rawViewId, setRawViewId] = useState<number | null>(null);
   const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
+  const [appFilter, setAppFilter] = useState("all");
+  const [highlightId, setHighlightId] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -84,17 +89,48 @@ export function TranscriptsPage() {
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return history;
-
     return history.filter((item) => {
       const appName = item.app_name ?? "Unknown app";
+      if (appFilter !== "all" && appName !== appFilter) return false;
+      if (!needle) return true;
       return (
         item.text.toLowerCase().includes(needle) ||
         (item.asr_text ?? "").toLowerCase().includes(needle) ||
         appName.toLowerCase().includes(needle)
       );
     });
-  }, [history, query]);
+  }, [history, query, appFilter]);
+
+  const appNames = useMemo(() => {
+    const names = new Set<string>();
+    history.forEach((item) => names.add(item.app_name ?? "Unknown app"));
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [history]);
+
+  // Deep-link from the command palette: reveal and highlight a transcript.
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.transcripts, (command) => {
+      if (command.kind !== "focus-transcript") return;
+      setHighlightId(command.payload as number);
+      window.setTimeout(() => setHighlightId(null), 2400);
+    });
+  }, []);
+
+  const exportTranscripts = () => {
+    if (filtered.length === 0) return;
+    const lines = filtered.map((item) => {
+      const date = new Date(item.created_at).toLocaleString();
+      return `## ${item.app_name ?? "Unknown app"} · ${date}\n\n${item.text}`;
+    });
+    const body = `# Vox transcripts\n\n${lines.join("\n\n---\n\n")}\n`;
+    const blob = new Blob([body], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `vox-transcripts-${new Date().toISOString().slice(0, 10)}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
   const copyTranscript = async (item: TranscriptRow) => {
     await navigator.clipboard.writeText(item.text);
@@ -185,17 +221,43 @@ export function TranscriptsPage() {
                 Search, copy, and manage your local dictation history.
               </p>
             </div>
-            <div className="relative w-full lg:w-80">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                aria-label="Search transcripts or apps"
-                name="transcript-search"
-                autoComplete="off"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search transcripts or apps…"
-                className="h-10 rounded-lg bg-card pl-9"
-              />
+            <div className="flex w-full flex-col gap-2 lg:w-auto lg:items-end">
+              <div className="relative w-full lg:w-80">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  aria-label="Search transcripts or apps"
+                  name="transcript-search"
+                  autoComplete="off"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search transcripts or apps…"
+                  className="h-10 rounded-lg bg-card pl-9"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <NativeSelect
+                  size="sm"
+                  aria-label="Filter by app"
+                  value={appFilter}
+                  onChange={(event) => setAppFilter(event.target.value)}
+                >
+                  <NativeSelectOption value="all">All apps</NativeSelectOption>
+                  {appNames.map((name) => (
+                    <NativeSelectOption key={name} value={name}>
+                      {name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={exportTranscripts}
+                  disabled={filtered.length === 0}
+                >
+                  <Download data-icon="inline-start" />
+                  Export
+                </Button>
+              </div>
             </div>
           </header>
 
@@ -227,7 +289,10 @@ export function TranscriptsPage() {
               {filtered.map((item) => (
                 <article
                   key={item.id}
-                  className="flex gap-3.5 p-4 transition-colors hover:bg-muted/25 sm:p-5"
+                  className={cn(
+                    "flex gap-3.5 p-4 transition-colors hover:bg-muted/25 sm:p-5",
+                    highlightId === item.id && "bg-primary/10 ring-1 ring-inset ring-primary/40"
+                  )}
                 >
                   <AppBadge
                     name={item.app_name ?? "Unknown app"}

@@ -12,6 +12,11 @@
 // convention as transcribe-cli) so the Rust engines share one parser.
 //
 //   --status        Print recognizer authorization/availability and exit.
+//   --check-permission  Report the authorization state without prompting.
+//   --request-permission  Ask macOS for Speech Recognition access (shows the
+//                   system prompt when the state is still undetermined) and
+//                   report the result. Used by the Vox setup screen, because
+//                   serve-mode recognition cannot prompt on its own.
 //   --serve         Persistent mode: reads JSON requests on stdin, one per
 //                   line: {"id": <n>, "audio": "<path>", "locale": "en-US"}.
 //                   Responds with JSON per line and keeps recognizers warm
@@ -212,7 +217,9 @@ func serveTranscription(_ json: [String: Any]) {
         serveError(id: id, code: 4, message: "speech recognition permission denied — enable Vox in System Settings → Privacy & Security → Speech Recognition")
         return
     default:
-        serveError(id: id, code: 5, message: "speech recognition permission not determined")
+        // authorizationStatus() above already asked, so reaching this branch means
+        // the prompt was dismissed or never appeared. Point at the only fix.
+        serveError(id: id, code: 5, message: "speech recognition permission not granted — enable Vox in System Settings → Privacy & Security → Speech Recognition")
         return
     }
 
@@ -440,6 +447,7 @@ var statusOnly = false
 var serveMode = false
 var liveMode = false
 var checkPermissionOnly = false
+var requestPermissionOnly = false
 var audioPath: String?
 
 var index = 0
@@ -454,10 +462,18 @@ while index < arguments.count {
         language = arguments[index]
     case "--status":
         statusOnly = true
+    case "--serve":
+        // The persistent JSON-lines session the Rust client drives. Without
+        // this case the runtime exited with "unknown option: --serve" on
+        // startup, so every Apple dictation failed as "runtime exited
+        // unexpectedly" before it could recognize anything.
+        serveMode = true
     case "--live":
         liveMode = true
     case "--check-permission":
         checkPermissionOnly = true
+    case "--request-permission":
+        requestPermissionOnly = true
     default:
         guard !argument.hasPrefix("-") else {
             fail(2, "unknown option: \(argument)")
@@ -465,6 +481,25 @@ while index < arguments.count {
         audioPath = argument
     }
     index += 1
+}
+
+// MARK: - Permission request (shows the system prompt when undetermined)
+
+if requestPermissionOnly {
+    // authorizationStatus() calls SFSpeechRecognizer.requestAuthorization and
+    // pumps the run loop until the user answers, so this exits only once the
+    // state is decided (or the 15 s deadline passes).
+    switch authorizationStatus() {
+    case .authorized:
+        print("status: granted")
+        exit(0)
+    case .denied, .restricted:
+        print("status: denied")
+        exit(4)
+    default:
+        print("status: not-determined")
+        exit(5)
+    }
 }
 
 // MARK: - Permission probe (never triggers a TCC prompt)

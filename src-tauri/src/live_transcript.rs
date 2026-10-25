@@ -52,10 +52,13 @@ fn permission_cache() -> &'static Mutex<Option<bool>> {
     PERMISSION.get_or_init(|| Mutex::new(None))
 }
 
-/// Whether Speech Recognition permission is already granted. Probed once per
-/// app run with a flag that never triggers a TCC prompt — an ungranted state
-/// simply disables the preview rather than interrupting dictation with a
-/// dialog.
+/// Whether Speech Recognition permission is already granted. The probe never
+/// triggers a TCC prompt — an ungranted state simply disables the preview
+/// rather than interrupting dictation with a dialog.
+///
+/// Only a *granted* answer is cached. Caching a refusal made a grant that
+/// happened in System Settings invisible until Vox restarted, because the
+/// preview kept using the stale answer.
 fn speech_permission_granted() -> bool {
     let mut cache = permission_cache().lock().unwrap_or_else(|p| p.into_inner());
     if let Some(granted) = *cache {
@@ -71,7 +74,9 @@ fn speech_permission_granted() -> bool {
         Some(String::from_utf8_lossy(&output.stdout).contains("granted"))
     })()
     .unwrap_or(false);
-    *cache = Some(granted);
+    if granted {
+        *cache = Some(true);
+    }
     eprintln!("[VOX][live] speech permission granted: {granted}");
     granted
 }

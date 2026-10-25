@@ -20,6 +20,7 @@ pub mod audio;
 pub mod parakeet_engine;
 pub mod whisper_engine;
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -261,11 +262,70 @@ fn find_sidecar_in_dir(dir: &Path, prefix: &str) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
-        if file_name.starts_with(prefix) && entry.path().is_file() {
+        // An empty placeholder (a sidecar copy of a failed build) would spawn a
+        // process that dies instantly. Treat it as missing so the engine reports
+        // the actionable "runtime not found" message instead.
+        let non_empty = entry.metadata().map(|meta| meta.len() > 0).unwrap_or(false);
+        if file_name.starts_with(prefix) && entry.path().is_file() && non_empty {
             return Some(entry.path());
         }
     }
     None
+}
+
+/// One line from a sidecar's stdout, or why it never arrived.
+pub(crate) enum SidecarRead {
+    Line(String),
+    /// The child closed its stdout, so it has exited.
+    Eof,
+    /// The child produced nothing for the whole timeout.
+    TimedOut,
+}
+
+/// Reads one newline-terminated line from a warm sidecar, giving up instead of
+/// blocking forever when the child wedges.
+///
+/// All three sidecar clients kill and respawn the child on a transport error,
+/// so a timeout is self-healing: the request fails once, the next one starts a
+/// fresh process. `poll(2)` covers a buffer with no complete line; once bytes
+/// are flowing, `read_line` finishes normally (sidecars write whole JSON lines
+/// in one write, so a torn, stalled line means a broken child).
+pub(crate) fn read_line_timeout(
+    reader: &mut std::io::BufReader<std::process::ChildStdout>,
+    timeout: std::time::Duration,
+) -> Result<SidecarRead, String> {
+    #[cfg(unix)]
+    if !reader.buffer().contains(&b'\n') {
+        use std::os::fd::AsRawFd;
+        let mut poll_fd = libc::pollfd {
+            fd: reader.get_ref().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+        loop {
+            match unsafe { libc::poll(&mut poll_fd, 1, millis) } {
+                1.. => break,
+                0 => return Ok(SidecarRead::TimedOut),
+                _ => {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(format!("Runtime read failed: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut line = String::new();
+    let bytes = reader
+        .read_line(&mut line)
+        .map_err(|error| format!("Runtime read failed: {error}"))?;
+    Ok(if bytes == 0 {
+        SidecarRead::Eof
+    } else {
+        SidecarRead::Line(line)
+    })
 }
 
 /// Sidecar CLIs print a `text: <transcript>` line amid a diagnostics header.
@@ -312,16 +372,22 @@ fn timed_transcribe(
 }
 
 /// Run an engine end-to-end: resolve its model, transcribe, normalize output.
+///
+/// `requested` is the model the user selected for this engine (the Models page
+/// pin). The engine honors it exactly; `None` lets the engine pick its
+/// preferred downloaded model.
+#[allow(clippy::too_many_arguments)]
 fn run_engine(
     engine: &'static dyn TranscriptionEngine,
     models_dir: &Path,
     audio_path: &Path,
+    requested: Option<&str>,
     dictionary: Option<&str>,
     context: Option<&str>,
     language: &str,
     contextual_strings: &[String],
 ) -> Result<(String, Option<String>, &'static str, Option<f32>), String> {
-    let model_path = engine.pick_model(models_dir, None)?;
+    let model_path = engine.pick_model(models_dir, requested)?;
     let request = TranscriptionRequest {
         model_path: model_path.as_deref(),
         audio_path,
@@ -533,11 +599,23 @@ pub fn route_transcribe_with_vocabulary(
     // machinery reroutes to a capable engine (reported as
     // `language_unsupported`, never silent).
     let language_supported = preferred_engine.supports_language(language);
-    let primary_result = if language_supported {
+    // Never run an engine that reports itself unusable. The failure is known
+    // before any work, and spawning it anyway can abort a child process (Apple
+    // Speech outside a .app bundle is killed by TCC) or pay a model load for
+    // nothing. The reason is what the user can act on.
+    let primary_availability = preferred_engine.availability(models_dir);
+    let primary_result = if !primary_availability.available {
+        let reason = primary_availability
+            .reason
+            .unwrap_or_else(|| format!("{} is not available", preferred_engine.display_name()));
+        eprintln!("[VOX][ASR] engine {} unavailable: {reason}", preferred_engine.id());
+        Err(reason)
+    } else if language_supported {
         run_engine(
             preferred_engine,
             models_dir,
             audio_path,
+            model_name,
             dictionary,
             context,
             language,
@@ -565,17 +643,31 @@ pub fn route_transcribe_with_vocabulary(
             // Fallback (spec §8): try the user's preferred fallback engine
             // first, then every other registered engine. Primary failures are
             // never hidden — the switch reason is reported upward.
-            let mut last_error = primary_error;
+            // Fallback errors are only used to classify the switch; the primary
+            // error is what gets returned if everything fails.
+            let mut last_error = primary_error.clone();
             let candidates = fallback_candidates_for_language(
                 selection.preferred_fallback,
                 preferred_engine.id(),
                 language,
             );
             for candidate in candidates {
+                let availability = candidate.availability(models_dir);
+                if !availability.available {
+                    eprintln!(
+                        "[VOX][ASR] fallback engine {} unavailable: {}",
+                        candidate.id(),
+                        availability.reason.as_deref().unwrap_or("no reason given")
+                    );
+                    continue;
+                }
                 match run_engine(
                     candidate,
                     models_dir,
                     audio_path,
+                    // Only the primary engine honors the user's model pin; a
+                    // fallback engine drives its own model choice.
+                    None,
                     dictionary,
                     context,
                     language,
@@ -603,7 +695,12 @@ pub fn route_transcribe_with_vocabulary(
                     }
                 }
             }
-            Err(last_error)
+            // Every engine failed. Report the *primary* engine's error: it is
+            // the one the user selected, so it is the only one they can act on.
+            // Returning the last fallback's error told Apple users to
+            // "Download a Whisper model" for an engine they never chose.
+            let _ = last_error;
+            Err(primary_error)
         }
     }
 }
@@ -615,6 +712,61 @@ mod tests {
 
     fn path(name: &str) -> std::path::PathBuf {
         std::path::PathBuf::from(name)
+    }
+
+    /// A wedged sidecar must fail the request instead of hanging dictation. The
+    /// child here writes nothing, exactly like a runtime stuck on a deadlock.
+    #[test]
+    fn sidecar_read_times_out_instead_of_blocking() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let mut reader = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+
+        let started = Instant::now();
+        let result = read_line_timeout(&mut reader, Duration::from_millis(150));
+        assert!(matches!(result, Ok(SidecarRead::TimedOut)));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout must not wait for the child"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn sidecar_read_returns_lines_then_eof() {
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+
+        let mut child = Command::new("printf")
+            .arg("one\\ntwo\\n")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn printf");
+        let mut reader = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+        let timeout = Duration::from_secs(5);
+
+        assert!(matches!(
+            read_line_timeout(&mut reader, timeout),
+            Ok(SidecarRead::Line(line)) if line.trim() == "one"
+        ));
+        assert!(matches!(
+            read_line_timeout(&mut reader, timeout),
+            Ok(SidecarRead::Line(line)) if line.trim() == "two"
+        ));
+        assert!(matches!(
+            read_line_timeout(&mut reader, timeout),
+            Ok(SidecarRead::Eof)
+        ));
+
+        let _ = child.wait();
     }
 
     #[test]
@@ -743,6 +895,82 @@ mod tests {
         assert!(candidates.iter().all(|engine| engine.id() != "parakeet"));
     }
 
+    /// An engine that reports itself unusable must fail with that reason, not
+    /// by spawning a child process that immediately dies. Apple Speech is the
+    /// live example: outside a .app bundle macOS kills it on the permission
+    /// request, which used to surface as "runtime exited unexpectedly".
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unavailable_primary_engine_reports_its_reason() {
+        let dir = std::env::temp_dir().join("vox-router-unavailable");
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("audio.wav");
+        std::fs::write(&audio, b"fake").unwrap();
+
+        let error = route_transcribe(
+            &dir,
+            &audio,
+            None,
+            None,
+            None,
+            Some("en"),
+            EngineSelection {
+                preferred: "apple",
+                fallback_enabled: false,
+                preferred_fallback: None,
+            },
+            |_, _, _| {},
+        )
+        .unwrap_err();
+
+        // The test binary is not inside a .app bundle, so Apple is unavailable
+        // and its reason must come through verbatim.
+        assert!(
+            error.contains("packaged app"),
+            "expected the availability reason, got: {error}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap_or_else(|_| ());
+    }
+
+    /// The reported failure must describe the engine the user chose, not the
+    /// last fallback. An Apple user whose permission is missing used to be told
+    /// to "Download a Whisper model", which is an engine they never picked.
+    #[test]
+    fn all_engines_failing_reports_the_primary_engine_error() {
+        let dir = std::env::temp_dir().join("vox-router-primary-error");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Only a Parakeet model exists, so Whisper has nothing to run.
+        std::fs::write(dir.join("parakeet-tdt-0.6b-v3.gguf"), b"fake").unwrap();
+        let audio = dir.join("audio.wav");
+        std::fs::write(&audio, b"fake").unwrap();
+
+        let error = route_transcribe(
+            &dir,
+            &audio,
+            None,
+            None,
+            None,
+            Some("en"),
+            EngineSelection {
+                preferred: "whisper",
+                fallback_enabled: true,
+                preferred_fallback: Some("parakeet"),
+            },
+            |_, _, _| {},
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Whisper"),
+            "expected the chosen engine's error, got: {error}"
+        );
+        assert!(
+            !error.contains("Parakeet") && !error.contains("Apple"),
+            "the error must not describe a fallback engine, got: {error}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap_or_else(|_| ());
+    }
+
     #[test]
     fn explicit_engine_without_model_surfaces_error_without_fallback() {
         let dir = std::env::temp_dir().join("vox-router-explicit-no-fallback");
@@ -766,8 +994,8 @@ mod tests {
             |_, _, _| panic!("fallback must not fire when disabled"),
         );
         assert!(
-            result.unwrap_err().contains("Download a Parakeet model"),
-            "missing-model failure should surface the reason"
+            result.unwrap_err().contains("No Parakeet model"),
+            "missing-model failure should surface the availability reason"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -73,7 +73,10 @@ function CommandInput({
         <CommandPrimitive.Input
           data-slot="command-input"
           className={cn(
-            "w-full text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
+            // The palette input is focused the moment the dialog opens, so a
+            // focus ring would be permanently visible. The caret is the
+            // affordance here; the group's own border carries the state.
+            "h-full w-full min-w-0 bg-transparent pl-1.5 text-sm text-foreground outline-hidden placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50",
             className
           )}
           {...props}

@@ -9,7 +9,7 @@
 //! uploaded to Apple servers.
 
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -137,14 +137,20 @@ fn request_transcription(
         .map_err(|error| format!("Apple Speech runtime stopped accepting requests: {error}"))?;
 
     loop {
-        let mut response = String::new();
-        let bytes = session
-            .stdout
-            .read_line(&mut response)
-            .map_err(|error| format!("Apple Speech runtime failed: {error}"))?;
-        if bytes == 0 {
-            return Err("Apple Speech runtime exited unexpectedly".to_string());
-        }
+        let response = match super::read_line_timeout(&mut session.stdout, RESPONSE_TIMEOUT)
+            .map_err(|error| format!("Apple Speech runtime failed: {error}"))?
+        {
+            super::SidecarRead::Line(line) => line,
+            super::SidecarRead::Eof => {
+                return Err("Apple Speech runtime exited unexpectedly".to_string())
+            }
+            super::SidecarRead::TimedOut => {
+                return Err(format!(
+                    "Apple Speech stopped responding after {}s",
+                    RESPONSE_TIMEOUT.as_secs()
+                ))
+            }
+        };
         let parsed: Value = match serde_json::from_str(response.trim()) {
             Ok(value) => value,
             Err(_) => continue, // diagnostics line from the sidecar — skip
@@ -154,6 +160,13 @@ fn request_transcription(
         }
         // A response for an older attempt — skip.
     }
+}
+
+/// Whether the sidecar refused because of Speech Recognition permission
+/// (4 = denied/restricted, 5 = not granted yet).
+fn is_authorization_failure(response: &Value) -> bool {
+    response.get("ok").and_then(Value::as_bool) != Some(true)
+        && matches!(response.get("code").and_then(Value::as_i64), Some(4) | Some(5))
 }
 
 fn map_sidecar_error(code: i64, message: &str) -> String {
@@ -204,7 +217,25 @@ fn serve_transcribe(
         }
         let session = guard.as_mut().unwrap();
         match request_transcription(session, audio_path, locale, contextual_strings) {
-            Ok(response) => return response_to_result(response),
+            Ok(response) => {
+                // The sidecar caches the TCC answer once it is decided, so a
+                // grant made in System Settings while it is running is invisible
+                // to it. Retire the process and try once more: the fresh one
+                // reads the current state, which is what makes "allow in
+                // Settings, then dictate" work without restarting Vox.
+                if is_authorization_failure(&response) {
+                    if let Some(session) = guard.take() {
+                        stop_serve_session(session);
+                    }
+                    if attempts < 2 {
+                        eprintln!(
+                            "[VOX][ASR] apple-speech reported a permission problem; retrying with a fresh session"
+                        );
+                        continue;
+                    }
+                }
+                return response_to_result(response);
+            }
             Err(transport_error) => {
                 if let Some(session) = guard.take() {
                     stop_serve_session(session);
@@ -227,6 +258,24 @@ pub(crate) fn locale_code(language: Option<&str>) -> Option<String> {
         Some("hi") => Some("hi-IN".to_string()),
         Some(code) => Some(code.to_string()),
     }
+}
+
+/// A recognition pass on a bounded dictation file finishes well inside this;
+/// the timeout exists to break a wedged recognizer, not to cap real work.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Whether this binary is running from a `.app` bundle.
+///
+/// Speech Recognition is stricter than Microphone or Accessibility: macOS asks
+/// the *responsible process* for `NSSpeechRecognitionUsageDescription`, and for
+/// a bare executable there is no bundle to read it from. The framework then
+/// aborts the calling process (`__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`) the
+/// moment `SFSpeechRecognizer.requestAuthorization` runs. `tauri dev` runs
+/// `target/debug/vox` directly, so Apple Speech works only in a packaged app.
+pub(crate) fn is_bundled_app() -> bool {
+    std::env::current_exe()
+        .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
 }
 
 pub struct AppleSpeechEngine;
@@ -252,6 +301,11 @@ impl TranscriptionEngine for AppleSpeechEngine {
         // trigger a TCC permission prompt just by opening Settings.
         if !cfg!(target_os = "macos") {
             return EngineAvailability::unavailable("Apple Speech is only available on macOS");
+        }
+        if !is_bundled_app() {
+            return EngineAvailability::unavailable(
+                "Apple Speech needs the packaged app — a dev build has no Info.plist, so macOS refuses Speech Recognition. Run `pnpm desktop:app:dev`, or download a Whisper or Parakeet model to dictate from this build.",
+            );
         }
         match find_sidecar("apple-speech") {
             Ok(_) => EngineAvailability::available(),

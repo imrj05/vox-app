@@ -28,7 +28,9 @@ export const WHISPER_MODE_KEY = "whisper_mode";
 export const ENGINE_KEY = "engine";
 export const ENGINE_FALLBACK_ENABLED_KEY = "engine_fallback_enabled";
 export const ENGINE_FALLBACK_TARGET_KEY = "engine_fallback_target";
-export const DEFAULT_SELECTED_MODEL = "base.en";
+/** Pinned model before the user picks one. Apple is the default engine, so
+ * the pin only matters once Whisper is selected. */
+export const DEFAULT_SELECTED_MODEL = "large-v3-turbo";
 export const DEFAULT_ENHANCEMENT_MODEL = "qwen2.5-1.5b-instruct-q4-k-m";
 export const DEFAULT_HOTKEY = "Meta+Shift+Space";
 
@@ -44,8 +46,11 @@ export type TranscriptFormattingMode = "auto" | "plain" | "developer";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
 export type TranscriptRetention = "forever" | "7" | "30" | "90";
 export type DictationLanguage = "auto" | "en" | "hi" | "hinglish";
-/** Which ASR engine to use (spec §6). "auto" lets the router decide. */
-export type TranscriptionEngine = "auto" | "apple" | "whisper" | "parakeet";
+/**
+ * Which ASR engine runs. There is no "auto": the model chosen on the Models
+ * page decides the engine, so exactly one place selects it.
+ */
+export type TranscriptionEngine = "apple" | "whisper" | "parakeet";
 export type EngineFallbackTarget = "apple" | "whisper" | "parakeet";
 export const DEFAULT_TRIGGER_MODE: TriggerMode = "toggle";
 export const DEFAULT_INSERTION_METHOD: InsertionMethod = "typing";
@@ -54,7 +59,8 @@ export const DEFAULT_TRANSCRIPT_FORMATTING_MODE: TranscriptFormattingMode = "aut
 export const DEFAULT_CLEANUP_LEVEL: CleanupLevel = "none";
 export const DEFAULT_TRANSCRIPT_RETENTION: TranscriptRetention = "forever";
 export const DEFAULT_LANGUAGE: DictationLanguage = "auto";
-export const DEFAULT_ENGINE: TranscriptionEngine = "auto";
+/** Apple Speech is the default engine: it needs no download. */
+export const DEFAULT_ENGINE: TranscriptionEngine = "apple";
 export const DEFAULT_ENGINE_FALLBACK_ENABLED = true;
 export const DEFAULT_ENGINE_FALLBACK_TARGET: EngineFallbackTarget = "whisper";
 const SETTINGS_HYDRATE_TIMEOUT_MS = 5000;
@@ -95,6 +101,9 @@ export interface AppState {
   livePreviewEnabled: boolean;
   whisperMode: boolean;
   snippets: Snippet[];
+  /** Live recording state, mirrored by the Dictation page for the command palette. */
+  isRecording: boolean;
+  setIsRecording: (value: boolean) => void;
   /** Load all persisted settings from SQLite. Call once on app mount. */
   hydrate: () => Promise<void>;
   setOnboardingComplete: (value: boolean) => Promise<void>;
@@ -175,6 +184,7 @@ const defaultAppState = {
   livePreviewEnabled: true,
   whisperMode: false,
   snippets: [],
+  isRecording: false,
   // Model downloads
   downloadingModels: [],
   pausedModels: [],
@@ -455,6 +465,7 @@ export const useAppStore = create<AppState>((set) => ({
   loadSnippets: async () => {
     await syncSnippetsToNative();
   },
+  setIsRecording: (value) => set({ isRecording: value }),
   addSnippet: async (trigger, expansion, appPattern) => {
     await saveSnippet(trigger, expansion, appPattern);
     await syncSnippetsToNative();
@@ -628,7 +639,9 @@ function parseLanguageSetting(value: string | null): DictationLanguage {
     : DEFAULT_LANGUAGE;
 }
 function parseEngineSetting(value: string | null): TranscriptionEngine {
-  return value === "apple" || value === "whisper" || value === "parakeet" || value === "auto"
+  // Workspaces saved while "Automatic" existed migrate to the default engine:
+  // picking a model is now the only way to choose an engine.
+  return value === "apple" || value === "whisper" || value === "parakeet"
     ? value
     : DEFAULT_ENGINE;
 }

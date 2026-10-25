@@ -681,8 +681,10 @@ struct EngineSelectionState {
 impl Default for EngineSelectionState {
     fn default() -> Self {
         Self {
-            engine: Mutex::new("auto".to_string()),
-            selected_model: Mutex::new("base.en".to_string()),
+            // Apple Speech needs no download, so it is the out-of-the-box
+            // engine. Any other model must be downloaded and chosen explicitly.
+            engine: Mutex::new("apple".to_string()),
+            selected_model: Mutex::new("large-v3-turbo".to_string()),
             fallback_enabled: AtomicBool::new(true),
             preferred_fallback: Mutex::new("whisper".to_string()),
             last_engine: Mutex::new(String::new()),
@@ -1022,6 +1024,49 @@ fn check_microphone_permission() -> bool {
 #[tauri::command]
 fn check_microphone_permission() -> bool {
     true
+}
+
+/// Speech Recognition access — the one extra permission the built-in Apple
+/// engine needs. Only the process that owns an SFSpeechRecognizer can read or
+/// ask for this state, so both commands delegate to the Apple Speech sidecar:
+/// `--check-permission` never prompts, `--request-permission` shows the macOS
+/// prompt when the user has not answered yet.
+#[cfg(target_os = "macos")]
+fn run_apple_speech_permission(argument: &str) -> Result<bool, String> {
+    let sidecar = engines::find_sidecar("apple-speech")?;
+    let status = std::process::Command::new(sidecar)
+        .arg(argument)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|error| format!("Could not run the Apple Speech runtime: {error}"))?;
+    // The sidecar exits 0 only when the state is `authorized`.
+    Ok(matches!(status.code(), Some(0)))
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn check_speech_permission() -> bool {
+    run_apple_speech_permission("--check-permission").unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn request_speech_permission() -> Result<bool, String> {
+    run_apple_speech_permission("--request-permission")
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn check_speech_permission() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn request_speech_permission() -> Result<bool, String> {
+    Err("Apple Speech is only available on macOS".to_string())
 }
 
 /// Raw macOS microphone authorization state so the UI can react to WHY the
@@ -2340,16 +2385,29 @@ fn transcribe_recording_inner(
         .unwrap_or_else(|| {
             (
                 "auto".to_string(),
-                "base.en".to_string(),
+                "large-v3-turbo".to_string(),
                 true,
                 "whisper".to_string(),
                 String::new(),
             )
         });
-    // Keep the global hotkey path aligned with the UI's Whisper pin. Apple
-    // Speech and Parakeet intentionally continue to choose their own models.
-    let requested_model =
-        model_name.or_else(|| (engine_pref == "whisper").then_some(selected_model));
+    // The pinned model belongs to one engine family. Pass it only to the
+    // engine that owns it, so switching engines never makes a pin from the
+    // other family look like a wrong-engine error. A pin that is no longer in
+    // the catalog or is not on disk is dropped too, so a stale pin from an
+    // older release never turns into a hard failure. Apple Speech has no model
+    // file, so it never receives a pin.
+    let pin_downloaded = crate::whisper::list_models(&models_dir)
+        .iter()
+        .any(|model| model.name == selected_model && model.downloaded);
+    let requested_model = model_name.or_else(|| {
+        let pin_is_parakeet = selected_model.starts_with("parakeet");
+        match engine_pref.as_str() {
+            "whisper" if !pin_is_parakeet && pin_downloaded => Some(selected_model),
+            "parakeet" if pin_is_parakeet && pin_downloaded => Some(selected_model),
+            _ => None,
+        }
+    });
     let fallback_report: Mutex<Option<engines::EngineFallback>> = Mutex::new(None);
     let live_preview = preview_text
         .map(|text| text.trim().to_string())
@@ -3336,8 +3394,29 @@ fn set_transcription_engine(
     if should_warm_apple {
         // Sidecar startup must never delay settings hydration or the UI.
         std::thread::spawn(|| {
-            if let Err(error) = engines::apple_speech::warm_serve_session() {
-                eprintln!("[VOX][ASR] apple-speech prewarm skipped: {error}");
+            // Apple on-device is the default engine, so the recognizer needs
+            // Speech Recognition access. Ask here, in the app's own context,
+            // instead of letting the first dictation fail on a permission the
+            // user was never shown. Asking again after a refusal does nothing:
+            // macOS never re-prompts, so this cannot nag.
+            // A bare development binary has no Info.plist, and macOS aborts the
+            // sidecar that asks for Speech Recognition (TCC privacy violation),
+            // so only ask from a packaged app.
+            if engines::apple_speech::is_bundled_app() && !check_speech_permission() {
+                match request_speech_permission() {
+                    Ok(true) => eprintln!("[VOX][ASR] Speech Recognition granted"),
+                    Ok(false) => {
+                        eprintln!("[VOX][ASR] Speech Recognition still not granted; enable Vox in System Settings → Privacy & Security → Speech Recognition")
+                    }
+                    Err(error) => eprintln!("[VOX][ASR] Speech Recognition request failed: {error}"),
+                }
+            }
+            // A development build cannot use Apple Speech at all (see
+            // `availability`), so do not keep a sidecar alive for it.
+            if engines::apple_speech::is_bundled_app() {
+                if let Err(error) = engines::apple_speech::warm_serve_session() {
+                    eprintln!("[VOX][ASR] apple-speech prewarm skipped: {error}");
+                }
             }
         });
     }
@@ -3791,6 +3870,8 @@ pub fn run() {
             check_accessibility_permission,
             request_accessibility_permission,
             check_microphone_permission,
+            check_speech_permission,
+            request_speech_permission,
             check_input_monitoring_permission,
             request_input_monitoring_permission,
             resolve_app_icon,

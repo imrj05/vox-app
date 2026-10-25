@@ -222,7 +222,7 @@ body,
     --shimmer-highlight: #f7ede8;
     position: relative;
     display: inline-block;
-    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1;
@@ -287,7 +287,7 @@ body,
 }
 
 .widget-status-text {
-    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1.2;
@@ -342,7 +342,7 @@ body,
     border-radius: 999px;
     background: rgb(255 255 255 / 5%);
     color: rgb(247 237 232 / 78%);
-    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     font-size: 11.5px;
     font-weight: 600;
     line-height: 1;
@@ -441,7 +441,7 @@ body,
     position: relative;
     z-index: 1;
     min-width: 26px;
-    font-family: "Geist Mono", ui-monospace, monospace;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 11px;
     font-weight: 500;
     line-height: 1;
@@ -490,7 +490,7 @@ body,
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     font-size: 11px;
     font-weight: 500;
     line-height: 1.2;

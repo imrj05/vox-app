@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useEffectEvent } from "react";
 import { Check, Copy, FileText, Mic, Plus, Search, Sparkles, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import {
   type NoteTask,
 } from "@/lib/native";
 import { useAppStore } from "@/store/app-store";
+import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
 
 const AUTOSAVE_DELAY_MS = 600;
 
@@ -51,6 +52,15 @@ export function NotesPage() {
     setContent(note.content);
     setPreview(false);
   };
+
+  // The command palette can open a specific note.
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.notes, (command) => {
+      if (command.kind !== "focus-note") return;
+      const target = notes.find((note) => note.id === command.payload);
+      if (target) selectNote(target);
+    });
+  }, [notes]);
 
   // Load notes on mount
   useEffect(() => {
@@ -173,6 +183,25 @@ export function NotesPage() {
     }
   };
 
+  // The command palette can create a note (optionally a meeting template) from
+  // any page. `useEffectEvent` keeps the handler stable while always calling
+  // the latest implementation.
+  const handleNewNoteEvent = useEffectEvent((template?: string) => {
+    if (template === "meeting") {
+      void createMeetingNote();
+      return;
+    }
+    void createNote();
+  });
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.notes, (command) => {
+      if (command.kind !== "new-note") return;
+      handleNewNoteEvent(
+        typeof command.payload === "string" ? command.payload : undefined,
+      );
+    });
+  }, []);
+
   const runMeetingTask = async (task: NoteTask) => {
     if (!content.trim() || meetingBusy) return;
     setMeetingBusy(task);
@@ -210,7 +239,8 @@ export function NotesPage() {
             status.appName,
             status.windowTitle,
             status.previewText,
-            status.previewConfidence
+            status.previewConfidence,
+            !status.private
           );
           const nextContent = content.trim()
             ? `${content.trim()}\n\n${

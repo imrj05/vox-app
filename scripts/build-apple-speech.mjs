@@ -20,14 +20,15 @@ const destDir = path.join(srcTauri, "bin");
 fs.mkdirSync(destDir, { recursive: true });
 const dest = path.join(destDir, `apple-speech-${targetTriple}`);
 
-if (!rebuild && fs.existsSync(dest)) {
-  console.log(`apple-speech already staged at ${dest}`);
-  process.exit(0);
-}
-
-// Incremental rebuilds: swiftc is fast enough that always rebuilding --dev
-// would still slow the dev loop; rely on mtime comparison.
-if (!rebuild && fs.existsSync(dest)) {
+// swiftc is fast (a few seconds), so rebuild whenever the source is newer than
+// the staged binary. Skipping on mere existence silently shipped a stale engine
+// after every edit to main.swift.
+const sourceMtime = fs.statSync(source).mtimeMs;
+const staged = fs.existsSync(dest) ? fs.statSync(dest) : null;
+// A 0-byte staged file means a previous compile failed; rebuild instead of
+// reporting an empty engine as up to date.
+if (!rebuild && staged && staged.size > 0 && staged.mtimeMs > sourceMtime) {
+  console.log(`apple-speech up to date at ${dest}`);
   process.exit(0);
 }
 

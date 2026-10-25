@@ -10,10 +10,13 @@ import {
   Briefcase01Icon,
   Cancel01Icon,
   CancelCircleIcon as HugeCancelCircleIcon,
+  CancelSquareIcon,
   CheckmarkCircle01Icon,
   CodeIcon,
+  CommandIcon as HugeCommandIcon,
   Comment01Icon,
   Copy01Icon,
+  AppleIcon,
   CpuIcon,
   Database01Icon,
   Delete01Icon,
@@ -56,12 +59,14 @@ function hi(icon: IconSvgElement) {
 
 // Huge Icons equivalents for each previously-Poppins icon, preserved under
 // the `Ph*` names so every alias and re-export below keeps working.
+const PhAppleLogo = hi(AppleIcon);
 const PhArrowCounterClockwise = hi(RotateLeft01Icon);
 const PhArrowSquareOut = hi(ArrowUpRight01Icon);
 const PhBriefcase = hi(Briefcase01Icon);
 const PhChatCircle = hi(Comment01Icon);
 const PhCheckCircle = hi(CheckmarkCircle01Icon);
 const PhCode = hi(CodeIcon);
+const PhCommand = hi(HugeCommandIcon);
 const PhCopy = hi(Copy01Icon);
 const PhCpu = hi(CpuIcon);
 const PhDatabase = hi(Database01Icon);
@@ -82,6 +87,7 @@ const PhSquare = hi(Square01Icon);
 const PhSun = hi(Sun01Icon);
 const PhTrash = hi(Delete01Icon);
 const PhX = hi(Cancel01Icon);
+const PhXSquare = hi(CancelSquareIcon);
 
 // Inline SVG components kept for glyphs without a faithful Huge Icons
 // equivalent (chevrons, brand marks, bare check/minus, status shields,
@@ -212,6 +218,7 @@ const PhMonitor = MonitorSvg;
 const PhShieldWarning = ShieldWarningSvg;
 
 // App-specific aliases — keep these stable so imports across the app keep working.
+export const AppleLogo = PhAppleLogo;
 export const ArrowTurnBackward = PhArrowCounterClockwise;
 export const BookOpenText = BookOpenTextComp;
 export const Briefcase = PhBriefcase;
@@ -253,6 +260,7 @@ export const Pencil = PhPencil;
 export const PlusIcon = PlusSvg;
 export const Plus = PlusIcon;
 export const Search = PhMagnifyingGlass;
+export const CommandIcon = PhCommand;
 export const Settings = PhGear;
 export const ShieldAlert = PhShieldWarning;
 export const ShieldCheck = ShieldCheckSvg;
@@ -264,6 +272,7 @@ export const TrashIcon = PhTrash;
 export const Volume2 = VolumeHighSvg;
 export const Wand2 = PhMagicWand;
 export const X = PhX;
+export const XSquare = PhXSquare;
 export const XCircle = CancelCircleSvg;
 
 // shadcn/ui wrapper aliases.

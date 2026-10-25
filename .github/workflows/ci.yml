@@ -39,9 +39,39 @@ jobs:
         run: pnpm typecheck
       - name: Run web build
         run: pnpm build
+  # A version bump pushed to main is built and published by release.yml, so
+  # skip the duplicate macOS build here. Any other push/PR keeps building.
+  version-bump:
+    name: Detect version bump
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.detect.outputs.is_release }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Compare version with parent commit
+        id: detect
+        shell: bash
+        run: |
+          current="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)"
+          previous="$(git show HEAD^:src-tauri/tauri.conf.json 2>/dev/null | sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+          if [[ -n "$current" && "$current" != "$previous" ]]; then
+            echo "Version changed (${previous:-none} -> ${current}); release.yml handles this build."
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
   desktop-build:
     name: Desktop build (${{ matrix.platform.name }})
+    needs: version-bump
     if: |
+      always() &&
+      needs.version-bump.outputs.is_release != 'true' &&
       !startsWith(github.ref, 'refs/heads/version/') &&
       !startsWith(github.ref, 'refs/heads/release/')
     runs-on: ${{ matrix.platform.runner }}

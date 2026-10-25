@@ -1,6 +1,7 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Copy, Mic, Pencil, Trash2, Wand2 } from "@/components/icons";
+import NumberFlow from "@number-flow/react";
+import { Check, Copy, Mic, OctagonXIcon, Pencil, Trash2, Wand2 } from "@/components/icons";
 import {
   deleteRecordingFile,
   getNativeStatus,
@@ -26,24 +27,50 @@ import {
 } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
 import { GlowRecordButton } from "@/components/glow-record-button";
 import { cn } from "@/lib/utils";
 import { HotkeyPicker } from "@/components/hotkey-picker";
 import { withTimeout } from "@/lib/async";
 import { useAppStore } from "@/store/app-store";
+import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
 
 const HISTORY_LOAD_TIMEOUT_MS = 5000;
 const ANALYTICS_HISTORY_LIMIT = 1000;
 // How long a deleted transcript can still be undone from the toast.
 const UNDO_WINDOW_MS = 6000;
 
-const AnalyticsPanels = lazy(() =>
-  import("@/pages/home-analytics").then(({ AnalyticsPanels }) => ({ default: AnalyticsPanels }))
+const InsightsPanel = lazy(() =>
+  import("@/pages/home-analytics").then(({ InsightsPanel }) => ({ default: InsightsPanel }))
 );
 
+type LiveSession = {
+  mode: "recording" | "transcribing";
+  elapsedSeconds?: number;
+  appName: string | null;
+};
+
 export function HomePage() {
-  const { hotkey, setHotkey, selectedModel, triggerMode, engine } = useAppStore();
+  const {
+    hotkey,
+    setHotkey,
+    selectedModel,
+    triggerMode,
+    engine,
+    language,
+    cleanupLevel,
+    setIsRecording,
+  } = useAppStore();
   // The pinned model only applies when the Whisper engine is selected (spec
   // §7: an explicit engine choice is honored — the stale "active model" pin
   // must never silently override Apple Speech / Parakeet).
@@ -51,8 +78,6 @@ export function HomePage() {
   const [nativeStatus, setNativeStatus] = useState<NativeStatus | null>(null);
   const [recordingStatus, setRecordingStatus] =
     useState<RecordingStatus | null>(null);
-  const [transcriptionResult, setTranscriptionResult] =
-    useState<TranscriptionResult | null>(null);
   const [history, setHistory] = useState<TranscriptRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -74,6 +99,68 @@ export function HomePage() {
     duration?: number;
     action?: { label: string; onClick: () => void };
   } | null>(null);
+
+  // Mirrors the native widget state so this page reflects sessions started with
+  // the global shortcut, not only the ones started from the button below.
+  const [liveSession, setLiveSession] = useState<LiveSession | null>(null);
+  // Streaming partial transcript (Apple Speech only). Rendered live in the hero
+  // so the user sees their words while speaking.
+  const [liveText, setLiveText] = useState("");
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ text: string; isFinal: boolean }>(
+      "vox-live-transcript",
+      (event) => {
+        setLiveText(event.payload?.text ?? "");
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // The command palette can trigger a recording from anywhere in the app.
+  // The handler is registered further down, right after `toggleRecording` exists.
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ mode?: string; elapsedSeconds?: number; appName?: string | null }>(
+      "vox-widget-state",
+      (event) => {
+        const { mode, elapsedSeconds, appName } = event.payload;
+        setLiveSession(
+          mode === "recording" || mode === "transcribing"
+            ? { mode, elapsedSeconds, appName: appName ?? null }
+            : null
+        );
+      }
+    ).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Local ticking for sessions started from this page — the widget event
+  // stream only carries elapsed time when the floating widget is enabled.
+  const pageRecording = recordingStatus?.isRecording ?? false;
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!pageRecording) return;
+    const startedAt = Date.now();
+    const id = window.setInterval(() => {
+      setSessionSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+      setSessionSeconds(0);
+    };
+  }, [pageRecording]);
 
   useEffect(() => {
     if (!toast) return;
@@ -102,14 +189,7 @@ export function HomePage() {
     await setHotkey(shortcut);
   };
 
-  const widgetMode = recordingStatus?.isRecording
-    ? "recording"
-    : transcribing
-      ? "transcribing"
-      : null;
-
   const applyTranscriptionResult = async (result: TranscriptionResult) => {
-    setTranscriptionResult(result);
     await saveTranscript(result.text, undefined, result.appName, result.durationSeconds, result.rawText ?? null, result.asrText ?? null, result.language ?? "en", result.engine ?? null, result.timings ?? null);
     await saveCorrections(result.corrections ?? [], result.appName).catch(() => {});
     await deleteRecordingFile(result.audioPath).catch(() => {});
@@ -152,6 +232,7 @@ export function HomePage() {
       const result = event.payload;
       setTranscribing(false);
       setRecordingBusy(false);
+      setLiveText("");
       setRecordingStatus({
         isRecording: false,
         path: result.audioPath,
@@ -345,6 +426,7 @@ export function HomePage() {
     setError(null);
     setRetryPath(null);
     let failedPath: string | null = null;
+    setLiveText("");
 
     try {
       if (recordingStatus?.isRecording) {
@@ -360,7 +442,8 @@ export function HomePage() {
             status.appName,
             status.windowTitle,
             status.previewText,
-            status.previewConfidence
+            status.previewConfidence,
+            !status.private
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;
@@ -371,10 +454,6 @@ export function HomePage() {
 
       const status = await startRecording(triggerMode === "handsFree");
       setRecordingStatus(status);
-
-      if (status.isRecording) {
-        setTranscriptionResult(null);
-      }
     } catch (err) {
       // Keep the recording file so the user can retry transcription.
       if (failedPath) {
@@ -387,46 +466,39 @@ export function HomePage() {
     }
   };
 
-  const transcribe = async () => {
-    if (!recordingStatus?.path) return;
+  // The command palette can trigger a recording from anywhere in the app.
+  // `useEffectEvent` keeps the handler stable while always calling the latest
+  // `toggleRecording`.
+  const handleToggleRecordingEvent = useEffectEvent(() => {
+    void toggleRecording();
+  });
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.home, (command) => {
+      if (command.kind === "toggle-recording") {
+        handleToggleRecordingEvent();
+      }
+    });
+  }, []);
 
-    setTranscribing(true);
-    setError(null);
-
-    try {
-      const result = await transcribeRecording(
-        recordingStatus.path,
-        requestedModel,
-        recordingStatus.appName,
-        recordingStatus.windowTitle,
-        recordingStatus.previewText,
-        recordingStatus.previewConfidence
-      );
-      result.appName = recordingStatus.appName;
-      result.durationSeconds = recordingStatus.durationSeconds;
-      await applyTranscriptionResult(result);
-      setRetryPath(null);
-    } catch (err) {
-      // Keep the recording file so the user can retry transcription.
-      setRetryPath(recordingStatus.path);
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setTranscribing(false);
-    }
-  };
+  // Mirror the recording state so the command palette can label its action.
+  useEffect(() => {
+    setIsRecording(Boolean(recordingStatus?.isRecording) || liveSession?.mode === "recording");
+  }, [recordingStatus?.isRecording, liveSession?.mode, setIsRecording]);
 
   const retryTranscription = async () => {
     if (!retryPath) return;
 
     setTranscribing(true);
     setError(null);
-
     try {
       const result = await transcribeRecording(
         retryPath,
         requestedModel,
         recordingStatus?.appName ?? null,
-        recordingStatus?.windowTitle ?? null
+        recordingStatus?.windowTitle ?? null,
+        undefined,
+        undefined,
+        !recordingStatus?.private
       );
       result.appName = recordingStatus?.appName ?? null;
       result.durationSeconds = recordingStatus?.durationSeconds ?? null;
@@ -564,180 +636,97 @@ export function HomePage() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="page-shell relative">
-        {widgetMode && <DictationWidget mode={widgetMode} />}
-
+      <div className="page-shell">
         <header className="page-header">
           <div>
             <h1 className="page-title">Dictation</h1>
             <p className="page-description">
-              Your personal local dictation dashboard.
+              Press your shortcut anywhere, or record here. Audio and text never
+              leave this device.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setHotkeyPickerOpen(true)}
-            className="group inline-flex shrink-0 items-center gap-2.5 rounded-full border border-border bg-card py-1.5 pl-4 pr-2 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <span className="font-medium">Global shortcut</span>
-            <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-[11px] font-semibold tracking-widest text-foreground">
-              {formatShortcut(hotkey)}
-            </kbd>
-            <Pencil className="h-3 w-3 opacity-60 transition-opacity group-hover:opacity-100" />
-          </button>
         </header>
 
-        <CommandCenterCard
+        <DictationPanel
           hotkey={hotkey}
           engine={engine}
           selectedModel={selectedModel}
+          language={language}
+          cleanupLevel={cleanupLevel}
+          triggerMode={triggerMode}
           nativeStatus={nativeStatus}
           recordingStatus={recordingStatus}
+          liveSession={liveSession}
+          liveText={liveText}
+          pageElapsedSeconds={sessionSeconds}
           recordingBusy={recordingBusy}
           checking={checking}
           transcribing={transcribing}
+          lastDuration={lastDuration}
           onToggleRecording={toggleRecording}
           onCheckEngine={checkEngine}
-          onTranscribe={transcribe}
           onEditHotkey={() => setHotkeyPickerOpen(true)}
         />
 
         {error && (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="min-w-0">{error}</span>
-              {retryPath && !transcribing && (
+          <Alert variant="destructive">
+            <OctagonXIcon />
+            <AlertTitle>Dictation ran into a problem</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+            {retryPath && !transcribing && (
+              <AlertAction>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => void retryTranscription()}
-                  className="shrink-0"
                 >
-                  <Wand2 className="h-4 w-4" />
-                  Retry transcription
+                  <Wand2 data-icon="inline-start" />
+                  Retry
                 </Button>
-              )}
-            </div>
-          </div>
+              </AlertAction>
+            )}
+          </Alert>
         )}
 
-        {transcriptionResult && (
-          <section className="rounded-2xl border border-border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                  Latest transcript
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(transcriptionResult.text);
-                  setToast({ title: "Copied to clipboard" });
-                }}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                Copy
-              </button>
-            </div>
-            <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
-              {transcriptionResult.text}
-            </p>
-          </section>
-        )}
-
-        <section aria-label="Dictation summary" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="Words dictated" value={totalWords.toLocaleString()} />
-          <StatCard label="Transcriptions" value={history.length.toLocaleString()} />
-          <StatCard label="Time saved" value={`${timeSavedMinutes}m`} />
-          <StatCard
-            label="Time spent"
-            value={formatDurationCompact(totalDurationSeconds || lastDuration)}
+        <section
+          aria-label="Dictation summary"
+          className="stat-strip divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0"
+        >
+          <StatCell label="Words dictated" value={<NumberFlow value={totalWords} isolate willChange />} />
+          <StatCell label="Sessions" value={<NumberFlow value={history.length} isolate willChange />} />
+          <StatCell label="Time saved" value={`${timeSavedMinutes}m`} />
+          <StatCell
+            label="Median speed"
+            value={latency.samples > 0 ? formatMs(latency.totalP50) : "—"}
           />
         </section>
 
-        <section className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-6">
-                <div>
-                  <p className="font-mono text-5xl font-semibold text-primary">
-                    {currentStreak}
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">day streak</p>
-                </div>
-                <div className="h-12 w-px bg-border" />
-                <div>
-                  <p className="text-sm text-muted-foreground">Longest streak</p>
-                  <p className="text-xl font-semibold text-foreground">
-                    {longestStreak} {longestStreak === 1 ? "day" : "days"}
-                  </p>
-                </div>
-              </div>
-              <p className="hidden shrink-0 text-sm text-muted-foreground sm:block">
-                {currentStreak > 0 ? "Keep it going." : "Start today."}
-              </p>
-            </div>
-          </div>
+        <RecentTranscripts
+          history={history}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          appIcons={appIcons}
+          onDelete={handleDelete}
+        />
 
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <p className="mb-3 text-sm font-semibold text-foreground">Current setup</p>
-            <dl className="flex flex-col gap-3 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-muted-foreground">Engine</dt>
-                <dd className="flex items-center gap-2">
-                  <span className="font-mono text-xs capitalize text-foreground">
-                    {engine === "auto" ? "Automatic" : engine}
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                    <span
-                      className={cn(
-                        "h-1 w-1 rounded-full",
-                        nativeStatus ? "bg-primary" : "bg-muted-foreground/60"
-                      )}
-                    />
-                    {nativeStatus ? "Ready" : checking ? "Checking…" : "Not checked"}
-                  </span>
-                </dd>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-muted-foreground">Model</dt>
-                <dd className="font-mono text-xs text-foreground">
-                  {activeModelLabel(engine, selectedModel)}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </section>
-
-        <div className="grid gap-5">
-          <Suspense fallback={<AnalyticsLoading />}>
-            <AnalyticsPanels
-              activitySummary={activitySummary}
-              activityDays={activityDays}
-              topApps={topApps}
-              appIcons={appIcons}
-              historyLoading={historyLoading}
-              hourlyActivity={hourlyActivity}
-              usageTrend={usageTrend}
-              dailyWordTrend={dailyWordTrend}
-              totalDurationSeconds={totalDurationSeconds}
-              latency={latency}
-            />
-          </Suspense>
-        </div>
-
-        <section className="rounded-2xl border border-border bg-card p-5">
-          <RecentTranscripts
-            history={history}
-            historyLoading={historyLoading}
-            historyError={historyError}
+        <Suspense fallback={<AnalyticsLoading />}>
+          <InsightsPanel
+            currentStreak={currentStreak}
+            longestStreak={longestStreak}
+            totalWords={totalWords}
+            historyCount={history.length}
+            activitySummary={activitySummary}
+            activityDays={activityDays}
+            topApps={topApps}
             appIcons={appIcons}
-            onDelete={handleDelete}
+            historyLoading={historyLoading}
+            hourlyActivity={hourlyActivity}
+            usageTrend={usageTrend}
+            dailyWordTrend={dailyWordTrend}
+            totalDurationSeconds={totalDurationSeconds}
+            latency={latency}
           />
-        </section>
+        </Suspense>
       </div>
 
       <HotkeyPicker
@@ -982,152 +971,288 @@ function AnalyticsLoading() {
   );
 }
 
-function CommandCenterCard({
+function DictationPanel({
   hotkey,
   engine,
   selectedModel,
+  language,
+  cleanupLevel,
+  triggerMode,
   nativeStatus,
   recordingStatus,
+  liveSession,
+  liveText,
+  pageElapsedSeconds,
   recordingBusy,
   checking,
   transcribing,
+  lastDuration,
   onToggleRecording,
   onCheckEngine,
-  onTranscribe,
   onEditHotkey,
 }: {
   hotkey: string;
   engine: string;
   selectedModel: string;
+  language: string;
+  cleanupLevel: string;
+  triggerMode: string;
   nativeStatus: NativeStatus | null;
   recordingStatus: RecordingStatus | null;
+  liveSession: LiveSession | null;
+  liveText: string;
+  pageElapsedSeconds: number;
   recordingBusy: boolean;
   checking: boolean;
   transcribing: boolean;
+  lastDuration: number;
   onToggleRecording: () => void;
   onCheckEngine: () => void;
-  onTranscribe: () => void;
   onEditHotkey: () => void;
 }) {
-  const isRecording = recordingStatus?.isRecording ?? false;
+  const pageRecording = recordingStatus?.isRecording ?? false;
+  const shortcutSession =
+    liveSession?.mode === "recording" || liveSession?.mode === "transcribing";
+  const isRecording = pageRecording || liveSession?.mode === "recording";
+  const isTranscribing = transcribing || liveSession?.mode === "transcribing";
+  const tone: "ready" | "recording" | "busy" | "down" = isRecording
+    ? "recording"
+    : isTranscribing || recordingBusy
+      ? "busy"
+      : nativeStatus
+        ? "ready"
+        : "down";
+  const elapsedSeconds = pageRecording
+    ? pageElapsedSeconds
+    : liveSession?.elapsedSeconds;
+  const elapsedText =
+    isRecording && elapsedSeconds != null ? formatElapsed(elapsedSeconds) : null;
+
   const statusLabel = isRecording
-    ? "Recording"
-    : transcribing
+    ? elapsedText
+      ? `Recording ${elapsedText}`
+      : "Recording"
+    : isTranscribing
       ? "Transcribing"
       : recordingBusy
         ? "Working"
         : nativeStatus
           ? "Ready"
-          : "Recording unavailable";
-  const helperText = isRecording
-    ? "Listening locally. Press stop when you are done."
-    : transcribing
-      ? "Converting your audio into text."
+          : "Unavailable";
+
+  const primaryLine = isRecording
+    ? liveSession?.appName
+      ? `Listening for ${liveSession.appName}.`
+      : "Listening locally."
+    : isTranscribing
+      ? "Turning your audio into text."
       : nativeStatus
-        ? "Start a local dictation session from here or use the global shortcut."
-        : "Recording isn't ready. Restart Vox, or recheck the engine below.";
-  const tone = isRecording
-    ? "recording"
-    : transcribing || recordingBusy
-      ? "busy"
+        ? "Ready when you are."
+        : "Recording isn't ready.";
+
+  const secondaryLine = isRecording
+    ? "Press stop when you're done. The text is inserted where you're typing."
+    : isTranscribing
+      ? "This usually takes a few seconds."
       : nativeStatus
-        ? "ready"
-        : "down";
-  const pillStyles: Record<string, string> = {
+        ? lastDuration > 0
+          ? `Click the mic or press ${formatShortcut(hotkey)}. Last dictation ${formatDurationCompact(lastDuration)}.`
+          : `Click the mic or press ${formatShortcut(hotkey)}.`
+        : "Restart Vox, or recheck the engine below.";
+
+  return (
+    <section className="panel hero-surface overflow-hidden" data-tone={tone}>
+      <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-6">
+        <GlowRecordButton
+          isRecording={isRecording}
+          disabled={
+            !nativeStatus || recordingBusy || transcribing || (shortcutSession && !pageRecording)
+          }
+          onClick={onToggleRecording}
+        />
+        <div className="min-w-0 flex-1">
+          <StatusPill tone={tone} label={statusLabel} />
+          <span className="sr-only" aria-live="polite" aria-atomic="true">
+            {statusLabel}
+            {liveText ? `. ${liveText}` : ""}
+          </span>
+          {liveText ? (
+            <p
+              aria-live="polite"
+              className="mt-2 line-clamp-3 text-[15px] leading-6 font-medium tracking-tight text-foreground"
+            >
+              {liveText}
+            </p>
+          ) : (
+            <p className="mt-2 text-[15px] leading-6 font-semibold tracking-tight text-foreground">{primaryLine}</p>
+          )}
+          <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{secondaryLine}</p>
+        </div>
+
+        {(isRecording || isTranscribing) && (
+          <div className="hidden shrink-0 flex-col items-end gap-2 sm:flex" aria-hidden="true">
+            {isRecording ? (
+              <>
+                {elapsedText && (
+                  <p className="font-mono text-3xl font-semibold tabular-nums leading-none tracking-tight text-foreground">
+                    {elapsedText}
+                  </p>
+                )}
+                <span className="flex h-5 items-end gap-1">
+                  {EQ_BAR_HEIGHTS.map((height, index) => (
+                    <span
+                      key={index}
+                      className="eq-bar w-[3px] rounded-full bg-destructive/80"
+                      style={{ height, animationDelay: `${index * 0.12}s` }}
+                    />
+                  ))}
+                </span>
+              </>
+            ) : (
+              <>
+                <Spinner className="size-5" />
+                <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                  Processing
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      <dl className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-border px-5 py-3 sm:px-6">
+        <MetaCell label="Engine" value={engineDisplayName(engine) ?? "Auto"} />
+        <MetaCell label="Model" value={activeModelLabel(engine, selectedModel)} />
+        <MetaCell label="Language" value={languageLabel(language)} />
+        <MetaCell label="Cleanup" value={cleanupLevelLabel(cleanupLevel)} />
+        <MetaCell label="Mode" value={triggerModeLabel(triggerMode)} />
+        <div className="min-w-0">
+          <dt className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Shortcut
+          </dt>
+          <dd className="mt-1">
+            <button
+              type="button"
+              onClick={onEditHotkey}
+              className="group inline-flex cursor-pointer items-center gap-1.5 rounded-md text-xs text-foreground transition-colors hover:text-primary"
+            >
+              <Kbd>{formatShortcut(hotkey)}</Kbd>
+              <Pencil className="h-3 w-3 opacity-50 transition-opacity group-hover:opacity-100" />
+            </button>
+          </dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Transform
+          </dt>
+          <dd className="mt-1">
+            <Kbd className="text-muted-foreground">{TRANSFORM_SHORTCUT}</Kbd>
+          </dd>
+        </div>
+
+        {!nativeStatus && (
+          <div className="ml-auto">
+            <Button variant="ghost" size="sm" onClick={onCheckEngine} disabled={checking}>
+              {checking ? "Checking…" : "Recheck engine"}
+            </Button>
+          </div>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+const EQ_BAR_HEIGHTS = [16, 20, 13, 22, 15];
+
+/** Native transform shortcut, registered in Rust as ⌘⇧V. */
+const TRANSFORM_SHORTCUT = "⌘⇧V";
+
+function StatusPill({
+  tone,
+  label,
+}: {
+  tone: "ready" | "recording" | "busy" | "down";
+  label: string;
+}) {
+  const pillStyles = {
     ready: "bg-primary/10 text-primary",
     recording: "bg-destructive/10 text-destructive",
     busy: "bg-muted text-muted-foreground",
     down: "bg-muted text-muted-foreground",
   };
-  const dotStyles: Record<string, string> = {
+  const dotStyles = {
     ready: "bg-primary",
     recording: "bg-destructive",
     busy: "bg-primary/70",
     down: "bg-muted-foreground/60",
   };
-  const animateDot = tone === "recording" || tone === "busy";
 
   return (
-    <section className="relative overflow-hidden rounded-2xl border border-border bg-card">
-      <div className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
-      <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between lg:p-7">
-        <div className="flex min-w-0 items-center gap-4 sm:gap-5">
-          <GlowRecordButton
-            isRecording={isRecording}
-            disabled={!nativeStatus || recordingBusy || transcribing}
-            onClick={onToggleRecording}
-          />
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h2 className="text-xl font-semibold tracking-tight text-foreground">
-                Start dictating
-              </h2>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
-                  pillStyles[tone]
-                )}
-              >
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 rounded-full",
-                    dotStyles[tone],
-                    animateDot && "animate-pulse"
-                  )}
-                />
-                {statusLabel}
-              </span>
-            </div>
-            <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">{helperText}</p>
-            <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px]">
-              <button
-                onClick={onEditHotkey}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {formatShortcut(hotkey)}
-              </button>
-              <span className="rounded-lg border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
-                {activeModelLabel(engine, selectedModel)}
-              </span>
-              {!nativeStatus && (
-                <button
-                  onClick={onCheckEngine}
-                  disabled={checking}
-                  className="cursor-pointer rounded-lg px-2.5 py-1 font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-                >
-                  {checking ? "Checking…" : "Recheck"}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row lg:items-end">
-          <Button onClick={onToggleRecording} disabled={!nativeStatus || recordingBusy || transcribing}>
-            <Mic className="h-4 w-4" />
-            {isRecording ? "Stop Recording" : "Start Recording"}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={onTranscribe}
-            disabled={!recordingStatus?.path || isRecording || transcribing}
-          >
-            <Wand2 className="h-4 w-4" />
-            {transcribing ? "Transcribing…" : "Transcribe Last"}
-          </Button>
-        </div>
-      </div>
-    </section>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+        pillStyles[tone]
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          dotStyles[tone],
+          (tone === "recording" || tone === "busy") && "animate-pulse"
+        )}
+      />
+      {label}
+    </span>
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function MetaCell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-5">
-      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+    <div className="min-w-0">
+      <dt className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="mt-1 truncate font-mono text-xs text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function languageLabel(language: string) {
+  switch (language) {
+    case "en":
+      return "English";
+    case "hi":
+      return "Hindi";
+    case "hinglish":
+      return "Hinglish";
+    default:
+      return "Auto";
+  }
+}
+
+function cleanupLevelLabel(level: string) {
+  if (level === "none") return "Off";
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
+function triggerModeLabel(mode: string) {
+  switch (mode) {
+    case "pushToTalk":
+      return "Push to talk";
+    case "handsFree":
+      return "Hands-free";
+    default:
+      return "Toggle";
+  }
+}
+
+function StatCell({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="stat-cell">
+      <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </p>
-      <p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-foreground">
+      <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-foreground">
         {value}
       </p>
     </div>
@@ -1150,68 +1275,72 @@ function RecentTranscripts({
   const recent = history.slice(0, 6);
 
   return (
-    <div>
-      <div className="mb-3 flex items-center justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">Recent transcripts</h3>
+    <section className="panel overflow-hidden" aria-label="Recent transcripts">
+      <header className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-foreground">Recent transcripts</h2>
+          {history.length > 0 && (
+            <Badge variant="secondary" className="px-1.5 font-mono tabular-nums">
+              {history.length}
+            </Badge>
+          )}
         </div>
-        {history.length > 0 && (
-          <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
-            {history.length} total
-          </span>
-        )}
-      </div>
+        <p className="text-xs text-muted-foreground">
+          {historyLoading ? "Loading…" : "Newest first"}
+        </p>
+      </header>
 
       {historyLoading ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          {Array.from({ length: 4 }, (_, index) => (
-            <div key={index} className="rounded-xl border border-border bg-background p-3">
-              <div className="flex items-center gap-2.5">
-                <div className="h-8 w-8 rounded-lg bg-muted" />
-                <div className="space-y-2">
-                  <div className="h-3 w-24 rounded bg-muted" />
-                  <div className="h-2.5 w-32 rounded bg-muted/70" />
-                </div>
+        <div className="divide-y divide-border">
+          {[0, 1, 2].map((row) => (
+            <div key={row} className="flex gap-3 px-5 py-3.5">
+              <div className="h-7 w-7 shrink-0 rounded-md bg-muted" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="h-3 w-40 rounded bg-muted" />
+                <div className="h-3 w-full max-w-xl rounded bg-muted/70" />
               </div>
             </div>
           ))}
         </div>
       ) : historyError ? (
-        <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          {historyError}
-        </div>
+        <p className="px-5 py-4 text-sm text-destructive">{historyError}</p>
       ) : recent.length > 0 ? (
-        <div className="grid gap-2 md:grid-cols-2">
-          {recent.map((item) => (
-            <TranscriptCard
+        <div className="divide-y divide-border">
+          {recent.map((item, index) => (
+            <TranscriptRow
               key={item.id}
               item={item}
+              latest={index === 0}
               iconSrc={appIcons[item.app_name ?? "Unknown app"] ?? null}
               onDelete={onDelete}
             />
           ))}
         </div>
       ) : (
-        <div className="rounded-xl border border-dashed border-border bg-background px-5 py-6 text-center">
-          <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-            <Mic className="h-4 w-4" />
-          </div>
-          <p className="text-sm font-medium text-foreground">No transcripts yet</p>
-          <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-            Start a dictation session and your latest transcript previews will appear here.
-          </p>
-        </div>
+        <Empty className="gap-3 p-10">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Mic />
+            </EmptyMedia>
+            <EmptyTitle className="text-base">No transcripts yet</EmptyTitle>
+            <EmptyDescription>
+              Your first dictation shows up here the moment you stop recording.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       )}
-    </div>
+    </section>
   );
 }
 
-function TranscriptCard({
+function TranscriptRow({
   item,
+  latest,
   iconSrc,
   onDelete,
 }: {
   item: TranscriptRow;
+  latest: boolean;
   iconSrc: string | null;
   onDelete: (id: number) => void;
 }) {
@@ -1226,74 +1355,72 @@ function TranscriptCard({
   };
 
   return (
-    <article
-      className="group relative overflow-hidden rounded-xl border border-border bg-background px-3 py-2.5 transition-colors hover:border-ring"
-    >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-      <div className="mb-2 flex items-center justify-between gap-2.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <AppBadge name={appName} iconSrc={iconSrc} className="h-8 w-8 rounded-lg text-[11px]" />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-foreground">{appName}</p>
-            <p className="text-[11px] text-muted-foreground">{formatTranscriptDate(item.created_at)}</p>
+    <article className="group flex gap-3 px-4 py-3.5 transition-colors hover:bg-muted/30 sm:px-5">
+      <AppBadge name={appName} iconSrc={iconSrc} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-xs font-medium text-foreground">{appName}</p>
+          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+            {formatTranscriptDate(item.created_at)}
+          </span>
+          {latest && (
+            <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[10px]">
+              Latest
+            </Badge>
+          )}
+          <div
+            className={cn(
+              "ml-auto flex shrink-0 items-center gap-0.5 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+              latest ? "opacity-100" : "opacity-0"
+            )}
+          >
+            <button
+              onClick={() => void copyTranscript()}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Copy transcript"
+            >
+              {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+            <button
+              onClick={() => onDelete(item.id)}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              aria-label="Delete transcript"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          <button
-            onClick={() => void copyTranscript()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Copy transcript"
-          >
-            {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
-          <button
-            onClick={() => onDelete(item.id)}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Delete transcript"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
 
-      <p className="line-clamp-2 text-sm leading-5 text-foreground/90">
-        {item.text}
-      </p>
+        <p className="mt-1 line-clamp-2 text-sm leading-6 text-foreground/90">{item.text}</p>
 
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
-        <span className="rounded-full border border-border bg-card px-2 py-0.5 font-mono">
-          {words} {words === 1 ? "word" : "words"}
-        </span>
-        {item.duration_seconds ? (
-          <span className="rounded-full border border-border bg-card px-2 py-0.5 font-mono">
-            {formatDurationCompact(item.duration_seconds)} audio
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          <span className="font-mono tabular-nums">
+            {words.toLocaleString()} {words === 1 ? "word" : "words"}
           </span>
-        ) : null}
+          {item.duration_seconds ? (
+            <span>· {formatDurationCompact(item.duration_seconds)}</span>
+          ) : null}
+          {item.engine ? <span>· {item.engine}</span> : null}
+          {item.language ? <span>· {item.language}</span> : null}
+        </div>
       </div>
     </article>
   );
 }
 
-function AppBadge({
-  name,
-  iconSrc,
-  className,
-}: {
-  name: string;
-  iconSrc: string | null;
-  className?: string;
-}) {
-  const initials = name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "?";
+function AppBadge({ name, iconSrc }: { name: string; iconSrc: string | null }) {
+  const initials =
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "?";
 
   return (
-    <div className={["flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-sidebar-accent font-mono text-xs font-semibold text-primary", className].filter(Boolean).join(" ")}>
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted/60 font-mono text-[10px] font-semibold text-muted-foreground">
       {iconSrc ? (
-        <img src={iconSrc} alt="" width="28" height="28" loading="lazy" className="h-7 w-7 rounded-md object-cover" />
+        <img src={iconSrc} alt="" width="20" height="20" loading="lazy" className="h-full w-full object-cover" />
       ) : (
         initials
       )}
@@ -1317,6 +1444,17 @@ function formatDurationCompact(seconds: number) {
   if (hours === 0) return `${minutes}m`;
   if (minutes === 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
+}
+
+function formatElapsed(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.floor(seconds % 60);
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatMs(ms: number) {
+  if (!ms || ms <= 0) return "0ms";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function formatTranscriptDate(timestamp: number) {
@@ -1348,42 +1486,4 @@ function startOfWeek(date: Date) {
   next.setHours(0, 0, 0, 0);
   next.setDate(next.getDate() - diff);
   return next;
-}
-
-function DictationWidget({ mode }: { mode: "recording" | "transcribing" }) {
-  const isRecording = mode === "recording";
-
-  return (
-    <div className="fixed right-6 top-14 z-40 flex animate-in items-center gap-3 overflow-hidden rounded-full border border-border/40 bg-card/30 py-1.5 pl-1.5 pr-4 shadow-[0_1px_1px_rgba(0,0,0,0.03),0_8px_24px_-8px_rgba(0,0,0,0.18),0_24px_48px_-24px_rgba(0,0,0,0.28)] duration-300 before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:backdrop-blur-2xl before:backdrop-saturate-180 fade-in-0 slide-in-from-top-2">
-      <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-foreground/10 to-transparent" />
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-gradient-to-b from-foreground to-foreground/90 text-background shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_2px_8px_-2px_rgba(0,0,0,0.35)]">
-        {isRecording ? <Mic className="h-4 w-4" /> : <Wand2 className="h-4 w-4" />}
-      </div>
-      <div className="min-w-0">
-        <p className="text-[13px] font-semibold leading-4 tracking-tight text-foreground">
-          {isRecording ? "Recording" : "Transcribing"}
-        </p>
-        <p className="text-[11px] leading-4 text-muted-foreground">
-          {isRecording ? "Listening locally" : "Converting voice to text"}
-        </p>
-      </div>
-      <span className="h-6 w-px shrink-0 bg-border/60" aria-hidden="true" />
-      <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
-        <span
-          className={[
-            "absolute inline-flex h-full w-full animate-ping rounded-full opacity-40",
-            isRecording ? "bg-destructive" : "bg-primary",
-          ].join(" ")}
-        />
-        <span
-          className={[
-            "relative inline-flex h-2 w-2 rounded-full shadow-[0_0_10px_2px]",
-            isRecording
-              ? "bg-destructive shadow-destructive/50"
-              : "bg-primary shadow-primary/50",
-          ].join(" ")}
-        />
-      </span>
-    </div>
-  );
 }

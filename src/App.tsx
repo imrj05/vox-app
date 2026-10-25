@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Sidebar } from "@/components/sidebar";
 import { Onboarding } from "@/components/onboarding";
 import { TransformOverlay } from "@/components/transform-overlay";
-import {
+import { CommandPalette, type NavTarget } from "@/components/command-palette";
+import { COMMAND_TARGETS, emitCommand, subscribeCommand } from "@/lib/commands";import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -41,7 +42,7 @@ import { configureErrorReporting } from "@/lib/error-reporting";
 
 const HomePage = lazy(() => import("@/pages/home").then(({ HomePage }) => ({ default: HomePage })));
 const TranscriptsPage = lazy(() => import("@/pages/transcripts").then(({ TranscriptsPage }) => ({ default: TranscriptsPage })));
-const CorrectionsPage = lazy(() => import("@/pages/corrections").then(({ CorrectionsPage }) => ({ default: CorrectionsPage })));
+const VocabularyPage = lazy(() => import("@/pages/vocabulary").then(({ VocabularyPage }) => ({ default: VocabularyPage })));
 const NotesPage = lazy(() => import("@/pages/notes").then(({ NotesPage }) => ({ default: NotesPage })));
 const ModelsPage = lazy(() => import("@/pages/models").then(({ ModelsPage }) => ({ default: ModelsPage })));
 const SettingsPage = lazy(() => import("@/pages/settings").then(({ SettingsPage }) => ({ default: SettingsPage })));
@@ -90,6 +91,7 @@ function App() {
     setShowUpdateDialog,
   } = useAppStore();
   const [activeNav, setActiveNav] = useState("home");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [transformOpen, setTransformOpen] = useState(false);
   const [transformText, setTransformText] = useState("");
   const [transformError, setTransformError] = useState<string | null>(null);
@@ -114,6 +116,86 @@ function App() {
       unlisten?.();
     };
   }, []);
+  // Global keyboard layer: ⌘K opens the command palette, ⌘1–⌘6 jump between
+  // pages, ⌘⇧D toggles a recording and ⌘N creates a note. The palette carries
+  // every other action, so the sidebar stays small.
+  useEffect(() => {
+    const isTyping = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return (
+        target.isContentEditable ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      );
+    };
+
+    // The native global shortcut is handled by Rust. If the user picked the
+    // same combination, let the native path own it — otherwise the app-level
+    // shortcut would toggle a second time and cancel it out.
+    const matchesGlobalHotkey = (event: KeyboardEvent) => {
+      const parts = [
+        event.metaKey ? "Meta" : "",
+        event.ctrlKey ? "Ctrl" : "",
+        event.altKey ? "Alt" : "",
+        event.shiftKey ? "Shift" : "",
+        event.key === " " ? "Space" : `Key${event.key.toUpperCase()}`,
+      ].filter(Boolean);
+      return hotkey.toLowerCase() === parts.join("+").toLowerCase();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+        return;
+      }
+      if (isTyping(event.target)) return;
+      if (key === "d" && event.shiftKey) {
+        if (matchesGlobalHotkey(event)) return;
+        event.preventDefault();
+        setActiveNav("home");
+        emitCommand(COMMAND_TARGETS.home, "toggle-recording");
+        return;
+      }
+      if (key === "n") {
+        if (matchesGlobalHotkey(event)) return;
+        event.preventDefault();
+        setActiveNav("notes");
+        emitCommand(COMMAND_TARGETS.notes, "new-note");
+        return;
+      }
+      const index = Number.parseInt(key, 10);
+      const targets: NavTarget[] = [
+        "home",
+        "transcripts",
+        "vocabulary",
+        "notes",
+        "models",
+        "settings",
+      ];
+      if (index >= 1 && index <= targets.length) {
+        event.preventDefault();
+        setActiveNav(targets[index - 1]);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [hotkey]);
+  // Mirror the native recording state so the command palette can label its
+  // action correctly, even when the Dictation page is not mounted.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ mode?: string }>("vox-widget-state", (event) => {
+      useAppStore.getState().setIsRecording(event.payload?.mode === "recording");
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
   // Hydrate store from SQLite on mount
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -123,6 +205,26 @@ function App() {
     return () => {
       unlisten?.();
     };
+  }, []);
+  // The transform overlay can be opened from the native ⌘⇧V shortcut or from
+  // the command palette.
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.app, (command) => {
+      if (command.kind !== "show-transform") return;
+      const detail = command.payload as
+        | { text?: string; error?: string }
+        | string
+        | undefined;
+      if (typeof detail === "string") {
+        setTransformOpen(true);
+        setTransformText(detail);
+        setTransformError(null);
+      } else {
+        setTransformOpen(true);
+        setTransformText(detail?.text ?? "");
+        setTransformError(detail?.error ?? null);
+      }
+    });
   }, []);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -284,8 +386,8 @@ function App() {
         return <HomePage />;
       case "transcripts":
         return <TranscriptsPage />;
-      case "corrections":
-        return <CorrectionsPage />;
+      case "vocabulary":
+        return <VocabularyPage />;
       case "notes":
         return <NotesPage />;
       case "models":
@@ -300,6 +402,11 @@ function App() {
   };
   return (
     <TooltipProvider delayDuration={300}>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onNavigate={(target) => setActiveNav(target)}
+      />
       <TransformOverlay
         key={transformOpen ? "open" : "closed"}
         open={transformOpen}
@@ -373,6 +480,7 @@ function App() {
           <Sidebar
             activeNav={activeNav}
             onNavChange={setActiveNav}
+            onOpenPalette={() => setPaletteOpen(true)}
           />
           <SidebarInset className="overflow-hidden bg-[linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--muted)_22%,var(--background)))]">
             <main id="main-content" className="flex-1 overflow-y-auto scrollbar-thin">

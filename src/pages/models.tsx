@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Download, Mic, Sparkles, Square, Trash2, Wand2 } from "@/components/icons";
+import { AppleLogo, Check, Download, Mic, Sparkles, Square, Trash2, Wand2 } from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,53 +41,22 @@ import { activeModelLabel } from "@/lib/model-label";
 import { useAppStore } from "@/store/app-store";
 import { cn } from "@/lib/utils";
 
+/** One-line description per model, phrased for the Models page. */
 const MODEL_DESCRIPTIONS: Record<string, string> = {
-  "tiny.en": "Fastest, lowest quality. Good for quick tests and very constrained machines.",
-  "base.en": "Recommended default. Strong accuracy and real-time on Apple Silicon.",
-  "small.en": "Better English accuracy with a moderate speed tradeoff. ~2x slower than base.",
-  "medium.en": "Strong quality. ~4x slower than base; needs 8 GB+ RAM.",
-  tiny: "Fastest multilingual model. Good for quick tests and non-English dictation.",
-  base: "Multilingual base model. Good accuracy for English, Hindi, and other languages.",
-  small: "Multilingual small model. Better accuracy across languages with a moderate speed tradeoff.",
-  medium: "Multilingual medium model. Strong quality for Hindi/Hinglish and other languages.",
-  "large-v3": "Best accuracy, all languages. ~8x slower than base; needs 16 GB+ RAM.",
-  "distil-large-v3": "Recommended English upgrade: ~2x faster than large-v3 with near-identical accuracy.",
-  "large-v3-turbo": "Near large-v3 accuracy at ~2x the speed. All languages. Needs 8 GB+ RAM.",
-  "parakeet-tdt-0.6b-v2": "NVIDIA Parakeet. Top English accuracy with automatic punctuation and capitalization.",
-  "parakeet-tdt-0.6b-v3": "NVIDIA Parakeet multilingual. Strong English plus 25 European languages.",
+  "parakeet-ultra":
+    "Parakeet TDT v3 further trained by Moondream for fewer mistakes, with punctuation, the same 25 European languages and the same speed.",
+  "parakeet-tdt-0.6b-v3":
+    "NVIDIA's multilingual model for 25 European languages, with punctuation. Fast on the Neural Engine.",
+  "parakeet-tdt-0.6b-v2":
+    "NVIDIA's English-only model, tuned for English accuracy, with punctuation.",
+  "parakeet-tdt_ctc-110m":
+    "A small English-only model for Macs with less memory to spare.",
+  "large-v3-turbo":
+    "Broadest language coverage, including languages Parakeet does not support.",
+  "large-v3-turbo-q5_0":
+    "The languages of Whisper Large v3 Turbo in a compressed build that takes less disk space.",
+  small: "A lighter multilingual Whisper model with a smaller download.",
 };
-
-const ENGINE_CARDS: Array<{
-  value: "auto" | "whisper" | "parakeet" | "apple";
-  label: string;
-  description: string;
-  hint: string;
-}> = [
-  {
-    value: "auto",
-    label: "Automatic",
-    description: "Vox picks the best installed engine per language and hardware.",
-    hint: "English prefers Parakeet when installed; otherwise Whisper; Apple Speech as a last resort.",
-  },
-  {
-    value: "whisper",
-    label: "Whisper",
-    description: "Multilingual, GPU-accelerated on Apple Silicon. Best for Hindi and Hinglish.",
-    hint: "Uses the Whisper model pinned in the library below.",
-  },
-  {
-    value: "parakeet",
-    label: "Parakeet",
-    description: "Fast on-device transcription on Apple Silicon. English plus 25 European languages.",
-    hint: "Automatically uses the newest downloaded Parakeet model (v3 first) — nothing to pin.",
-  },
-  {
-    value: "apple",
-    label: "Apple Speech",
-    description: "Built into macOS — nothing to download. On-device with OS-provided recognizers.",
-    hint: "No models to manage: this works out of the box and updates with macOS.",
-  },
-];
 
 const isParakeetModel = (name: string) => name.startsWith("parakeet");
 
@@ -225,11 +194,8 @@ export function ModelsPage() {
       await downloadModel(modelName);
       const updated = await listWhisperModels();
       setModels(updated);
-      // Auto-set the Whisper pin if nothing is pinned yet. Parakeet has no
-      // pin — the engine auto-picks its newest downloaded model.
-      if (!isParakeetModel(modelName) && (!selectedModel || selectedModel === "base.en")) {
-        await setSelectedModel(modelName);
-      }
+      // Downloading never switches dictation: Apple stays active until the
+      // user picks the new model explicitly with Use.
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!message.toLowerCase().includes("cancelled")) {
@@ -238,8 +204,29 @@ export function ModelsPage() {
     }
   };
 
-  const handleSetActive = async (modelName: string) => {
-    await setSelectedModel(modelName);
+  /** Apple needs no model file, so using it only changes the engine. */
+  const handleUseApple = async () => {
+    setError(null);
+    try {
+      await setEngine("apple");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /**
+   * Choosing a model chooses its engine. The pin is written first so a
+   * transcription started mid-switch can never run the new engine against the
+   * previous model.
+   */
+  const handleUseModel = async (modelName: string) => {
+    setError(null);
+    try {
+      await setSelectedModel(modelName);
+      await setEngine(isParakeetModel(modelName) ? "parakeet" : "whisper");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const handleDelete = async (modelName: string) => {
@@ -249,10 +236,10 @@ export function ModelsPage() {
       await deleteWhisperModel(modelName);
       const updated = await listWhisperModels();
       setModels(updated);
-      // If the deleted model was the pinned Whisper model, fall back to base.en.
-      // Parakeet pins do not exist — its engine auto-picks.
-      if (selectedModel === modelName && !isParakeetModel(modelName)) {
-        await setSelectedModel("base.en");
+      // Deleting the active model returns dictation to Apple on-device: it
+      // needs no model on disk, so it is always a working destination.
+      if (selectedModel === modelName && engine !== "apple") {
+        await setEngine("apple");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -339,11 +326,12 @@ export function ModelsPage() {
           // Speech / Parakeet.
           const result = await transcribeRecording(
             status.path,
-            (engine as string) === "whisper" ? selectedModel : undefined,
+            engine === "whisper" || engine === "parakeet" ? selectedModel : undefined,
             status.appName,
             status.windowTitle,
             status.previewText,
-            status.previewConfidence
+            status.previewConfidence,
+            !status.private
           );
           result.appName = status.appName;
           result.durationSeconds = status.durationSeconds;
@@ -371,26 +359,29 @@ export function ModelsPage() {
     }
   };
 
-  // --- Engine-scoped library (the page's primary task path) -----------------
-  const whisperLibrary = [...models]
-    .filter((model) => !isParakeetModel(model.name))
-    .sort((a, b) => {
-      const pinned = selectedModel === a.name ? -1 : selectedModel === b.name ? 1 : 0;
-      return pinned;
-    });
-  const parakeetLibrary = [...models].filter((model) => isParakeetModel(model.name)).reverse();
+  // --- One list: Apple first, then Parakeet, then Whisper -------------------
+  // The pin names the model of the selected engine family, so a row is active
+  // only when both match. Apple has no model file and is active on engine
+  // alone.
   const engineStatusFor = (value: string) => engines.find((engineStatus) => engineStatus.id === value);
-  // Truthful active states: the Whisper pin is live only under the Whisper
-  // engine (the library passes it as `activePinName` only in that mode);
-  // Parakeet always auto-picks (v3 first, like the router).
-  const activeParakeet =
-    parakeetLibrary.find((model) => model.name.includes("v3") && model.downloaded) ??
-    parakeetLibrary.find((model) => model.downloaded);
+  const appleStatus = engineStatusFor("apple");
+  const appleActive = engine === "apple";
+  // Apple can be selectable but unavailable (Speech permission or a missing
+  // language pack). Say why instead of silently letting dictation fail later.
+  const appleUnavailable = !!appleStatus && !appleStatus.available;
+  // The unavailable reason is long; it belongs on the description line, not
+  // the metadata line where it would wrap badly.
+  const appleDescription = appleUnavailable
+    ? appleStatus?.reason ?? "Apple Speech is unavailable on this Mac."
+    : "Uses an available macOS language pack. No cloud fallback.";
+  // The backend catalog already lists Parakeet before Whisper in display
+  // order, so the families are only partitioned, never re-sorted.
+  const parakeetLibrary = models.filter((model) => isParakeetModel(model.name));
+  const whisperLibrary = models.filter((model) => !isParakeetModel(model.name));
+  const allModels = [...parakeetLibrary, ...whisperLibrary];
   const downloadedModels = models.filter((model) => model.downloaded);
   const totalDownloadedSize = downloadedModels.reduce((sum, model) => sum + model.size, 0);
   const libraryMeta = `${downloadedModels.length} of ${models.length} downloaded · ${formatBytes(totalDownloadedSize)} stored`;
-  const selectedEngineCard =
-    ENGINE_CARDS.find((option) => option.value === engine) ?? ENGINE_CARDS[0];
   const quickStatus = recordingStatus?.isRecording
     ? "Listening now"
     : transcribing
@@ -407,7 +398,7 @@ export function ModelsPage() {
             <div>
               <h1 className="page-title">Models</h1>
               <p className="page-description">
-                Pick the engine that powers dictation, then manage the local models it uses.
+                Apple Speech works out of the box. Download any other model to switch dictation to it — one model runs at a time.
               </p>
             </div>
             <div className="flex justify-start lg:justify-end">
@@ -423,85 +414,6 @@ export function ModelsPage() {
               {error}
             </div>
           )}
-
-          {/* 1 — Engine selection: the control that decides which model runs */}
-          <section className="panel p-5">
-            <div className="flex items-start gap-3">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                <Mic className="h-4 w-4" />
-              </span>
-              <div className="min-w-0">
-                <h2 className="text-sm font-medium text-foreground">Transcription engine</h2>
-                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                  All engines run locally on your device. The model library below follows your selection.
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {ENGINE_CARDS.map((option) => {
-                const status = engineStatusFor(option.value);
-                // A missing model is fixable on this page (download from the
-                // library below), so it must never lock engine selection —
-                // that would gate the download behind the engine it enables.
-                // Only a broken runtime is truly unavailable.
-                const needsModel =
-                  !!status && !status.available && /no .+ model/i.test(status.reason ?? "");
-                const unavailable =
-                  option.value !== "auto" && !!status && !status.available && !needsModel;
-                const selected = engine === option.value;
-                return (
-                  <button
-                    key={option.value}
-                    onClick={() => void setEngine(option.value)}
-                    disabled={unavailable}
-                    aria-pressed={selected}
-                    title={unavailable ? (status?.reason ?? undefined) : undefined}
-                    className={cn(
-                      "flex items-center justify-between gap-2 rounded-lg border px-3.5 py-2.5 text-left transition-colors",
-                      selected
-                        ? "border-primary/45 bg-primary/[0.07] text-foreground"
-                        : "border-border bg-background text-foreground hover:border-foreground/25 hover:bg-muted/40",
-                      unavailable && "cursor-not-allowed opacity-45 hover:border-border hover:bg-background"
-                    )}
-                  >
-                    <span className="text-sm font-medium">{option.label}</span>
-                    {option.value !== "auto" && status ? (
-                      <span className="inline-flex items-center" title={status.available ? "Ready" : needsModel ? "Model needed — download one below" : status.reason ?? "Unavailable"}>
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            status.available ? "bg-primary" : needsModel ? "bg-muted-foreground/50" : "bg-destructive/60"
-                          )}
-                          aria-hidden="true"
-                        />
-                        <span className="sr-only">
-                          {status.available ? "Ready" : needsModel ? "Model needed" : "Unavailable"}
-                        </span>
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">
-              {selectedEngineCard.description}{" "}
-              <span className="text-muted-foreground">{selectedEngineCard.hint}</span>
-            </p>
-            {hardware && (
-              <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/60 pt-3 text-[11px] text-muted-foreground">
-                <span className="font-medium text-foreground">
-                  {hardware.appleSilicon ? "Apple Silicon" : hardware.arch}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span className="tabular-nums">
-                  {formatBytes(hardware.totalMemoryBytes).replace("~", "")} RAM
-                </span>
-                <span className="capitalize">{hardware.tier} tier</span>
-                <span aria-hidden="true">·</span>
-                <span>models up to {formatBytes(hardware.maxRecommendedModelBytes)} recommended</span>
-              </p>
-            )}
-          </section>
 
           {/* 2 — Quick dictation: test the engine → model chain end-to-end */}
           <section className="panel px-5 py-4">
@@ -560,16 +472,12 @@ export function ModelsPage() {
             )}
           </section>
 
-          {/* 3 — Dictation models: one panel per engine family, never mixed */}
+          {/* 2 — Dictation models: Apple first, then downloadable models */}
           <section className="space-y-4">
             <SectionHeader
               icon={<Mic className="h-4 w-4" />}
-              title="Dictation models"
-              description={
-                engine === "apple"
-                  ? "Apple Speech needs no model — it ships with macOS."
-                  : "Speech-to-text models used while you dictate. Each engine family keeps its own library."
-              }
+              title="On this Mac"
+              description="Apple Speech ships with macOS and works immediately. Download another model to run dictation on it — choosing a model chooses its engine, and only one model is active at a time. Every model transcribes on this Mac; the network is used only to download one."
               meta={loading ? undefined : libraryMeta}
             />
 
@@ -578,95 +486,180 @@ export function ModelsPage() {
                 <Spinner className="size-4" />
                 Loading models
               </div>
-            ) : engine === "apple" ? (
-              <div className="panel flex flex-col items-center gap-2 border-dashed px-6 py-12 text-center">
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-                  <Sparkles className="h-5 w-5" />
-                </span>
-                <p className="text-sm font-medium text-foreground">Apple Speech needs no model</p>
-                <p className="max-w-md text-xs leading-5 text-muted-foreground">
-                  Vox uses the speech recognizers built into macOS — on-device, ready out of
-                  the box, and updated by macOS itself. Switch the engine above to Whisper or
-                  Parakeet to manage downloadable models.
-                </p>
-              </div>
-            ) : models.length > 0 ? (
-              <>
-                {(engine === "whisper" || engine === "auto") && (
-                  <ModelPanel
-                    title="Whisper"
-                    description={
-                      engine === "auto"
-                        ? "Used when Automatic routes your speech to Whisper. Pin one model."
-                        : "The pinned model is what every transcription uses. Download alternatives to switch instantly."
-                    }
-                    nudge={
-                      engine === "whisper" && !whisperLibrary.some((model) => model.downloaded)
-                        ? "No Whisper model is downloaded yet — download one below; it becomes the active model automatically."
-                        : undefined
-                    }
-                  >
-                    <SttModelRows
-                      models={whisperLibrary}
-                      hardware={hardware}
-                      showSetActive
-                      activePinName={selectedModel}
-                      onSetActive={handleSetActive}
-                      onDownload={handleDownload}
-                      onDelete={handleDelete}
-                      deleting={deleting}
-                      downloadingModels={downloadingModels}
-                      pausedModels={pausedModels}
-                      modelDownloadProgress={modelDownloadProgress}
-                      pauseModel={(name) => void pauseModel(name)}
-                      resumeModel={(name) => void resumeModel(name)}
-                      cancelModel={(name) => void cancelModel(name)}
-                    />
-                  </ModelPanel>
-                )}
-                {(engine === "parakeet" || engine === "auto") && (
-                  <ModelPanel
-                    title="Parakeet"
-                    description={
-                      engine === "auto"
-                        ? "Used for English when installed — the newest download is picked automatically."
-                        : "Parakeet automatically uses the newest downloaded model (v3 first), so manage downloads rather than pinning."
-                    }
-                    nudge={
-                      engine === "parakeet" && !activeParakeet
-                        ? "No Parakeet model is downloaded yet — download one to switch this engine on."
-                        : undefined
-                    }
-                  >
-                    <SttModelRows
-                      models={parakeetLibrary}
-                      hardware={hardware}
-                      showSetActive={false}
-                      autoPickName={activeParakeet?.name}
-                      onDownload={handleDownload}
-                      onDelete={handleDelete}
-                      deleting={deleting}
-                      downloadingModels={downloadingModels}
-                      pausedModels={pausedModels}
-                      modelDownloadProgress={modelDownloadProgress}
-                      pauseModel={(name) => void pauseModel(name)}
-                      resumeModel={(name) => void resumeModel(name)}
-                      cancelModel={(name) => void cancelModel(name)}
-                    />
-                  </ModelPanel>
-                )}
-              </>
             ) : (
-              <div className="panel border-dashed px-5 py-10 text-center">
-                <p className="text-sm font-medium text-foreground">No models available</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Open the desktop app to load local model availability.
+              <div className="panel overflow-hidden">
+                <div className="divide-y divide-border/70">
+                  <ModelRow
+                    name="Apple on-device"
+                    icon={<AppleLogo className="h-4 w-4" />}
+                    description={appleDescription}
+                    meta="System managed · System speech"
+                    state={
+                      appleUnavailable
+                        ? { kind: "none", label: "Unavailable" }
+                        : appleActive
+                          ? { kind: "active", label: "Active" }
+                          : { kind: "downloaded", label: "Built in" }
+                    }
+                    actions={
+                      appleActive ? (
+                        <ActiveCheck />
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleUseApple()}
+                          disabled={appleUnavailable}
+                          title={appleUnavailable ? (appleStatus?.reason ?? undefined) : undefined}
+                        >
+                          Use
+                        </Button>
+                      )
+                    }
+                  />
+
+                  {allModels.map((model) => {
+                    const parakeet = isParakeetModel(model.name);
+                    const rowEngine = parakeet ? "parakeet" : "whisper";
+                    const isActive =
+                      engine === rowEngine && selectedModel === model.name && model.downloaded;
+                    const isDownloading = downloadingModels.includes(model.name);
+                    const isPaused = pausedModels.includes(model.name);
+                    const isDeleting = deleting === model.name;
+                    const dl = modelDownloadProgress[model.name];
+                    const pct =
+                      isDownloading && dl && dl.total > 0
+                        ? Math.round((dl.downloaded / dl.total) * 100)
+                        : null;
+                    const downloadedMB = dl ? Math.round(dl.downloaded / 1024 / 1024) : 0;
+                    const totalMB = dl ? Math.round(dl.total / 1024 / 1024) : 0;
+                    const status = engineStatusFor(rowEngine);
+                    // A missing model is fixable on this page, so it must never
+                    // block selection. Only a broken runtime is truly unusable.
+                    const needsModel =
+                      !!status && !status.available && /no .+ model/i.test(status.reason ?? "");
+                    const unusable = !!status && !status.available && !needsModel;
+                    // Hardware-aware nudge (spec §25): only for models this Mac
+                    // can hold, and only before they are downloaded.
+                    const fitsHardware =
+                      hardware !== null && model.size <= hardware.maxRecommendedModelBytes;
+
+                    return (
+                      <ModelRow
+                        key={model.name}
+                        name={model.displayName}
+                        icon={<Mic className="h-4 w-4" />}
+                        description={MODEL_DESCRIPTIONS[model.name]}
+                        meta={`${formatBytes(model.size)} · ${parakeet ? "Parakeet" : "Whisper"} · ${parakeet ? "Neural Engine" : "Apple Silicon"}`}
+                        state={
+                          isActive
+                            ? { kind: "active", label: "Active" }
+                            : model.downloaded
+                              ? { kind: "downloaded", label: "Downloaded" }
+                              : { kind: "none", label: "Not downloaded" }
+                        }
+                        recommended={model.recommended && !isActive}
+                        fitsHardware={fitsHardware && !model.downloaded && !isActive}
+                        isDeleting={isDeleting}
+                        progress={
+                          isDownloading ? (
+                            <DownloadProgress
+                              pct={pct}
+                              downloadedMB={downloadedMB}
+                              totalMB={totalMB}
+                            />
+                          ) : undefined
+                        }
+                        actions={
+                          model.downloaded ? (
+                            <>
+                              {isActive ? (
+                                <ActiveCheck />
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => void handleUseModel(model.name)}
+                                  disabled={isDeleting || unusable}
+                                  title={unusable ? (status?.reason ?? undefined) : undefined}
+                                >
+                                  Use
+                                </Button>
+                              )}
+                              <DeleteButton
+                                label={`Delete ${model.displayName}`}
+                                busy={isDeleting}
+                                disabled={downloadingModels.length > 0}
+                                confirm={{
+                                  title: "Delete model?",
+                                  description: (
+                                    <>
+                                      Remove <span className="font-medium text-foreground">{model.displayName}</span> from this device.{" "}
+                                      {isActive
+                                        ? "Vox switches back to Apple on-device after deletion."
+                                        : "This deletes the local model file, not just the entry in Vox."}
+                                    </>
+                                  ),
+                                  onDelete: () => void handleDelete(model.name),
+                                }}
+                              />
+                            </>
+                          ) : isDownloading ? (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void (isPaused ? resumeModel(model.name) : pauseModel(model.name))}
+                              >
+                                {isPaused ? "Resume" : "Pause"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                onClick={() => void cancelModel(model.name)}
+                              >
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              size="sm"
+                              onClick={() => void handleDownload(model.name)}
+                              disabled={downloadingModels.length > 0}
+                            >
+                              <Download className="h-4 w-4" />
+                              Download
+                            </Button>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
+                <p className="border-t border-border/70 px-5 py-3 text-[11px] leading-5 text-muted-foreground">
+                  These models process audio on your Mac. Parakeet and Whisper need an
+                  internet connection only for installation.
                 </p>
+                {hardware && (
+                  <p className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/70 px-5 py-3 text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {hardware.appleSilicon ? "Apple Silicon" : hardware.arch}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="tabular-nums">
+                      {formatBytes(hardware.totalMemoryBytes).replace("~", "")} RAM
+                    </span>
+                    <span className="capitalize">{hardware.tier} tier</span>
+                    <span aria-hidden="true">·</span>
+                    <span>models up to {formatBytes(hardware.maxRecommendedModelBytes)} recommended</span>
+                  </p>
+                )}
               </div>
             )}
           </section>
 
-          {/* 4 — Enhancement model: a separate language model, clearly apart */}
+          {/* 3 — Enhancement model: a separate language model, clearly apart */}
           <section className="space-y-4">
             <SectionHeader
               icon={<Sparkles className="h-4 w-4" />}
@@ -833,147 +826,6 @@ function ModelPanel({
   );
 }
 
-/** Speech-to-text rows for one engine family. */
-function SttModelRows({
-  models,
-  hardware,
-  showSetActive,
-  activePinName,
-  autoPickName,
-  onSetActive,
-  onDownload,
-  onDelete,
-  deleting,
-  downloadingModels,
-  pausedModels,
-  modelDownloadProgress,
-  pauseModel,
-  resumeModel,
-  cancelModel,
-}: {
-  models: WhisperModelInfo[];
-  hardware: HardwareInfo | null;
-  showSetActive: boolean;
-  activePinName?: string | null;
-  autoPickName?: string | null;
-  onSetActive?: (name: string) => void;
-  onDownload: (name: string) => void;
-  onDelete: (name: string) => void;
-  deleting?: string | null;
-  downloadingModels: string[];
-  pausedModels: string[];
-  modelDownloadProgress: Record<string, { downloaded: number; total: number }>;
-  pauseModel?: (name: string) => void;
-  resumeModel?: (name: string) => void;
-  cancelModel?: (name: string) => void;
-}) {
-  if (models.length === 0) {
-    return (
-      <div className="px-5 py-6 text-center">
-        <p className="text-xs text-muted-foreground">No models in this family.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="divide-y divide-border/70">
-      {models.map((model) => {
-        const isActive =
-          activePinName != null && activePinName === model.name && model.downloaded;
-        const isAutoPicked =
-          autoPickName != null && autoPickName === model.name && model.downloaded;
-        const isDownloading = downloadingModels.includes(model.name);
-        const isPaused = pausedModels.includes(model.name);
-        const isDeleting = deleting === model.name;
-        const dl = modelDownloadProgress[model.name];
-        const pct = isDownloading && dl && dl.total > 0 ? Math.round((dl.downloaded / dl.total) * 100) : null;
-        const downloadedMB = dl ? Math.round(dl.downloaded / 1024 / 1024) : 0;
-        const totalMB = dl ? Math.round(dl.total / 1024 / 1024) : 0;
-        // Hardware-aware recommendation (spec §25): only nudge toward models
-        // this Mac can actually hold, and only for not-yet-downloaded ones.
-        const fitsHardware =
-          hardware !== null && model.size <= hardware.maxRecommendedModelBytes;
-        const parakeet = isParakeetModel(model.name);
-
-        return (
-          <ModelRow
-            key={model.name}
-            name={model.displayName}
-            description={MODEL_DESCRIPTIONS[model.name]}
-            sizeBytes={model.size}
-            highlight={isActive || isAutoPicked}
-            state={
-              isActive
-                ? { kind: "active", label: "Active" }
-                : isAutoPicked
-                  ? { kind: "active", label: "Auto-picked" }
-                  : model.downloaded
-                    ? { kind: "downloaded", label: "Downloaded" }
-                    : { kind: "none", label: "Not downloaded" }
-            }
-            recommended={model.recommended && !isActive && !isAutoPicked}
-            fitsHardware={fitsHardware && !model.downloaded && !isActive && !isAutoPicked}
-            isDeleting={isDeleting}
-            progress={
-              isDownloading ? (
-                <DownloadProgress pct={pct} downloadedMB={downloadedMB} totalMB={totalMB} />
-              ) : undefined
-            }
-            actions={
-              model.downloaded ? (
-                <>
-                  {showSetActive && !isActive && !isAutoPicked && onSetActive && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onSetActive(model.name)}
-                      disabled={isDeleting}
-                    >
-                      Set active
-                    </Button>
-                  )}
-                  <DeleteButton
-                    label={`Delete ${model.displayName}`}
-                    busy={isDeleting}
-                    disabled={downloadingModels.length > 0}
-                    confirm={{
-                      title: "Delete model?",
-                      description: (
-                        <>
-                          Remove <span className="font-medium text-foreground">{model.displayName}</span> from this device.{" "}
-                          {parakeet
-                            ? "Parakeet will fall back to another downloaded Parakeet model, or to Apple Speech if none remain."
-                            : isActive
-                              ? "Vox will switch back to base.en after deletion."
-                              : "This deletes the local model file, not just the entry in Vox."}
-                        </>
-                      ),
-                      onDelete: () => onDelete(model.name),
-                    }}
-                  />
-                </>
-              ) : isDownloading ? (
-                <>
-                  <Button variant="ghost" size="sm" onClick={() => void (isPaused ? resumeModel?.(model.name) : pauseModel?.(model.name))}>
-                    {isPaused ? "Resume" : "Pause"}
-                  </Button>
-                  <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => void cancelModel?.(model.name)}>
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <Button size="sm" onClick={() => onDownload(model.name)} disabled={downloadingModels.length > 0}>
-                  <Download className="h-4 w-4" />
-                  Download
-                </Button>
-              )
-            }
-          />
-        );
-      })}
-    </div>
-  );
-}
-
 /** Visual state of a model row's status chip. */
 type ModelState =
   | { kind: "active"; label: string }
@@ -983,7 +835,9 @@ type ModelState =
 /** Shared model row: name + chips, one description line, size, actions. */
 function ModelRow({
   name,
+  icon,
   description,
+  meta,
   sizeBytes,
   state,
   recommended,
@@ -994,8 +848,11 @@ function ModelRow({
   actions,
 }: {
   name: string;
+  icon?: React.ReactNode;
   description?: string;
-  sizeBytes: number;
+  /** Replaces the default "size · state" line (e.g. Apple's "System managed"). */
+  meta?: string;
+  sizeBytes?: number;
   state: ModelState;
   recommended?: boolean;
   fitsHardware?: boolean;
@@ -1012,23 +869,36 @@ function ModelRow({
       )}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-medium text-foreground">{name}</p>
-            {state.kind === "active" && <ActiveChip>{state.label}</ActiveChip>}
-            {recommended && <QuietChip>Recommended</QuietChip>}
-            {fitsHardware && (
-              <QuietChip title="Fits this Mac's memory budget comfortably">Fits your Mac</QuietChip>
-            )}
-          </div>
-          {description && (
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{description}</p>
+        <div className="flex min-w-0 items-start gap-3">
+          {icon && (
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              {icon}
+            </span>
           )}
-          <p className="mt-2 flex flex-wrap items-center gap-x-2 text-[11px] tabular-nums text-muted-foreground">
-            <span>{formatBytes(sizeBytes)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{isDeleting ? "Removing…" : state.label}</span>
-          </p>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium text-foreground">{name}</p>
+              {state.kind === "active" && <ActiveChip>{state.label}</ActiveChip>}
+              {recommended && <QuietChip>Recommended</QuietChip>}
+              {fitsHardware && (
+                <QuietChip title="Fits this Mac's memory budget comfortably">Fits your Mac</QuietChip>
+              )}
+            </div>
+            {description && (
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{description}</p>
+            )}
+            <p className="mt-2 flex flex-wrap items-center gap-x-2 text-[11px] tabular-nums text-muted-foreground">
+              {meta ? (
+                <span>{isDeleting ? "Removing…" : meta}</span>
+              ) : (
+                <>
+                  <span>{formatBytes(sizeBytes ?? 0)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{isDeleting ? "Removing…" : state.label}</span>
+                </>
+              )}
+            </p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
       </div>
@@ -1043,6 +913,19 @@ function ActiveChip({ children }: { children: React.ReactNode }) {
     <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
       <Check className="h-3 w-3" aria-hidden="true" />
       {children}
+    </span>
+  );
+}
+
+/** Checkmark standing in for the action button on the active model. */
+function ActiveCheck() {
+  return (
+    <span
+      className="flex h-8 w-8 items-center justify-center text-primary"
+      title="This model is in use"
+    >
+      <Check className="h-5 w-5" aria-hidden="true" />
+      <span className="sr-only">Active model</span>
     </span>
   );
 }

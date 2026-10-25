@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
@@ -13,12 +13,16 @@ import { cn } from "@/lib/utils";
 import {
   checkAccessibilityPermission,
   checkMicrophonePermission,
+  checkSpeechPermission,
   listWhisperModels,
+  microphoneAuthorizationStatus,
   requestAccessibilityPermission,
   requestMicrophonePermission,
+  requestSpeechPermission,
   formatShortcut,
+  type WhisperModelInfo,
 } from "@/lib/native";
-import { useAppStore, DEFAULT_SELECTED_MODEL } from "@/store/app-store";
+import { useAppStore } from "@/store/app-store";
 
 interface DownloadProgress {
   modelName: string;
@@ -26,16 +30,19 @@ interface DownloadProgress {
   total: number;
 }
 
+/**
+ * Downloadable alternatives to Apple on-device, in the same order and with the
+ * same names as the Models page catalog. Every entry must exist in
+ * `src-tauri/src/whisper.rs` — setup downloads by name.
+ */
 const ONBOARDING_MODELS = [
-  { name: "tiny.en",   displayName: "Whisper Tiny",            size: "~75 MB",   description: "Fastest, lowest quality. Good for quick tests.",              version: "v1.0" },
-  { name: "base.en",   displayName: "Whisper Base",            size: "~150 MB",  description: "Recommended default. Strong accuracy on Apple Silicon.",      version: "v1.0", recommended: true },
-  { name: "small.en",  displayName: "Whisper Small",           size: "~500 MB",  description: "Better accuracy, ~2x slower than base.",                      version: "v1.0" },
-  { name: "medium.en", displayName: "Whisper Medium",          size: "~1.5 GB",  description: "Strong quality, ~4x slower. Needs 8 GB+ RAM.",               version: "v1.0" },
-  { name: "large-v3",  displayName: "Whisper Large v3",        size: "~3.0 GB",  description: "Best accuracy, all languages. Needs 16 GB+ RAM.",            version: "v3.0" },
-  { name: "distil-large-v3",  displayName: "Distil-Whisper Large v3", size: "~1.5 GB", description: "~2x faster than large-v3, near-identical accuracy.", version: "v3.0" },
-  { name: "large-v3-turbo",   displayName: "Whisper Large v3 Turbo",  size: "~1.5 GB", description: "Near large-v3 accuracy at ~2x speed. Needs 8 GB+ RAM.", version: "v3.0" },
-  { name: "parakeet-tdt-0.6b-v2", displayName: "Parakeet TDT 0.6B v2", size: "~900 MB", description: "NVIDIA Parakeet. Top English accuracy with punctuation and capitalization.", version: "v2.0" },
-  { name: "parakeet-tdt-0.6b-v3", displayName: "Parakeet TDT 0.6B v3", size: "~940 MB", description: "NVIDIA Parakeet multilingual. Strong English plus 25 European languages.", version: "v3.0" },
+  { name: "parakeet-ultra",      displayName: "Parakeet Ultra",   size: "~706 MB", family: "Parakeet", recommended: true },
+  { name: "parakeet-tdt-0.6b-v3", displayName: "Parakeet v3",     size: "~705 MB", family: "Parakeet" },
+  { name: "parakeet-tdt-0.6b-v2", displayName: "Parakeet v2",     size: "~696 MB", family: "Parakeet" },
+  { name: "parakeet-tdt_ctc-110m", displayName: "Parakeet 110M",  size: "~129 MB", family: "Parakeet" },
+  { name: "large-v3-turbo",      displayName: "Whisper Turbo",    size: "~1.51 GB", family: "Whisper" },
+  { name: "large-v3-turbo-q5_0", displayName: "Whisper Turbo (compressed)", size: "~547 MB", family: "Whisper" },
+  { name: "small",               displayName: "Whisper Small",    size: "~465 MB", family: "Whisper" },
 ];
 
 type Step = "accessibility" | "permission" | "model" | "hotkey";
@@ -44,6 +51,7 @@ export function Onboarding() {
   const {
     setOnboardingComplete,
     hotkey,
+    setEngine,
     setSelectedModel,
     downloadingModels,
     pausedModels,
@@ -59,26 +67,56 @@ export function Onboarding() {
   const [modelReady, setModelReady] = useState(false);
   const [hotkeyReady, setHotkeyReady] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [chosenModel, setChosenModel] = useState(DEFAULT_SELECTED_MODEL);
+  // Speech Recognition access: required only by the built-in Apple engine.
+  const [speechReady, setSpeechReady] = useState(false);
+  // `null` = Apple on-device (built in, nothing to download); a name = a
+  // downloadable Whisper or Parakeet model.
+  const [chosenModel, setChosenModel] = useState<string | null>(null);
+  const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [hotkeyMessage, setHotkeyMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Check both permissions on mount — auto-advance if already granted
+  /**
+   * The model step is satisfied by Apple on-device as soon as Speech
+   * Recognition is allowed — there is nothing to download. Without that
+   * permission the user has to pick a downloadable model instead, so the step
+   * opens on the model chooser.
+   */
+  const continueAfterPermissions = useCallback(async () => {
+    const speech = speechReady || (await checkSpeechPermission().catch(() => false));
+    if (speech) {
+      setSpeechReady(true);
+      setModelReady(true);
+      setStep("hotkey");
+    } else {
+      setStep("model");
+    }
+  }, [speechReady]);
+
+  // Check permissions on mount — auto-advance to whichever grant is missing.
   useEffect(() => {
     const check = async () => {
       const trusted = await checkAccessibilityPermission();
-      if (trusted) {
-        setAccessibilityReady(true);
-        const microphoneReady = await checkMicrophonePermission();
-        if (microphoneReady) {
-          setPermissionReady(true);
-          setStep("model");
-        } else {
-          setStep("permission");
-        }
+      if (!trusted) return;
+      setAccessibilityReady(true);
+      const microphoneReady = await checkMicrophonePermission();
+      if (!microphoneReady) {
+        setStep("permission");
+        return;
       }
+      setPermissionReady(true);
+      await continueAfterPermissions();
     };
     void check();
+  }, [continueAfterPermissions]);
+
+  // Downloadable models drive whether the chosen model still needs a download.
+  useEffect(() => {
+    let active = true;
+    void listWhisperModels()
+      .then((list) => { if (active) setModels(list); })
+      .catch(() => { if (active) setModels([]); });
+    return () => { active = false; };
   }, []);
 
   // Poll for accessibility grant while on that step
@@ -102,12 +140,27 @@ export function Onboarding() {
       const microphoneReady = await checkMicrophonePermission();
       if (microphoneReady) {
         setPermissionReady(true);
-        setStep("model");
+        clearInterval(interval);
+        await continueAfterPermissions();
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [step, permissionReady, continueAfterPermissions]);
+
+  // Poll Speech Recognition while Apple is chosen and the grant is pending:
+  // a user who answers the prompt late, or grants it in System Settings,
+  // advances without touching anything here.
+  useEffect(() => {
+    if (step !== "model" || speechReady || chosenModel !== null) return;
+    const interval = setInterval(async () => {
+      const granted = await checkSpeechPermission().catch(() => false);
+      if (granted) {
+        setSpeechReady(true);
         clearInterval(interval);
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [step, permissionReady]);
+  }, [step, speechReady, chosenModel]);
 
   // Listen for download progress events
   // (handled globally in App.tsx and persisted to the store)
@@ -172,21 +225,43 @@ export function Onboarding() {
     }
   };
 
+  /**
+   * The macOS prompt is answered asynchronously: `requestMicrophonePermission`
+   * returns as soon as the audio stream starts, which is typically before the
+   * user has clicked anything. Poll the real TCC state instead of concluding
+   * "not granted" from a check that ran a moment too early.
+   */
+  const awaitMicrophoneDecision = async (timeoutMs = 6000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const status = await microphoneAuthorizationStatus().catch(() => 0);
+      if (status === 3) return "granted" as const;
+      // 1 = restricted, 2 = denied: macOS never re-prompts, so stop waiting.
+      if (status === 1 || status === 2) return "denied" as const;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return "pending" as const;
+  };
+
   const requestPermission = async () => {
     setBusy(true);
     setError(null);
     try {
-      // Triggers the native prompt. The command cannot report the real
-      // TCC state, so verify before advancing — the 2s poller below catches
-      // a late prompt answer or a System Settings grant automatically.
       await requestMicrophonePermission();
-      const granted = await checkMicrophonePermission();
-      if (granted) {
+      const outcome = await awaitMicrophoneDecision();
+      if (outcome === "granted") {
         setPermissionReady(true);
-        setStep("model");
-      } else {
+        // Speech Recognition may already be granted, in which case the built-in
+        // Apple model needs nothing else and setup skips straight ahead.
+        await continueAfterPermissions();
+      } else if (outcome === "denied") {
         setError(
-          "Microphone access wasn't granted yet. Choose Allow on the prompt, or open System Settings → Privacy & Security → Microphone and enable Vox — this screen updates automatically."
+          "Microphone access was denied. Open System Settings → Privacy & Security → Microphone and enable Vox."
+        );
+      } else {
+        // Still unanswered — not a failure. The poller keeps watching.
+        setError(
+          "Waiting for macOS to confirm microphone access. If no prompt appeared, open System Settings → Privacy & Security → Microphone and enable Vox — this screen advances automatically."
         );
       }
     } catch {
@@ -198,23 +273,72 @@ export function Onboarding() {
     }
   };
 
-  const downloadModel = async () => {
+  const completeModelStep = () => {
+    setModelReady(true);
+    setStep("hotkey");
+  };
+
+  /** Apple on-device: the only thing standing between the user and dictation is one permission. */
+  const allowSpeechRecognition = async () => {
     setBusy(true);
     setError(null);
     try {
-      const models = await listWhisperModels();
-      const already = models.find((m) => m.name === chosenModel);
-      if (!already?.downloaded) {
-        await downloadModelFromStore(chosenModel);
+      const granted = await requestSpeechPermission();
+      if (granted) {
+        setSpeechReady(true);
+        await setEngine("apple");
+        completeModelStep();
+      } else {
+        setError(
+          "Speech Recognition wasn't allowed yet. Choose Allow on the prompt, or enable Vox in System Settings → Privacy & Security → Speech Recognition — this screen updates automatically. You can also download a model below to dictate without it."
+        );
       }
-      await setSelectedModel(chosenModel);
-      setModelReady(true);
-      setStep("hotkey");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pinModel = async (name: string) => {
+    await setSelectedModel(name);
+    // Choosing a model chooses its engine, matching the Models page.
+    await setEngine(name.startsWith("parakeet") ? "parakeet" : "whisper");
+  };
+
+  const downloadAndUseModel = async (name: string) => {
+    setError(null);
+    try {
+      const already = models.find((m) => m.name === name);
+      if (!already?.downloaded) {
+        await downloadModelFromStore(name);
+      }
+      await pinModel(name);
+      setModels(await listWhisperModels());
+      completeModelStep();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!message.toLowerCase().includes("cancelled")) {
         setError(message);
       }
+    }
+  };
+
+  // One action for the whole step: Apple asks for permission, a model downloads
+  // (or is used straight away when it is already cached).
+  const handleModelAction = async () => {
+    if (chosenModel === null) {
+      if (speechReady) {
+        await setEngine("apple");
+        completeModelStep();
+      } else {
+        await allowSpeechRecognition();
+      }
+      return;
+    }
+    setBusy(true);
+    try {
+      await downloadAndUseModel(chosenModel);
     } finally {
       setBusy(false);
     }
@@ -224,20 +348,41 @@ export function Onboarding() {
     setOnboardingComplete(true);
   };
 
+  const appleChoice = chosenModel === null;
+  const chosenModelInfo = chosenModel ? models.find((m) => m.name === chosenModel) : undefined;
+  const chosenDownloaded = !!chosenModelInfo?.downloaded;
+  const chosenLabel = appleChoice
+    ? "Apple on-device"
+    : chosenModelInfo?.displayName ??
+      ONBOARDING_MODELS.find((m) => m.name === chosenModel)?.displayName ??
+      "the selected model";
+
   const setupSteps = [
     { id: "accessibility" as const, title: "Accessibility", done: accessibilityReady },
     { id: "permission" as const, title: "Microphone", done: permissionReady },
-    { id: "model" as const, title: "Whisper model", done: modelReady },
+    { id: "model" as const, title: "Speech model", done: modelReady },
     { id: "hotkey" as const, title: "Hotkey test", done: hotkeyReady },
   ];
   const activeStepIndex = setupSteps.findIndex((item) => item.id === step);
   const completedCount = setupSteps.filter((item) => item.done).length;
-  const downloadProgress = modelDownloadProgress[chosenModel]
-    ? { modelName: chosenModel, ...modelDownloadProgress[chosenModel] }
-    : null;
+  const downloadProgress =
+    chosenModel && modelDownloadProgress[chosenModel]
+      ? { modelName: chosenModel, ...modelDownloadProgress[chosenModel] }
+      : null;
   const isDownloadingModel =
-    (busy && step === "model") || downloadingModels.includes(chosenModel);
+    !!chosenModel && ((busy && step === "model") || downloadingModels.includes(chosenModel));
   const canFinish = accessibilityReady && permissionReady && modelReady && hotkeyReady;
+  const modelActionLabel = appleChoice
+    ? speechReady
+      ? "Continue"
+      : "Allow speech"
+    : chosenDownloaded
+      ? `Use ${chosenLabel}`
+      : isDownloadingModel && downloadProgress
+        ? `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}% downloaded`
+        : isDownloadingModel
+          ? "Downloading..."
+          : "Download model";
 
   return (
     <div className="flex h-full overflow-hidden bg-background px-6 pb-5 pt-11">
@@ -320,13 +465,17 @@ export function Onboarding() {
               active={step === "model"}
               done={modelReady}
               icon={<Download className="h-5 w-5" />}
-              title="Whisper model"
-              description="Download one local model."
+              title="Speech model"
+              description={
+                appleChoice
+                  ? "Apple on-device is built in. Nothing to download."
+                  : `Download ${chosenLabel} to dictate with it instead.`
+              }
               progress={busy && step === "model" && downloadProgress ? downloadProgress : null}
             >
               {modelReady ? (
-                <StatusPill label="Cached" />
-              ) : isDownloadingModel ? (
+                <StatusPill label={appleChoice ? "Built in" : "Cached"} />
+              ) : isDownloadingModel && chosenModel ? (
                 <div className="flex gap-2">
                   <Button
                     size="sm"
@@ -350,9 +499,15 @@ export function Onboarding() {
                   </Button>
                 </div>
               ) : (
-                <Button size="sm" onClick={downloadModel} disabled={busy || !permissionReady}>
-                  <Download className="h-4 w-4" />
-                  Download
+                <Button size="sm" onClick={handleModelAction} disabled={busy || !permissionReady}>
+                  {appleChoice ? <ShieldCheck className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+                  {busy && step === "model"
+                    ? appleChoice
+                      ? "Requesting..."
+                      : "Starting..."
+                    : appleChoice
+                      ? "Allow"
+                      : "Download"}
                 </Button>
               )}
             </StepCard>
@@ -377,39 +532,79 @@ export function Onboarding() {
 
           <div className="min-h-0 rounded-2xl border border-border bg-card p-3">
             {step === "model" && !modelReady ? (
-              <div className="grid h-full grid-cols-2 gap-2 lg:grid-cols-4">
-                {ONBOARDING_MODELS.map((m) => (
-                  <button
-                    key={m.name}
-                    disabled={busy}
-                    onClick={() => setChosenModel(m.name)}
-                    className={cn(
-                      "flex min-h-0 flex-col justify-between rounded-xl border p-3 text-left transition-colors",
-                      chosenModel === m.name
-                        ? "border-primary bg-sidebar-accent"
-                        : "border-border bg-background hover:border-ring"
-                    )}
-                  >
-                    <div>
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-sm font-semibold leading-tight text-foreground">
-                          {m.displayName}
-                        </p>
-                        {chosenModel === m.name && (
-                          <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
-                        )}
-                      </div>
-                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        {m.size} · {m.version}
+              <div className="grid h-full grid-cols-2 gap-2 overflow-y-auto lg:grid-cols-4">
+                <button
+                  disabled={busy}
+                  onClick={() => setChosenModel(null)}
+                  className={cn(
+                    "flex min-h-0 flex-col justify-between rounded-xl border p-3 text-left transition-colors",
+                    chosenModel === null
+                      ? "border-primary bg-sidebar-accent"
+                      : "border-border bg-background hover:border-ring"
+                  )}
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-semibold leading-tight text-foreground">
+                        Apple on-device
                       </p>
+                      {chosenModel === null && (
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+                      )}
                     </div>
-                    {m.recommended && (
-                      <span className="mt-2 w-fit rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
-                        recommended
-                      </span>
-                    )}
-                  </button>
-                ))}
+                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                      Built in · no download
+                    </p>
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      Uses the speech model that ships with macOS.
+                    </p>
+                  </div>
+                  <span className="mt-2 w-fit rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    recommended
+                  </span>
+                </button>
+
+                {ONBOARDING_MODELS.map((m) => {
+                  const cached = models.find((model) => model.name === m.name)?.downloaded;
+                  return (
+                    <button
+                      key={m.name}
+                      disabled={busy}
+                      onClick={() => setChosenModel(m.name)}
+                      className={cn(
+                        "flex min-h-0 flex-col justify-between rounded-xl border p-3 text-left transition-colors",
+                        chosenModel === m.name
+                          ? "border-primary bg-sidebar-accent"
+                          : "border-border bg-background hover:border-ring"
+                      )}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-semibold leading-tight text-foreground">
+                            {m.displayName}
+                          </p>
+                          {chosenModel === m.name && (
+                            <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+                          )}
+                        </div>
+                        <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                          {m.size} · {m.family}
+                        </p>
+                      </div>
+                      {cached ? (
+                        <span className="mt-2 w-fit rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          already downloaded
+                        </span>
+                      ) : (
+                        m.recommended && (
+                          <span className="mt-2 w-fit rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+                            recommended
+                          </span>
+                        )
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             ) : step === "hotkey" ? (
               <div className="flex h-full flex-col items-center justify-center text-center">
@@ -438,12 +633,13 @@ export function Onboarding() {
                 <p className="truncate text-sm text-destructive">{error}</p>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  You can change model, hotkey, and system settings later.
+                  Apple on-device needs no download. You can change the model, hotkey, and
+                  system settings later.
                 </p>
               )}
             </div>
             <Button
-              onClick={step === "model" && !modelReady ? downloadModel : finish}
+              onClick={step === "model" && !modelReady ? handleModelAction : finish}
               disabled={
                 step === "model" && !modelReady
                   ? busy || !permissionReady
@@ -452,17 +648,15 @@ export function Onboarding() {
               className="shrink-0"
             >
               {step === "model" && !modelReady ? (
-                <Download className="h-4 w-4" />
+                appleChoice && !speechReady ? (
+                  <ShieldCheck className="h-4 w-4" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )
               ) : (
                 <Sparkles className="h-4 w-4" />
               )}
-              {step === "model" && !modelReady
-                ? isDownloadingModel && downloadProgress
-                  ? `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}% downloaded`
-                  : isDownloadingModel
-                    ? "Downloading..."
-                    : "Download model"
-                : "Start dictating"}
+              {step === "model" && !modelReady ? modelActionLabel : "Start dictating"}
             </Button>
           </footer>
         </main>

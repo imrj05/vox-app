@@ -13,9 +13,9 @@ import {
   ShortcutsSection,
   SnippetsSection,
 } from "@/components/settings-panels";
-import { VocabularyPacksSection } from "@/components/settings-vocabulary";
 import { WritingSection } from "@/components/settings-writing";
 import { TranscriptionSection } from "@/components/settings-transcription";
+import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
 
 type NavGroup = {
   label: string;
@@ -24,7 +24,7 @@ type NavGroup = {
 
 const navGroups: readonly NavGroup[] = [
   { label: "Recording", sections: ["general", "transcription", "shortcuts"] },
-  { label: "Vocabulary", sections: ["vocabulary-packs", "writing", "snippets"] },
+  { label: "Vocabulary", sections: ["writing", "snippets"] },
   { label: "System", sections: ["permissions", "privacy", "data"] },
 ];
 
@@ -33,7 +33,6 @@ const sectionMeta = new Map(settingsSections.map((s) => [s.id, s]));
 const sectionComponents: Record<SettingsSection, () => React.JSX.Element> = {
   general: GeneralSection,
   transcription: TranscriptionSection,
-  "vocabulary-packs": VocabularyPacksSection,
   writing: WritingSection,
   snippets: SnippetsSection,
   data: DataSection,
@@ -41,10 +40,20 @@ const sectionComponents: Record<SettingsSection, () => React.JSX.Element> = {
   permissions: PermissionsSection,
   shortcuts: ShortcutsSection,
 };
-
 export function SettingsPage() {
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const scrollRootRef = useRef<HTMLDivElement | null>(null);
+
+  // The command palette can deep-link into a specific settings section.
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.settings, (command) => {
+      if (command.kind !== "open-settings-section") return;
+      const section = command.payload as SettingsSection;
+      if (sectionMeta.has(section)) {
+        setActiveSection(section);
+      }
+    });
+  }, []);
 
   // Reset to the top of the content pane when switching sections, so a long
   // scroll position from one section never lands mid-way through the next.

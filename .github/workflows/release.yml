@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches:
+      - main
       - "release/v*"
       - "version/*"
     tags:
@@ -22,7 +23,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Cheap gate: a push to main only becomes a release when the version in
+  # src-tauri/tauri.conf.json has no published release yet. Other triggers
+  # always proceed.
+  version-gate:
+    name: Check for unreleased version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect new version
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != push || "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+          tag="v${version}"
+
+          # Checking the release (not just the tag) means a failed publish is
+          # retried by the next push to main instead of being skipped forever.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already published; skipping release build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $tag is missing; releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: version-gate
+    if: needs.version-gate.outputs.should_release == 'true'
     runs-on: macos-latest
     env:
       RELEASE_REPO: ${{ github.repository }}
@@ -95,7 +136,7 @@ jobs:
           echo "Resolved release tag: $release_tag"
 
       - name: Create release tag if missing
-        if: startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/version/')
+        if: startsWith(github.ref, 'refs/heads/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

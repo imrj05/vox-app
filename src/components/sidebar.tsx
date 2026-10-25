@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleHelp, Cpu, FileText, Home, Pencil, Settings, Sparkles } from "@/components/icons";
+import { BookOpenText, CircleHelp, CommandIcon, Cpu, FileText, Home, Pencil, Settings, Sparkles } from "@/components/icons";
 import { Wordmark } from "@/components/wordmark";
 import {
   Sidebar as ShadcnSidebar,
@@ -11,19 +11,19 @@ import { cn } from "@/lib/utils";
 interface SidebarProps {
   activeNav: string;
   onNavChange: (nav: string) => void;
+  onOpenPalette?: () => void;
 }
 
 const primaryNav = [
   { id: "home", label: "Dictation", icon: Home },
   { id: "transcripts", label: "Transcripts", icon: FileText },
-  { id: "corrections", label: "Corrections", icon: CheckCircle2 },
+  { id: "vocabulary", label: "Vocabulary", icon: BookOpenText },
   { id: "notes", label: "Notes", icon: Pencil },
   { id: "models", label: "Models", icon: Cpu },
   { id: "settings", label: "Settings", icon: Settings },
-  { id: "about", label: "About", icon: CircleHelp },
 ] as const;
 
-export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
+export function Sidebar({ activeNav, onNavChange, onOpenPalette }: SidebarProps) {
   return (
     <ShadcnSidebar
       collapsible="none"
@@ -86,6 +86,19 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
       </SidebarContent>
 
       <SidebarFooter className="p-3">
+        {onOpenPalette && (
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            className="group mb-3 flex w-full cursor-pointer items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/50 px-2.5 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          >
+            <CommandIcon className="h-3.5 w-3.5" />
+            <span className="font-medium">Search &amp; commands</span>
+            <kbd className="ml-auto rounded border border-sidebar-border px-1.5 py-0.5 font-mono text-[10px]">
+              ⌘K
+            </kbd>
+          </button>
+        )}
         <div className="border-t border-sidebar-border px-2 pt-3">
           <div className="mb-1 flex items-center gap-2 text-xs font-medium text-sidebar-foreground">
             <Sparkles className="h-3.5 w-3.5 text-primary" />
@@ -94,6 +107,20 @@ export function Sidebar({ activeNav, onNavChange }: SidebarProps) {
           <p className="text-[11px] leading-4 text-muted-foreground">
             Audio and transcription stay on this device.
           </p>
+          <button
+            type="button"
+            onClick={() => onNavChange("about")}
+            aria-current={activeNav === "about" ? "page" : undefined}
+            className={cn(
+              "group mt-3 flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] transition-colors",
+              activeNav === "about"
+                ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+            )}
+          >
+            <CircleHelp className="h-3.5 w-3.5" />
+            About Vox
+          </button>
         </div>
       </SidebarFooter>
     </ShadcnSidebar>

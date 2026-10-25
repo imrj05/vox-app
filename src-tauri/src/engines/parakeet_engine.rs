@@ -11,7 +11,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -22,10 +22,20 @@ use super::{
     EngineAvailability, EngineKind, TranscriptionEngine, TranscriptionOutput, TranscriptionRequest,
 };
 
+/// The first request also loads the model into the sidecar, so this covers a
+/// cold start; it exists to break a wedged runtime, not to cap real work.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 pub struct ParakeetEngine;
 
-/// Languages supported by Parakeet TDT 0.6B v3 (the 25 European languages it
-/// was trained on). v2 is English-only. Notably absent: Hindi and other Indic
+/// Whether a Parakeet model file is English-only: v2 and the small 110M model
+/// are; v3 and Ultra cover the 25 European languages.
+fn is_english_only_model(lowercased_file_name: &str) -> bool {
+    lowercased_file_name.contains("-v2") || lowercased_file_name.contains("110m")
+}
+
+/// Languages supported by Parakeet TDT 0.6B v3 and Ultra (the 25 European
+/// languages they were trained on). v2 and the 110M model are English-only. Notably absent: Hindi and other Indic
 /// languages — dictating those through Parakeet produces garbage, so the
 /// router must reroute to Whisper/Apple Speech instead.
 const PARAKEET_V3_LANGUAGES: &[&str] = &[
@@ -119,14 +129,20 @@ fn request_transcription(
         .map_err(|error| format!("Parakeet runtime stopped accepting requests: {error}"))?;
 
     loop {
-        let mut response = String::new();
-        let bytes = session
-            .stdout
-            .read_line(&mut response)
-            .map_err(|error| format!("Parakeet runtime failed: {error}"))?;
-        if bytes == 0 {
-            return Err("Parakeet runtime exited unexpectedly".to_string());
-        }
+        let response = match super::read_line_timeout(&mut session.stdout, RESPONSE_TIMEOUT)
+            .map_err(|error| format!("Parakeet runtime failed: {error}"))?
+        {
+            super::SidecarRead::Line(line) => line,
+            super::SidecarRead::Eof => {
+                return Err("Parakeet runtime exited unexpectedly".to_string())
+            }
+            super::SidecarRead::TimedOut => {
+                return Err(format!(
+                    "Parakeet stopped responding after {}s",
+                    RESPONSE_TIMEOUT.as_secs()
+                ))
+            }
+        };
         let parsed: serde_json::Value = match serde_json::from_str(response.trim()) {
             Ok(value) => value,
             Err(_) => continue, // diagnostics line from the sidecar — skip
@@ -199,9 +215,13 @@ impl TranscriptionEngine for ParakeetEngine {
             return Ok(Some(path));
         }
 
-        // Engine-driven choice: newest Parakeet TDT first (v3 → v2), then any
-        // user-added GGUF in the models dir.
-        for name in ["parakeet-tdt-0.6b-v3", "parakeet-tdt-0.6b-v2"] {
+        // Engine-driven choice: the Models page order — Ultra, then v3, then
+        // v2 — and finally any user-added GGUF in the models dir.
+        for name in [
+            "parakeet-ultra",
+            "parakeet-tdt-0.6b-v3",
+            "parakeet-tdt-0.6b-v2",
+        ] {
             let path = models_dir.join(format!("{name}.gguf"));
             if path.exists() {
                 return Ok(Some(path));
@@ -223,21 +243,20 @@ impl TranscriptionEngine for ParakeetEngine {
         let model_path = request
             .model_path
             .ok_or_else(|| "Parakeet engine requires a model file".to_string())?;
-        // Parakeet v2 is English-only. Fail fast with a helpful message (which
-        // triggers engine fallback) instead of garbage output for other
-        // languages — mirrors the whisper engine's `.en` model check.
+        // English-only Parakeet models (v2 and the 110M model). Fail fast with
+        // a helpful message (which triggers engine fallback) instead of garbage
+        // output for other languages — mirrors the whisper engine's `.en` check.
         let model_name = model_path
             .file_name()
             .map(|name| name.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        if model_name.contains("-v2") {
+        if is_english_only_model(&model_name) {
             let requested = request.language.map(str::trim).filter(|v| !v.is_empty());
             if let Some(requested) = requested {
                 if requested != "auto" && requested != "en" {
-                    return Err(
-                        "The downloaded Parakeet v2 model is English-only. Switch to Whisper (or download Parakeet v3) to dictate in other languages."
-                            .to_string(),
-                    );
+                    return Err(format!(
+                        "The downloaded {model_name} model is English-only. Switch to Whisper, Parakeet Ultra or Parakeet v3 to dictate in other languages."
+                    ));
                 }
             }
         }

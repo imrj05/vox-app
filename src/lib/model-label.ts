@@ -2,9 +2,10 @@ import type { WhisperModelInfo } from "@/lib/native";
 
 /**
  * Label for the model that will actually run for a transcription, honoring
- * the engine selection (spec §7). The pinned `selectedModel` only applies
- * when the Whisper engine is chosen — Apple Speech uses the OS recognizer
- * (no model file) and Parakeet auto-picks its downloaded GGUF.
+ * the engine selection (spec §7). The pinned `selectedModel` names the model
+ * of the selected engine family — including Parakeet, which is pinned the
+ * same way as Whisper. Apple Speech uses the OS recognizer, so it has no model
+ * file to name.
  *
  * `models` is the downloaded-models list from `listWhisperModels()`; omit it
  * in contexts that have not loaded the list (labels degrade gracefully).
@@ -19,19 +20,21 @@ export function activeModelLabel(
   }
 
   if (engine === "parakeet") {
+    // The pinned Parakeet model wins; without a usable pin the engine falls
+    // back to its own pick order (v3 first, like the router).
+    const pinned = models?.find((model) => model.name === selectedModel && model.downloaded);
+    if (pinned) {
+      return pinned.displayName;
+    }
     if (!models) {
       return "Parakeet (auto-picked)";
     }
     const parakeet = models.filter((model) => model.name.startsWith("parakeet"));
-    // Prefer v3 first, matching the backend pick order (newest TDT first).
     const active =
+      parakeet.find((model) => model.name === "parakeet-ultra" && model.downloaded) ??
       parakeet.find((model) => model.name.includes("v3") && model.downloaded) ??
       parakeet.find((model) => model.downloaded);
-    return active ? active.displayName : "No Parakeet model downloaded";
-  }
-
-  if (engine === "auto") {
-    return "Auto-selected";
+    return active ? `${active.displayName} (auto-picked)` : "No Parakeet model downloaded";
   }
 
   // Whisper (explicit pin) — show the resolved display name when known.

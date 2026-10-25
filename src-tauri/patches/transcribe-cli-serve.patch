@@ -1,8 +1,8 @@
-diff --git a/examples/cli/main.cpp b/examples/cli/main.cpp
-index f4cbbd0..4025e1c 100644
---- a/examples/cli/main.cpp
-+++ b/examples/cli/main.cpp
-@@ -19,6 +19,7 @@
+diff --git a/examples/cli/asr.cpp b/examples/cli/asr.cpp
+index 3f8e49bf..27f7358b 100644
+--- a/examples/cli/asr.cpp
++++ b/examples/cli/asr.cpp
+@@ -16,6 +16,7 @@
  #include <cstdlib>
  #include <cstring>
  #include <fstream>
@@ -10,7 +10,158 @@ index f4cbbd0..4025e1c 100644
  #include <string>
  #include <vector>
  
-@@ -219,6 +220,7 @@ struct cli_args {
+@@ -660,6 +661,146 @@ int run_asr_batch(const cli_args & args, std::ofstream * output) {
+     return n_fail > 0 || !output_ok ? EXIT_FAILURE : EXIT_SUCCESS;
+ }
+ 
++// Serve mode: load the model and session ONCE, then transcribe one wav per
++// stdin line. Each request is answered with exactly one JSONL line on stdout,
++// flushed immediately, so a host application can keep the process (and the
++// warm backend) alive across many utterances instead of paying model load and
++// backend init per utterance. Diagnostics stay on stderr.
++int run_asr_serve(const cli_args & args) {
++    if (args.model_path.empty()) {
++        std::fprintf(stderr, "error: --serve requires --model\n");
++        return EXIT_FAILURE;
++    }
++
++    struct transcribe_model_load_params mp;
++    transcribe_model_load_params_init(&mp);
++    mp.backend = args.backend;
++    mp.device  = args.device_index >= 0 ? transcribe_device_get(args.device_index) : nullptr;
++    mp.no_mmap = args.no_mmap;
++    if (args.device_index >= 0 && mp.device == nullptr) {
++        std::fprintf(stderr, "error: --device index %d is not available\n", args.device_index);
++        return EXIT_FAILURE;
++    }
++    struct transcribe_model * model   = nullptr;
++    const transcribe_status   load_st = transcribe_model_load_file(args.model_path.c_str(), &mp, &model);
++    if (load_st != TRANSCRIBE_OK) {
++        std::fprintf(stderr, "model load: %s\n", transcribe_status_string(load_st));
++        return EXIT_FAILURE;
++    }
++    if ((transcribe_model_roles(model) & TRANSCRIBE_ROLE_ASR) == 0) {
++        std::fprintf(stderr,
++                     "error: --serve is ASR-only and this model has no ASR role; "
++                     "run it on one file instead: transcribe-cli -m MODEL audio.wav\n");
++        transcribe_model_free(model);
++        return EXIT_FAILURE;
++    }
++
++    struct transcribe_session_params cp;
++    transcribe_session_params_init(&cp);
++    cp.n_threads                        = args.n_threads;
++    cp.n_ctx                            = args.n_ctx;
++    cp.kv_type                          = args.kv_type;
++    struct transcribe_session * ctx     = nullptr;
++    const transcribe_status     init_st = transcribe_session_init(model, &cp, &ctx);
++    if (init_st != TRANSCRIBE_OK) {
++        std::fprintf(stderr, "context init: %s\n", transcribe_status_string(init_st));
++        transcribe_model_free(model);
++        return EXIT_FAILURE;
++    }
++
++    struct transcribe_run_params rp;
++    transcribe_run_params_init(&rp);
++    if (args.translate) {
++        rp.task = TRANSCRIBE_TASK_TRANSLATE;
++    }
++    // Both back rp's pointers and must outlive every run below.
++    std::vector<const char *> vocabulary_ptrs;
++    apply_prompting(args, rp, vocabulary_ptrs);
++    if (!args.language.empty()) {
++        rp.language = args.language.c_str();
++    }
++    if (!args.target_language.empty()) {
++        rp.target_language = args.target_language.c_str();
++    }
++    rp.timestamps    = args.timestamps;
++    rp.spec_k_drafts = args.spec_k_drafts;
++
++    if (args.itn_set) {
++        rp.itn = args.use_itn ? TRANSCRIBE_ITN_MODE_ON : TRANSCRIBE_ITN_MODE_OFF;
++    }
++    if (args.canary_pnc_set) {
++        rp.pnc = args.canary_pnc ? TRANSCRIBE_PNC_MODE_ON : TRANSCRIBE_PNC_MODE_OFF;
++    }
++    if (args.diarize_set) {
++        rp.diarize = args.diarize ? TRANSCRIBE_DIARIZE_MODE_ON : TRANSCRIBE_DIARIZE_MODE_OFF;
++    }
++
++    struct transcribe_whisper_run_ext wx;
++    transcribe_whisper_run_ext_init(&wx);
++    if (args.whisper_set) {
++        if (!args.initial_prompt.empty()) {
++            wx.initial_prompt = args.initial_prompt.c_str();
++        }
++        wx.condition_on_prev_tokens = args.condition_on_prev_tokens;
++        if (args.temperature_set) {
++            wx.temperature = args.temperature;
++        }
++        wx.prompt_condition = args.prompt_condition;
++        if (transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_RUN, TRANSCRIBE_EXT_KIND_WHISPER_RUN)) {
++            rp.family = &wx.ext;
++        }
++    }
++
++    if (args.keep_special_tags) {
++        rp.keep_special_tags = true;
++    }
++
++    std::string line;
++    while (std::getline(std::cin, line)) {
++        while (!line.empty() &&
++               (line.back() == '\n' || line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
++            line.pop_back();
++        }
++        if (line.empty()) {
++            continue;
++        }
++
++        std::vector<float> pcm;
++        std::string        wav_err;
++        const char *       text = "";
++        const char *       err  = nullptr;
++        if (!transcribe_cli::load_wav_mono_16k(line, pcm, wav_err)) {
++            err = wav_err.c_str();
++        } else {
++            const transcribe_status run_st = transcribe_run(ctx, pcm.data(), static_cast<int>(pcm.size()), &rp);
++            if (run_st == TRANSCRIBE_OK || is_cut_short(run_st)) {
++                const char * t = transcribe_full_text(ctx);
++                if (t && *t) {
++                    text = t;
++                }
++            } else {
++                err = transcribe_status_string(run_st);
++            }
++        }
++
++        // One response line per request; `type` lets a host skip any other
++        // stdout output without guessing whether a line is a transcript.
++        const std::string file_esc = json_escape(line.c_str());
++        if (err != nullptr) {
++            std::printf("{\"type\":\"serve\",\"file\":\"%s\",\"text\":\"\",\"error\":\"%s\"}\n", file_esc.c_str(),
++                        json_escape(err).c_str());
++        } else {
++            std::printf("{\"type\":\"serve\",\"file\":\"%s\",\"text\":\"%s\"}\n", file_esc.c_str(),
++                        json_escape(text).c_str());
++        }
++        std::fflush(stdout);
++    }
++
++    transcribe_session_free(ctx);
++    transcribe_model_free(model);
++    return EXIT_SUCCESS;
++}
++
+ int run_asr_file(const cli_args &           args,
+                  transcribe_model *         model,
+                  const std::vector<float> & pcm,
+diff --git a/examples/cli/cli.h b/examples/cli/cli.h
+index 96cbf5a9..9be5341b 100644
+--- a/examples/cli/cli.h
++++ b/examples/cli/cli.h
+@@ -30,6 +30,7 @@ struct cli_args {
      bool                       quiet        = false;
      bool                       list_devices = false;  // --list-devices: print devices and exit
      bool                       batch_jsonl  = false;  // --batch-jsonl: output JSONL
@@ -18,7 +169,32 @@ index f4cbbd0..4025e1c 100644
      std::string                output_path;           // -o/--output: write raw text here
      int                        repeat       = 1;
      int                        n_threads    = 0;      // 0 = library default (all cores)
-@@ -536,6 +538,8 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
+@@ -124,6 +125,11 @@ bool write_output_file(std::ofstream * output, const std::string & path, const c
+ // and returns the process exit code.
+ int run_asr_batch(const cli_args & args, std::ofstream * output);
+ 
++// ASR serve driver (asr.cpp): loads the model and session ONCE, then reads one
++// wav path per stdin line and writes one JSONL response per request to stdout.
++// Keeps the model and backend warm for long-lived host applications.
++int run_asr_serve(const cli_args & args);
++
+ // Single-file drivers, one per role. main.cpp loads the audio and the model,
+ // prints them, and dispatches on transcribe_model_roles(); the driver takes
+ // ownership of the model and returns the process exit code.
+diff --git a/examples/cli/main.cpp b/examples/cli/main.cpp
+index ef7d4aa4..a4d0962a 100644
+--- a/examples/cli/main.cpp
++++ b/examples/cli/main.cpp
+@@ -71,6 +71,8 @@ void print_usage(const char * argv0) {
+                  "  --timestamps TYPE     timestamps: auto, none, segment, word, token (default: auto)\n"
+                  "  --batch FILE          batch mode: FILE has one wav path per line\n"
+                  "  --batch-jsonl         output one JSON line per file (for batch)\n"
++                 "  --serve               read wav paths from stdin and write one JSONL\n"
++                 "                        response per line, keeping the model warm\n"
+                  "  --batch-size N        group N utterances into one transcribe_run_batch\n"
+                  "                        call (offline only; 0/1 = per-file serial loop)\n"
+                  "  --initial-prompt TEXT (whisper) initial prompt text for context biasing\n"
+@@ -367,6 +369,8 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
              out.batch_file = v;
          } else if (a == "--batch-jsonl") {
              out.batch_jsonl = true;
@@ -27,7 +203,7 @@ index f4cbbd0..4025e1c 100644
          } else if (a == "--batch-size") {
              const char * v = take_value(a.c_str());
              if (!v) {
-@@ -672,7 +676,7 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
+@@ -545,7 +549,7 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
      if (out.list_devices) {
          return true;
      }
@@ -36,136 +212,14 @@ index f4cbbd0..4025e1c 100644
          std::fprintf(stderr, "error: missing audio.wav or --batch\n");
          return false;
      }
-@@ -766,6 +770,132 @@ int main(int argc, char ** argv) {
+@@ -682,6 +686,10 @@ int main(int argc, char ** argv) {
+         output = &output_file;
      }
-     bool output_ok = true;
  
-+    // Serve mode: --serve loads the model ONCE and reuses the context across
-+    // all requests. Each request is one wav path on a stdin line; each
-+    // response is one JSONL line on stdout ({"file":..,"text":..,"error":..}),
-+    // flushed immediately. Designed for long-lived host applications that
-+    // transcribe many utterances per process: model load + backend init are
-+    // paid once instead of per utterance.
 +    if (args.serve) {
-+        if (args.model_path.empty()) {
-+            std::fprintf(stderr, "error: --serve requires --model\n");
-+            return EXIT_FAILURE;
-+        }
-+
-+        struct transcribe_model_load_params mp;
-+        transcribe_model_load_params_init(&mp);
-+        mp.backend = args.backend;
-+        mp.device  = args.device_index >= 0 ? transcribe_device_get(args.device_index) : nullptr;
-+        if (args.device_index >= 0 && mp.device == nullptr) {
-+            std::fprintf(stderr, "error: --device index %d is not available\n", args.device_index);
-+            return EXIT_FAILURE;
-+        }
-+        struct transcribe_model * model   = nullptr;
-+        const transcribe_status   load_st = transcribe_model_load_file(args.model_path.c_str(), &mp, &model);
-+        if (load_st != TRANSCRIBE_OK) {
-+            std::fprintf(stderr, "model load: %s\n", transcribe_status_string(load_st));
-+            return EXIT_FAILURE;
-+        }
-+
-+        struct transcribe_session_params cp;
-+        transcribe_session_params_init(&cp);
-+        cp.n_threads = args.n_threads;
-+        cp.n_ctx     = args.n_ctx;
-+        cp.kv_type   = args.kv_type;
-+        struct transcribe_session * ctx     = nullptr;
-+        const transcribe_status     init_st = transcribe_session_init(model, &cp, &ctx);
-+        if (init_st != TRANSCRIBE_OK) {
-+            std::fprintf(stderr, "context init: %s\n", transcribe_status_string(init_st));
-+            transcribe_model_free(model);
-+            return EXIT_FAILURE;
-+        }
-+
-+        struct transcribe_run_params rp;
-+        transcribe_run_params_init(&rp);
-+        if (args.translate) {
-+            rp.task = TRANSCRIBE_TASK_TRANSLATE;
-+        }
-+        if (!args.language.empty()) {
-+            rp.language = args.language.c_str();
-+        }
-+        if (!args.target_language.empty()) {
-+            rp.target_language = args.target_language.c_str();
-+        }
-+        rp.timestamps    = args.timestamps;
-+        rp.spec_k_drafts = args.spec_k_drafts;
-+        if (args.itn_set) {
-+            rp.itn = args.use_itn ? TRANSCRIBE_ITN_MODE_ON : TRANSCRIBE_ITN_MODE_OFF;
-+        }
-+        if (args.canary_pnc_set) {
-+            rp.pnc = args.canary_pnc ? TRANSCRIBE_PNC_MODE_ON : TRANSCRIBE_PNC_MODE_OFF;
-+        }
-+        if (args.diarize_set) {
-+            rp.diarize = args.diarize ? TRANSCRIBE_DIARIZE_MODE_ON : TRANSCRIBE_DIARIZE_MODE_OFF;
-+        }
-+        struct transcribe_whisper_run_ext wx;
-+        transcribe_whisper_run_ext_init(&wx);
-+        if (args.whisper_set) {
-+            if (!args.initial_prompt.empty()) {
-+                wx.initial_prompt = args.initial_prompt.c_str();
-+            }
-+            wx.condition_on_prev_tokens = args.condition_on_prev_tokens;
-+            if (args.temperature_set) {
-+                wx.temperature = args.temperature;
-+            }
-+            wx.prompt_condition = args.prompt_condition;
-+            if (transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_RUN, TRANSCRIBE_EXT_KIND_WHISPER_RUN)) {
-+                rp.family = &wx.ext;
-+            }
-+        }
-+        if (args.keep_special_tags) {
-+            rp.keep_special_tags = true;
-+        }
-+
-+        std::string line;
-+        while (std::getline(std::cin, line)) {
-+            while (!line.empty() &&
-+                   (line.back() == '\n' || line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
-+                line.pop_back();
-+            }
-+            if (line.empty()) {
-+                continue;
-+            }
-+
-+            std::vector<float> pcm;
-+            std::string        wav_err;
-+            const char *       text = "";
-+            const char *       err  = nullptr;
-+            if (!transcribe_cli::load_wav_mono_16k(line, pcm, wav_err)) {
-+                err = wav_err.c_str();
-+            } else {
-+                const transcribe_status run_st = transcribe_run(ctx, pcm.data(), static_cast<int>(pcm.size()), &rp);
-+                if (run_st == TRANSCRIBE_OK || run_st == TRANSCRIBE_ERR_OUTPUT_TRUNCATED) {
-+                    const char * t = transcribe_full_text(ctx);
-+                    if (t && *t) {
-+                        text = t;
-+                    }
-+                } else {
-+                    err = transcribe_status_string(run_st);
-+                }
-+            }
-+
-+            const std::string file_esc = json_escape(line.c_str());
-+            const std::string text_esc = json_escape(text);
-+            if (err != nullptr) {
-+                const std::string err_esc = json_escape(err);
-+                std::printf("{\"type\":\"serve\",\"file\":\"%s\",\"text\":\"\",\"error\":\"%s\"}\n",
-+                            file_esc.c_str(), err_esc.c_str());
-+            } else {
-+                std::printf("{\"type\":\"serve\",\"file\":\"%s\",\"text\":\"%s\"}\n", file_esc.c_str(), text_esc.c_str());
-+            }
-+            std::fflush(stdout);
-+        }
-+
-+        transcribe_session_free(ctx);
-+        transcribe_model_free(model);
-+        return EXIT_SUCCESS;
++        return transcribe_cli::run_asr_serve(args);
 +    }
 +
-     // Batch mode: --batch reads a file list, one wav path per line. Loads
-     // the model ONCE and reuses the context across all files. Outputs one
-     // JSONL line per file to stdout when --batch-jsonl is set, otherwise
+     if (!args.batch_file.empty()) {
+         return transcribe_cli::run_asr_batch(args, output);
+     }

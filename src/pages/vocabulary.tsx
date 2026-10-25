@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
+import { VocabularyPacksSection } from "@/components/settings-vocabulary";
+import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
 import {
   deleteCorrectionPair,
   getCorrections,
@@ -28,11 +32,16 @@ function formatTimestamp(timestamp: number): string {
 }
 
 /**
- * Corrections review (spec §13/§17): every dictation the vocabulary engine
- * fixed — what was heard, what it became, how often — plus a "Teach a
- * correction" form that trains future dictations.
+ * Vocabulary (spec §13/§17): everything the app has learned about your words —
+ * what it heard, what it became, how often — plus the packs that organize
+ * technical terms. One page, so there is a single place to teach.
  */
-export function CorrectionsPage() {
+export function VocabularyPage() {
+  const [tab, setTab] = useState("learned");
+  const [highlightedPair, setHighlightedPair] = useState<{
+    source: string;
+    canonical: string;
+  } | null>(null);
   const [corrections, setCorrections] = useState<CorrectionRow[]>([]);
   const [stats, setStats] = useState({
     totalCorrections: 0,
@@ -41,6 +50,21 @@ export function CorrectionsPage() {
     lowConfidenceCorrections: 0,
   });
   const [loading, setLoading] = useState(true);
+  // The command palette can deep-link into a specific tab, and to a specific
+  // correction pair.
+  useEffect(() => {
+    return subscribeCommand(COMMAND_TARGETS.vocabulary, (command) => {
+      if (command.kind === "open-vocabulary-tab") {
+        setTab(typeof command.payload === "string" ? command.payload : "packs");
+        return;
+      }
+      if (command.kind === "focus-correction") {
+        const pair = command.payload as { source: string; canonical: string };
+        setTab("learned");
+        setHighlightedPair(pair);
+      }
+    });
+  }, []);
   const [heard, setHeard] = useState("");
   const [correct, setCorrect] = useState("");
   const [teaching, setTeaching] = useState(false);
@@ -125,14 +149,28 @@ export function CorrectionsPage() {
         <div className="page-shell">
           <header className="page-header">
             <div>
-              <h1 className="page-title">Corrections</h1>
+              <h1 className="page-title">Vocabulary</h1>
               <p className="page-description">
-                Every dictation the app improved — what was heard, what it became. Teach a
-                correction and future dictations of the same words are fixed automatically.
+                What the app has learned about your words, and the terms you taught it.
+                Teach a correction once and every future dictation is fixed automatically.
               </p>
             </div>
           </header>
 
+          <Tabs
+            value={tab}
+            onValueChange={setTab}
+            className="flex flex-col gap-5"
+          >
+            <TabsList>
+              <TabsTrigger value="learned">Learned</TabsTrigger>
+              <TabsTrigger value="packs">Packs</TabsTrigger>
+            </TabsList>
+
+            <TabsContent
+              value="learned"
+              className="flex flex-col gap-5 duration-200 animate-in fade-in slide-in-from-top-1"
+            >
           <div className="stat-strip divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0">
             <StatCard label="Corrections applied" value={stats.totalCorrections.toLocaleString()} />
             <StatCard label="Dictations improved" value={stats.dictationsImproved.toLocaleString()} />
@@ -251,11 +289,16 @@ export function CorrectionsPage() {
               </p>
             </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="flex flex-col gap-1.5">
               {corrections.map((row) => (
                 <div
                   key={`${row.source}\u0000${row.canonical}`}
-                  className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+                  className={cn(
+                    "flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3",
+                    highlightedPair?.source === row.source &&
+                      highlightedPair?.canonical === row.canonical &&
+                      "ring-1 ring-primary/50 bg-primary/5"
+                  )}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -297,7 +340,16 @@ export function CorrectionsPage() {
                 </div>
               ))}
             </div>
-          )}
+            )}
+            </TabsContent>
+
+            <TabsContent
+              value="packs"
+              className="duration-200 animate-in fade-in slide-in-from-top-1"
+            >
+              <VocabularyPacksSection />
+            </TabsContent>
+          </Tabs>
         </div>
       </ScrollArea>
     </div>

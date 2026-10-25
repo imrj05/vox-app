@@ -173,6 +173,35 @@ export async function saveTranscript(
   );
 }
 
+/**
+ * Lightweight row for the command palette's global search.
+ *
+ * The palette only needs an id (to scroll/highlight), a short preview to show,
+ * and an app name. Selecting a hit hands the id to the target page, which loads
+ * the full row itself. Querying 1000 full rows × 3 text columns just to build a
+ * searchable list allocated several MB on every open.
+ */
+export interface TranscriptSearchRow {
+  id: number;
+  app_name: string | null;
+  created_at: number;
+  /** First 300 characters of the transcript, for matching and display. */
+  preview: string;
+}
+
+export async function getTranscriptSearchIndex(
+  limit = 1000
+): Promise<TranscriptSearchRow[]> {
+  const db = await getDb();
+  return db.select<TranscriptSearchRow[]>(
+    `SELECT id, app_name, created_at, substr(text, 1, 300) AS preview
+     FROM transcripts
+     ORDER BY created_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+}
+
 export async function getTranscripts(limit = 50): Promise<TranscriptRow[]> {
   const db = await getDb();
   return db.select<TranscriptRow[]>(

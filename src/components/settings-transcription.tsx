@@ -16,45 +16,15 @@ import {
   SettingRow,
   SettingsCard,
 } from "@/components/settings-primitives";
-import {
-  useAppStore,
-  type EngineFallbackTarget,
-  type TranscriptionEngine,
-} from "@/store/app-store";
+import { useAppStore, type EngineFallbackTarget } from "@/store/app-store";
 import {
   getTranscriptionEngines,
+  listWhisperModels,
   type TranscriptionEngineStatus,
+  type WhisperModelInfo,
 } from "@/lib/native";
-
-const engineOptions: Array<{
-  value: TranscriptionEngine;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: "auto",
-    label: "Automatic",
-    description:
-      "Vox picks the best installed engine for the current language and your hardware.",
-  },
-  {
-    value: "whisper",
-    label: "Whisper",
-    description:
-      "Multilingual, GPU-accelerated on Apple Silicon. Best for Hindi and Hinglish.",
-  },
-  {
-    value: "parakeet",
-    label: "Parakeet",
-    description: "Fast English transcription on Apple Silicon. English only.",
-  },
-  {
-    value: "apple",
-    label: "Apple Speech",
-    description:
-      "Built into macOS — nothing to download. On-device with OS-provided recognizers.",
-  },
-];
+import { activeModelLabel } from "@/lib/model-label";
+import { cn } from "@/lib/utils";
 
 const fallbackOptions: Array<{ value: EngineFallbackTarget; label: string }> = [
   { value: "apple", label: "Apple Speech" },
@@ -65,7 +35,7 @@ const fallbackOptions: Array<{ value: EngineFallbackTarget; label: string }> = [
 export function TranscriptionSection() {
   const {
     engine,
-    setEngine,
+    selectedModel,
     engineFallbackEnabled,
     setEngineFallbackEnabled,
     preferredEngineFallback,
@@ -73,12 +43,18 @@ export function TranscriptionSection() {
     language,
   } = useAppStore();
   const [engines, setEngines] = useState<TranscriptionEngineStatus[]>([]);
+  const [models, setModels] = useState<WhisperModelInfo[]>([]);
 
   useEffect(() => {
     let ignore = false;
     void getTranscriptionEngines()
       .then((list) => {
         if (!ignore) setEngines(list);
+      })
+      .catch(() => {});
+    void listWhisperModels()
+      .then((list) => {
+        if (!ignore) setModels(list);
       })
       .catch(() => {});
     return () => {
@@ -88,6 +64,8 @@ export function TranscriptionSection() {
 
   const statusFor = (value: string) =>
     engines.find((e) => e.id === value);
+  const activeStatus = statusFor(engine);
+  const activeLabel = activeModelLabel(engine, selectedModel, models);
   const showParakeetWarning =
     engine === "parakeet" && (language === "hi" || language === "hinglish");
 
@@ -95,54 +73,47 @@ export function TranscriptionSection() {
     <div className="space-y-5">
       <SectionHeader
         title="Transcription"
-        description="Choose which speech-to-text engine Vox uses and what happens when it cannot."
+        description="What Vox runs for dictation, and what happens when it cannot."
       />
 
       <SettingsCard className="space-y-4">
-        <SettingGroupHeader
+        <SettingRow
           icon={<Mic className="h-4 w-4" />}
-          title="Engine"
-          description="All engines run locally on your device. Automatic picks the fastest engine that supports your language."
-        />
-        <OptionGrid label="Transcription engine" className="sm:grid-cols-2">
-          {engineOptions.map((option) => {
-            const status = statusFor(option.value);
-            const unavailable =
-              option.value !== "auto" && status && !status.available;
-            return (
-              <OptionTile
-                key={option.value}
-                selected={engine === option.value}
-                onSelect={() => void setEngine(option.value)}
-                title={option.label}
-                description={
-                  unavailable
-                    ? status?.reason ?? option.description
-                    : option.description
-                }
-                disabled={unavailable}
-                disabledReason={status?.reason ?? undefined}
-                status={
-                  status
-                    ? {
-                        label: status.available ? "Ready" : "Unavailable",
-                        ok: status.available,
-                      }
-                    : undefined
-                }
+          title="Active model"
+          description={`Dictation runs on ${activeLabel}. Choose a different model — or Apple on-device — on the Models page.`}
+          action={
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
+                activeStatus?.available
+                  ? "bg-primary/10 text-primary"
+                  : "bg-muted text-muted-foreground"
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  activeStatus?.available ? "bg-primary" : "bg-muted-foreground/50"
+                )}
+                aria-hidden="true"
               />
-            );
-          })}
-        </OptionGrid>
+              {activeStatus?.available ? "Ready" : "Unavailable"}
+            </span>
+          }
+        />
+        {activeStatus && !activeStatus.available && activeStatus.reason ? (
+          <p className="text-xs leading-5 text-muted-foreground">
+            {activeStatus.reason}
+          </p>
+        ) : null}
         {showParakeetWarning ? (
           <Notice
             icon={<TriangleAlertIcon className="h-4 w-4" />}
             title="Parakeet doesn’t support Hindi or Hinglish"
           >
             Parakeet models only understand English and some European
-            languages. Vox will automatically transcribe your Hindi dictation
-            with Whisper instead — or switch the engine to Whisper or
-            Automatic for the best results.
+            languages. Choose a Whisper model on the Models page to dictate in
+            Hindi or Hinglish.
           </Notice>
         ) : null}
       </SettingsCard>

@@ -1315,12 +1315,34 @@ export function ShortcutsSection() {
     const timeout = window.setTimeout(() => {
       void refreshDiagnostics({ silent: true });
     }, 0);
-    const interval = window.setInterval(() => {
-      void refreshDiagnostics({ silent: true });
-    }, 3000);
+    let interval: number | undefined;
+    const start = () => {
+      if (interval !== undefined) return;
+      interval = window.setInterval(() => {
+        void refreshDiagnostics({ silent: true });
+      }, 3000);
+    };
+    const stop = () => {
+      if (interval === undefined) return;
+      window.clearInterval(interval);
+      interval = undefined;
+    };
+    // Polling is only useful while the user can see the diagnostics — pause the
+    // 3 s IPC round-trip when the window is hidden or on another Space.
+    const sync = () => {
+      if (document.visibilityState === "visible") {
+        void refreshDiagnostics({ silent: true });
+        start();
+      } else {
+        stop();
+      }
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
     return () => {
       window.clearTimeout(timeout);
-      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", sync);
+      stop();
     };
   }, [refreshDiagnostics]);
   const handleSaveHotkey = async (shortcut: string) => {

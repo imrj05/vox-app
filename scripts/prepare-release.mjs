@@ -1,4 +1,4 @@
-import { access, readFile, readdir, writeFile } from "node:fs/promises"
+import { access, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
@@ -60,6 +60,54 @@ async function resolveArchivePath(productName, files) {
 
   appArchives.sort((left, right) => right.localeCompare(left))
   return appArchives[0]
+}
+
+// Maps the architectures of the app bundle's main executable onto Tauri's
+// updater platform keys, so latest.json can never claim the wrong architecture.
+async function resolveUpdaterPlatform(files) {
+  const override = process.env.RELEASE_PLATFORM?.trim()
+  if (override) {
+    return override
+  }
+
+  const mainBinary = files.find((filePath) => /\.app\/Contents\/MacOS\/[^/]+$/.test(filePath))
+  if (!mainBinary) {
+    throw new Error("No app bundle executable found under src-tauri/target/release/bundle.")
+  }
+
+  const { stdout } = await execFileAsync("lipo", ["-archs", mainBinary])
+  const archs = stdout.trim().split(/\s+/).filter(Boolean).sort()
+
+  if (archs.length > 1) {
+    return "darwin-universal"
+  }
+
+  if (archs[0] === "arm64") {
+    return "darwin-aarch64"
+  }
+
+  if (archs[0] === "x86_64") {
+    return "darwin-x86_64"
+  }
+
+  throw new Error(`Unsupported macOS architecture(s): ${archs.join(", ") || "none"}`)
+}
+
+const ARCH_TOKENS = {
+  "darwin-aarch64": "aarch64",
+  "darwin-x86_64": "x64",
+  "darwin-universal": "universal",
+}
+
+// Both architectures upload into the same GitHub release, so the updater archive
+// name has to carry the architecture; they are otherwise both `Vox.app.tar.gz`.
+function resolveArchToken(updaterPlatform) {
+  const token = ARCH_TOKENS[updaterPlatform]
+  if (!token) {
+    throw new Error(`No release asset token for updater platform ${updaterPlatform}.`)
+  }
+
+  return token
 }
 
 function resolveInstallerAssets(productName, files) {
@@ -164,19 +212,39 @@ async function main() {
 
   const bundleFiles = await readBundleFiles()
   const archivePath = await resolveArchivePath(productName, bundleFiles)
-  const installerAssets = resolveInstallerAssets(productName, bundleFiles)
+  const updaterPlatform = await resolveUpdaterPlatform(bundleFiles)
+  const archToken = resolveArchToken(updaterPlatform)
+  const bundleInstallerAssets = resolveInstallerAssets(productName, bundleFiles)
   const signing = resolveSigningEnv()
   const releaseTag = process.env.RELEASE_TAG?.trim() || `v${version}`
   const releaseRepo = process.env.RELEASE_REPO?.trim() || "imrj05/vox-app"
-  const assetName = basename(archivePath)
+
+  // Stage the uploadable assets in one directory so the CI artifact upload is a
+  // single glob, and sign the staged copy (the signature covers what ships).
+  const assetsDir = resolve(process.cwd(), process.env.RELEASE_ASSETS_DIR ?? "release")
+  await mkdir(assetsDir, { recursive: true })
+
+  const assetName = `${productName}_${version}_${archToken}.app.tar.gz`
+  const archiveAssetPath = resolve(assetsDir, assetName)
+  await copyFile(archivePath, archiveAssetPath)
+  // A .sig left over from an earlier run would be read instead of this build's.
+  await rm(`${archiveAssetPath}.sig`, { force: true })
+
+  const installerAssets = []
+  for (const asset of bundleInstallerAssets) {
+    const stagedPath = resolve(assetsDir, asset.name)
+    await copyFile(asset.path, stagedPath)
+    installerAssets.push({ ...asset, path: stagedPath })
+  }
+
   const downloadUrl = `https://github.com/${releaseRepo}/releases/download/${releaseTag}/${assetName}`
-  const { signature } = await signArchive(archivePath, signing)
+  const { signature } = await signArchive(archiveAssetPath, signing)
   const manifestPath = await writeUpdaterManifest({
     version,
     notes: process.env.RELEASE_NOTES ?? "",
     pubDate: process.env.RELEASE_DATE ?? new Date().toISOString(),
     platforms: {
-      "darwin-aarch64": {
+      [updaterPlatform]: {
         signature,
         url: downloadUrl,
       },
@@ -189,6 +257,7 @@ async function main() {
     releaseRepo,
     archivePath,
     assetName,
+    updaterPlatform,
     manifestPath,
     manifestName: basename(manifestPath),
     installerAssets,
@@ -198,6 +267,7 @@ async function main() {
   await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8")
 
   console.log(`Resolved updater archive: ${archivePath}`)
+  console.log(`Updater platform: ${updaterPlatform}`)
   console.log(`Signing source: ${signing.sourceLabel}`)
   console.log(`Updater manifest written to ${manifestPath}`)
   console.log(`Release metadata written to ${metadataPath}`)

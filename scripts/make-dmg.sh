@@ -11,8 +11,8 @@
 # Prints the sha256 of the finished DMG for release notes / checksums.
 #
 # Environment:
-#   APPLE_SIGNING_IDENTITY   Code-signing identity. Defaults to the first
-#                            "Developer ID Application" identity in the keychain.
+#   APPLE_SIGNING_IDENTITY   Code-signing identity. Defaults to the identity the
+#                            app bundle is already signed with.
 #                            Without one the DMG is built unsigned (fine for
 #                            local installs, not for distribution).
 #   NOTARY_PROFILE           notarytool keychain profile (default: vox-notary).
@@ -66,11 +66,12 @@ STAGING="$(mktemp -d)/staging"
 NOTARY_PROFILE="${NOTARY_PROFILE:-vox-notary}"
 DMG_BACKGROUND="${DMG_BACKGROUND:-$REPO_ROOT/public/background_660x400.tiff}"
 
-# Resolve a code-signing identity. Apple Development identities are rejected by
-# notarization, so we look for a Developer ID Application certificate.
+# Resolve a code-signing identity for the DMG. Apple Development identities are
+# rejected by notarization, so reuse whatever Developer ID Application identity
+# the app bundle itself was signed with; empty for unsigned builds.
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
-  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $2; exit}')" || true
+  IDENTITY="$(codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)" || true
 fi
 
 if [ -n "$IDENTITY" ]; then

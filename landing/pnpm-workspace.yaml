@@ -1,0 +1,3 @@
+# This app is its own workspace. It must not share the Vox desktop app's
+# lockfile, scripts, or node_modules.
+packages: []

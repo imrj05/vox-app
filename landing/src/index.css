@@ -1,0 +1,352 @@
+@import "tailwindcss";
+@import "@fontsource-variable/urbanist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Warm paper, black chrome, and dark code windows. The single blue accent is
+   reserved for live states; mint marks availability. */
+:root {
+    color-scheme: light;
+
+    --background: #f2f2f0;
+    --foreground: #050505;
+    --card: #ffffff;
+    --card-foreground: #050505;
+    --popover: #ffffff;
+    --popover-foreground: #050505;
+    --primary: #050505;
+    --primary-foreground: #ffffff;
+    --secondary: #e8e8e4;
+    --secondary-foreground: #050505;
+    --muted: #e8e8e4;
+    --muted-foreground: #737373;
+    --accent: #e2edfc;
+    --accent-foreground: #050505;
+    --destructive: #de350b;
+    --destructive-foreground: #ffffff;
+    --border: #05050514;
+    --input: #0505051f;
+    --ring: #050505;
+
+    --mint: #7bf1a8;
+    --mint-foreground: #05230f;
+    --live: #1868db;
+
+    --code: #100f0f;
+    --code-edge: #262626;
+    --code-muted: #7d7d7d;
+    --code-text: #d4d4d4;
+    --code-key: #c4b4ff;
+    --code-string: #5ee9b5;
+
+    --radius: 0rem;
+}
+
+.dark {
+    color-scheme: dark;
+
+    --background: #121211;
+    --foreground: #f2f2f0;
+    --card: #1a1a18;
+    --card-foreground: #f2f2f0;
+    --popover: #1a1a18;
+    --popover-foreground: #f2f2f0;
+    --primary: #f2f2f0;
+    --primary-foreground: #0b0b0a;
+    --secondary: #232320;
+    --secondary-foreground: #f2f2f0;
+    --muted: #232320;
+    --muted-foreground: #a3a39c;
+    --accent: #1d2b3d;
+    --accent-foreground: #f2f2f0;
+    --border: #ffffff1f;
+    --input: #ffffff2e;
+    --ring: #f2f2f0;
+
+    --live: #5b9fff;
+
+    --code: #0a0a09;
+    --code-edge: #2e2e2a;
+    --code-muted: #9a9a92;
+    --code-text: #e8e8e4;
+}
+
+@theme inline {
+    --font-sans: "Urbanist Variable", ui-sans-serif, system-ui, -apple-system,
+        "Segoe UI", sans-serif;
+    --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+        monospace;
+
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    --color-mint: var(--mint);
+    --color-mint-foreground: var(--mint-foreground);
+    --color-live: var(--live);
+
+    --color-code: var(--code);
+    --color-code-edge: var(--code-edge);
+    --color-code-muted: var(--code-muted);
+    --color-code-text: var(--code-text);
+    --color-code-key: var(--code-key);
+    --color-code-string: var(--code-string);
+}
+
+@layer base {
+    *,
+    ::after,
+    ::before {
+        @apply border-border;
+    }
+
+    html {
+        scroll-behavior: smooth;
+        -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+        @apply bg-background font-sans text-foreground antialiased;
+    }
+
+    ::selection {
+        background: var(--foreground);
+        color: var(--background);
+    }
+
+    :where(a, button, [role="tab"], [role="radio"]):focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 3px;
+    }
+
+    /* Dark windows need a light ring; the page-level ink ring disappears. */
+    .vox-demo :where(a, button, [role="radio"]):focus-visible {
+        outline-color: var(--code-text);
+    }
+}
+
+@layer utilities {
+    /* Engine ticker. The track holds two identical lists. */
+    .vox-marquee-track {
+        animation: vox-marquee 44s linear infinite;
+    }
+
+    .vox-marquee:hover .vox-marquee-track,
+    .vox-marquee:focus-within .vox-marquee-track {
+        animation-play-state: paused;
+    }
+
+    /* Widget waveform. Delays are inline so the bars never lock step. */
+    .vox-bar {
+        animation: vox-bar 1.05s ease-in-out infinite;
+        transform-origin: center;
+        will-change: transform;
+    }
+
+    .vox-caret {
+        animation: vox-caret 1.05s steps(1) infinite;
+    }
+
+    .vox-shimmer {
+        background-image: linear-gradient(
+            100deg,
+            currentColor 0%,
+            currentColor 38%,
+            #ffffff 49%,
+            #bcd6f8 54%,
+            currentColor 66%,
+            currentColor 100%
+        );
+        background-size: 260% 100%;
+        background-position: 130% 0;
+        background-clip: text;
+        -webkit-background-clip: text;
+        color: transparent;
+        animation: vox-shimmer 1.4s linear infinite;
+    }
+
+    /* Abstract gradient fields in the reference's photographic card style. */
+    .feature-card {
+        isolation: isolate;
+        background-color: var(--code);
+    }
+
+    .feature-card::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+        opacity: 0.14;
+        mix-blend-mode: soft-light;
+    }
+
+    .feature-card--sky {
+        background-image:
+            linear-gradient(180deg, #00000040 0%, transparent 42%),
+            radial-gradient(58% 44% at 20% 14%, #f4faff 0%, transparent 64%),
+            radial-gradient(46% 38% at 78% 8%, #ffffff9c 0%, transparent 62%),
+            radial-gradient(95% 70% at 12% 92%, #071f42 0%, transparent 64%),
+            radial-gradient(120% 95% at 62% 48%, #6aa8f5 0%, transparent 72%),
+            linear-gradient(170deg, #cfe4ff 0%, #4a8de8 44%, #12325f 100%);
+    }
+
+    .feature-card--sun {
+        background-image:
+            linear-gradient(180deg, #00000040 0%, transparent 42%),
+            radial-gradient(56% 46% at 78% 12%, #fff7e8 0%, transparent 62%),
+            radial-gradient(48% 40% at 22% 22%, #ffe0a8 0%, transparent 66%),
+            radial-gradient(98% 74% at 78% 94%, #3d1604 0%, transparent 64%),
+            radial-gradient(120% 95% at 45% 50%, #f0a63d 0%, transparent 70%),
+            linear-gradient(168deg, #ffe9c4 0%, #e08a1e 46%, #6b2f06 100%);
+    }
+
+    .feature-card--coral {
+        background-image:
+            linear-gradient(180deg, #00000040 0%, transparent 42%),
+            radial-gradient(54% 44% at 26% 12%, #fff0ed 0%, transparent 62%),
+            radial-gradient(46% 38% at 82% 20%, #ffd2cb 0%, transparent 66%),
+            radial-gradient(96% 72% at 78% 94%, #3f1119 0%, transparent 64%),
+            radial-gradient(120% 95% at 45% 48%, #e88a86 0%, transparent 72%),
+            linear-gradient(168deg, #ffe0dc 0%, #c8646a 46%, #571c28 100%);
+    }
+
+    /* Soft light well behind the stacked demo windows. */
+    .demo-panel {
+        background-image: radial-gradient(
+            120% 90% at 50% 0%,
+            var(--card) 0%,
+            color-mix(in oklab, var(--card) 55%, var(--background)) 55%,
+            var(--background) 100%
+        );
+        box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 5%, transparent);
+    }
+
+    /* Ghosted footer wordmark. The gradient is derived from the theme so it
+       stays quiet on paper and on dark. */
+    .footer-wordmark {
+        background-image: linear-gradient(
+            to top,
+            var(--background) 0%,
+            color-mix(in oklab, var(--foreground) 26%, var(--background)) 55%,
+            color-mix(in oklab, var(--foreground) 40%, var(--background)) 100%
+        );
+    }
+
+    .reveal {
+        opacity: 0;
+        transform: translateY(14px);
+        transition:
+            opacity 0.6s cubic-bezier(0, 0, 0.2, 1),
+            transform 0.6s cubic-bezier(0, 0, 0.2, 1);
+    }
+
+    .reveal.is-visible {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes vox-marquee {
+    from {
+        transform: translateX(0);
+    }
+    to {
+        transform: translateX(-50%);
+    }
+}
+
+@keyframes vox-bar {
+    0%,
+    100% {
+        transform: scaleY(0.22);
+    }
+    50% {
+        transform: scaleY(1);
+    }
+}
+
+@keyframes vox-caret {
+    0%,
+    49% {
+        opacity: 1;
+    }
+    50%,
+    100% {
+        opacity: 0;
+    }
+}
+
+@keyframes vox-shimmer {
+    to {
+        background-position: -130% 0;
+    }
+}
+
+@keyframes accordion-down {
+    from {
+        height: 0;
+        opacity: 0.4;
+    }
+    to {
+        height: var(--radix-accordion-content-height);
+        opacity: 1;
+    }
+}
+
+@keyframes accordion-up {
+    from {
+        height: var(--radix-accordion-content-height);
+        opacity: 1;
+    }
+    to {
+        height: 0;
+        opacity: 0.4;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    .vox-marquee-track,
+    .vox-bar,
+    .vox-caret,
+    .vox-shimmer {
+        animation: none;
+    }
+
+    .vox-shimmer {
+        color: inherit;
+        background: none;
+        -webkit-text-fill-color: currentColor;
+    }
+
+    [data-slot="accordion-content"] {
+        animation: none !important;
+    }
+
+    .reveal {
+        opacity: 1;
+        transform: none;
+        transition: none;
+    }
+}

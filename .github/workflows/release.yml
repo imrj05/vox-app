@@ -61,46 +61,24 @@ jobs:
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  release:
+  # The release tag is resolved and created once, before the per-architecture
+  # builds fan out, so both legs publish into the same release.
+  resolve-version:
+    name: Resolve release tag
     needs: version-gate
     if: needs.version-gate.outputs.should_release == 'true'
-    runs-on: macos-latest
-    env:
-      RELEASE_REPO: ${{ github.repository }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
-      GGML_NATIVE: "OFF"
-      GGML_CPU_ARM_ARCH: "armv8.2-a"
-      CMAKE_C_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
-      CMAKE_CXX_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build outputs
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          key: macos-release
-
       - name: Resolve release tag
+        id: resolve
         shell: bash
         run: |
           version="$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
@@ -131,14 +109,15 @@ jobs:
             fi
           fi
 
-          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "Resolved release tag: $release_tag"
 
       - name: Create release tag if missing
         if: startsWith(github.ref, 'refs/heads/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
         shell: bash
         run: |
           if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -152,6 +131,77 @@ jobs:
             echo "Created and pushed tag $RELEASE_TAG."
           fi
 
+  # One native build per architecture: the sidecar builds (text enhancement,
+  # Parakeet, Apple Speech) stage binaries for the host triple, so each runner
+  # produces its own architecture without cross-compiling.
+  build:
+    name: Build ${{ matrix.arch_name }}
+    needs: resolve-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: aarch64
+            runner: macos-15 # Apple Silicon, arm64
+            host_arch: arm64
+          - arch_name: x64
+            runner: macos-15-intel # Intel, x86_64
+            host_arch: x86_64
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.tag }}
+      RELEASE_REPO: ${{ github.repository }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
+      # macOS signing + notarization. The Tauri CLI imports APPLE_CERTIFICATE into a
+      # temporary keychain and infers the signing identity from it, so the identity
+      # is never committed to the repo.
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      GGML_NATIVE: "OFF"
+      GGML_CPU_ARM_ARCH: "armv8.2-a"
+      CMAKE_C_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+      CMAKE_CXX_FLAGS: "-U__ARM_FEATURE_MATMUL_INT8"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          echo "Runner architecture: $arch (expected ${{ matrix.host_arch }})"
+          if [[ "$arch" != "${{ matrix.host_arch }}" ]]; then
+            echo "This leg must build the ${{ matrix.arch_name }} architecture, but the runner is $arch." >&2
+            exit 1
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: macos-release-${{ matrix.arch_name }}
+
       - name: Validate release secrets
         shell: bash
         run: |
@@ -163,6 +213,27 @@ jobs:
           if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
             echo "Missing required secret: TAURI_SIGNING_PRIVATE_KEY_PASSWORD" >&2
             exit 1
+          fi
+
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Configure signing identity
+        # Only exported when the secret exists: an empty APPLE_SIGNING_IDENTITY
+        # makes the bundler look for an identity literally named "".
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          if [[ -n "$IDENTITY" ]]; then
+            echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+            echo "Signing with identity from secret: $IDENTITY"
+          else
+            echo "APPLE_SIGNING_IDENTITY not set; using the identity from APPLE_CERTIFICATE."
           fi
 
       - name: Install dependencies
@@ -186,14 +257,50 @@ jobs:
       - name: Prepare updater assets
         run: pnpm release:prepare
 
-      - name: Read release metadata
-        id: release_metadata
-        run: |
-          node -e 'const fs = require("node:fs"); const metadata = JSON.parse(fs.readFileSync("release/release-metadata.json", "utf8")); const output = process.env.GITHUB_OUTPUT; const installerPaths = (metadata.installerAssets ?? []).map((asset) => asset.path).join("\n"); fs.appendFileSync(output, `archive_path=${metadata.archivePath}\nmanifest_path=${metadata.manifestPath}\nasset_name=${metadata.assetName}\nmanifest_name=${metadata.manifestName}\ndownload_url=${metadata.downloadUrl}\nrelease_tag=${metadata.releaseTag}\ninstaller_paths<<EOF\n${installerPaths}\nEOF\n`);'
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vox-${{ matrix.arch_name }}
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+            release/*.app.tar.gz
+            release/latest.json
+            release/release-metadata.json
+
+  publish:
+    name: Publish release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.tag }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vox-*
+          path: artifacts
+
+      - name: Merge updater manifests
+        # Each architecture wrote its own single-platform latest.json; the updater
+        # needs one manifest listing aarch64 and x64 together.
+        run: node scripts/merge-updater-manifests.mjs artifacts
+
+      - name: Build changelog
+        run: node scripts/build-changelog.mjs
 
       - name: Create or update GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -203,20 +310,17 @@ jobs:
           fi
 
       - name: Upload release assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          assets=(
-            "${{ steps.release_metadata.outputs.archive_path }}"
-            "${{ steps.release_metadata.outputs.manifest_path }}"
-          )
+          # Collect by glob so the step does not depend on how the artifact upload
+          # nests the files it received.
+          mapfile -t dmgs < <(find artifacts -type f -name '*.dmg')
+          mapfile -t archives < <(find artifacts -type f -name '*.app.tar.gz')
 
-          while IFS= read -r installer_path; do
-            if [[ -n "$installer_path" ]]; then
-              assets+=("$installer_path")
-            fi
-          done <<< "${{ steps.release_metadata.outputs.installer_paths }}"
+          if [[ ${#dmgs[@]} -ne 2 || ${#archives[@]} -ne 2 ]]; then
+            echo "Expected 2 installer images and 2 updater archives. Found:" >&2
+            printf '  %s\n' "${dmgs[@]}" "${archives[@]}" >&2
+            exit 1
+          fi
 
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-
+          gh release upload "$RELEASE_TAG" "${dmgs[@]}" "${archives[@]}" release/latest.json --clobber

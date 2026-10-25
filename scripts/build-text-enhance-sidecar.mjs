@@ -15,6 +15,13 @@ const cargoArgs = release
 execSync(`cargo ${cargoArgs.join(" ")}`, {
   cwd: srcTauri,
   stdio: "inherit",
+  env: {
+    ...process.env,
+    // llama.cpp's bundled cpp-httplib does not compile against OpenSSL 4, which
+    // is the default openssl on current macOS runners. The sidecar only loads
+    // models from local files, so HTTPS support is not needed.
+    CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "ON",
+  },
 });
 
 const targetTriple = execSync("rustc --print host-tuple", {

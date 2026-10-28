@@ -1,12 +1,12 @@
 import * as Sentry from "@sentry/react";
 
-const GLITCHTIP_DSN = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined;
 const REDACTED = "[redacted]";
 
 let errorReportingEnabled = false;
 
 export function configureErrorReporting(enabled: boolean) {
-  if (!enabled || !isValidGlitchTipDsn(GLITCHTIP_DSN)) {
+  if (!enabled || !isValidSentryDsn(SENTRY_DSN)) {
     errorReportingEnabled = false;
     void Sentry.getClient()?.close(0);
     return;
@@ -15,7 +15,7 @@ export function configureErrorReporting(enabled: boolean) {
   if (errorReportingEnabled) return;
 
   Sentry.init({
-    dsn: GLITCHTIP_DSN,
+    dsn: SENTRY_DSN,
     release: `${__APP_PACKAGE_NAME__}@${__APP_VERSION__}`,
     sendDefaultPii: false,
     tracesSampleRate: 0,
@@ -29,7 +29,7 @@ export function configureErrorReporting(enabled: boolean) {
 
 export const ErrorBoundary = Sentry.ErrorBoundary;
 
-export function isValidGlitchTipDsn(dsn: string | undefined): dsn is string {
+export function isValidSentryDsn(dsn: string | undefined): dsn is string {
   if (!dsn) return false;
 
   try {

@@ -23,12 +23,3 @@ Initial release changelog generated from repository history.
 
 - remove landing page input from Vite configuration (8de5169)
 - update class name for month grid in Calendar component (7a55497)
-
-
-### macOS — Gatekeeper warning
-
-If macOS blocks the app, run once in Terminal after installing:
-
-```bash
-xattr -cr /Applications/Vox.app
-```

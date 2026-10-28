@@ -153,7 +153,7 @@ jobs:
       RELEASE_REPO: ${{ github.repository }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      VITE_GLITCHTIP_DSN: ${{ secrets.VITE_GLITCHTIP_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN || secrets.VITE_GLITCHTIP_DSN }}
       # macOS signing + notarization. The Tauri CLI imports APPLE_CERTIFICATE into a
       # temporary keychain and infers the signing identity from it, so the identity
       # is never committed to the repo.

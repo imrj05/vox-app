@@ -431,7 +431,7 @@ export async function setNativeWidgetEnabled(enabled: boolean) {
 }
 
 export async function setNativeErrorReporting(enabled: boolean) {
-  const dsn = import.meta.env.VITE_GLITCHTIP_DSN as string | undefined;
+  const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
   return invoke<void>("set_error_reporting_enabled", {
     enabled,
     dsn: enabled && dsn ? dsn : null,

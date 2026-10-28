@@ -241,20 +241,20 @@ export function AboutPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    asChild
+                    render={
+                      <a
+                        href={ABOUT_REPOSITORY + "/releases"}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          openExternalLink(ABOUT_REPOSITORY + "/releases")
+                        }}
+                      />
+                    }
                   >
-                    <a
-                      href={ABOUT_REPOSITORY + "/releases"}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(event) => {
-                        event.preventDefault()
-                        openExternalLink(ABOUT_REPOSITORY + "/releases")
-                      }}
-                    >
-                      View releases
-                      <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-                    </a>
+                    View releases
+                    <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
                   </Button>
                 </div>
               </div>
@@ -272,22 +272,26 @@ function shortenPath(path: string | null | undefined): string {
 
 function AboutLinkButton({ icon, href, label }: { icon: React.ReactNode; href: string; label: string }) {
   return (
-    <Button variant="outline" size="sm" asChild>
-      <a
-        href={href}
-        target={href.startsWith("mailto:") ? undefined : "_blank"}
-        rel={href.startsWith("mailto:") ? undefined : "noreferrer"}
-        onClick={(event) => {
-          event.preventDefault()
-          openExternalLink(href)
-        }}
-      >
-        {icon}
-        {label}
-        {href.startsWith("mailto:") ? null : (
-          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-        )}
-      </a>
+    <Button
+      variant="outline"
+      size="sm"
+      render={
+        <a
+          href={href}
+          target={href.startsWith("mailto:") ? undefined : "_blank"}
+          rel={href.startsWith("mailto:") ? undefined : "noreferrer"}
+          onClick={(event) => {
+            event.preventDefault()
+            openExternalLink(href)
+          }}
+        />
+      }
+    >
+      {icon}
+      {label}
+      {href.startsWith("mailto:") ? null : (
+        <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+      )}
     </Button>
   )
 }

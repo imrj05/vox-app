@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch } from "@/components/ui/switch";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -218,15 +225,16 @@ export function VocabularyPacksSection() {
       />
 
       <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
+        <InputGroup className="h-11 flex-1 rounded-xl [&_input]:h-full">
+          <InputGroupAddon>
+            <Search />
+          </InputGroupAddon>
+          <InputGroupInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search vocabulary…"
-            className="h-11 rounded-xl bg-background pl-9"
           />
-        </div>
+        </InputGroup>
         <Button
           variant="outline"
           className="h-11 rounded-xl"
@@ -482,15 +490,16 @@ function PackDetail({
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
+        <InputGroup className="h-11 flex-1 rounded-xl [&_input]:h-full">
+          <InputGroupAddon>
+            <Search />
+          </InputGroupAddon>
+          <InputGroupInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search terms…"
-            className="h-11 rounded-xl bg-background pl-9"
           />
-        </div>
+        </InputGroup>
         <Button
           className="h-11 rounded-xl px-4"
           onClick={() => {
@@ -619,6 +628,18 @@ function PackDetail({
   );
 }
 
+const CATEGORY_OPTIONS = ENTRY_CATEGORIES.map((value) => ({
+  label: entryCategoryLabel(value),
+  value,
+}));
+
+const PRIORITY_OPTIONS = (
+  ["low", "normal", "high", "critical"] as VocabularyPriority[]
+).map((value) => ({
+  label: value.charAt(0).toUpperCase() + value.slice(1),
+  value,
+}));
+
 // ── Entry editor (spec §7) ───────────────────────────────────────────────────
 
 function EntryEditorDialog({
@@ -657,78 +678,103 @@ function EntryEditorDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Canonical form</label>
+          <Field>
+            <FieldLabel htmlFor="vocabulary-entry-canonical">Canonical form</FieldLabel>
             <Input
+              id="vocabulary-entry-canonical"
               value={canonical}
               onChange={(event) => setCanonical(event.target.value)}
               placeholder="shadcn"
-              className="h-10 rounded-xl bg-background"
+              autoComplete="off"
+              spellCheck={false}
               autoFocus
             />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="vocabulary-entry-aliases">
               Recognition aliases (one per line)
-            </label>
+            </FieldLabel>
             <Textarea
+              id="vocabulary-entry-aliases"
               value={aliases}
               onChange={(event) => setAliases(event.target.value)}
               placeholder={"shad cn\nshad can"}
               rows={3}
-              className="rounded-xl bg-background"
+              spellCheck={false}
             />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="vocabulary-entry-pronunciation">
               Pronunciation variants (one per line)
-            </label>
+            </FieldLabel>
             <Textarea
+              id="vocabulary-entry-pronunciation"
               value={pronunciation}
               onChange={(event) => setPronunciation(event.target.value)}
               placeholder={"shad see en"}
               rows={2}
-              className="rounded-xl bg-background"
+              spellCheck={false}
             />
-          </div>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Category</label>
-              <Select value={category} onValueChange={(value) => setCategory(value as VocabularyEntryCategory)}>
-                <SelectTrigger className="h-10 w-full rounded-xl bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ENTRY_CATEGORIES.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {entryCategoryLabel(value)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Priority</label>
+            <Field>
+              <FieldLabel htmlFor="vocabulary-entry-category">Category</FieldLabel>
               <Select
-                value={priority}
-                onValueChange={(value) => setPriority(value as VocabularyPriority)}
+                items={CATEGORY_OPTIONS}
+                value={
+                  CATEGORY_OPTIONS.find((option) => option.value === category) ??
+                  CATEGORY_OPTIONS[0]
+                }
+                onValueChange={(option) => {
+                  if (option) setCategory(option.value);
+                }}
+                itemToStringValue={(option) => option.value}
               >
-                <SelectTrigger className="h-10 w-full rounded-xl bg-background">
-                  <SelectValue />
+                <SelectTrigger id="vocabulary-entry-category" className="w-full">
+                  <SelectValue>{(option) => option.label}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {(["low", "normal", "high", "critical"] as VocabularyPriority[]).map((value) => (
-                    <SelectItem key={value} value={value} className="capitalize">
-                      {value}
+                  {CATEGORY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option}>
+                      {option.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="vocabulary-entry-priority">Priority</FieldLabel>
+              <Select
+                items={PRIORITY_OPTIONS}
+                value={
+                  PRIORITY_OPTIONS.find((option) => option.value === priority) ??
+                  PRIORITY_OPTIONS[0]
+                }
+                onValueChange={(option) => {
+                  if (option) setPriority(option.value);
+                }}
+                itemToStringValue={(option) => option.value}
+              >
+                <SelectTrigger id="vocabulary-entry-priority" className="w-full">
+                  <SelectValue>{(option) => option.label}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
           <div className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
-            <span className="text-sm text-foreground">Enabled</span>
-            <Switch checked={enabled} onCheckedChange={setEnabled} />
+            <Label htmlFor="vocabulary-entry-enabled">Enabled</Label>
+            <Switch
+              id="vocabulary-entry-enabled"
+              checked={enabled}
+              onCheckedChange={setEnabled}
+            />
           </div>
         </div>
         <DialogFooter>

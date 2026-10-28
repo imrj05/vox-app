@@ -33,8 +33,7 @@ import {
 } from "@/components/settings-primitives";
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
+  AlertDialogClose,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -901,11 +900,11 @@ function ConfirmDataAction({
 }) {
   return (
     <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="destructive" size="sm" disabled={busy}>
-          {busy ? <Spinner className="h-4 w-4" /> : null}
-          {actionLabel}
-        </Button>
+      <AlertDialogTrigger
+        render={<Button variant="destructive" size="sm" disabled={busy} />}
+      >
+        {busy ? <Spinner className="h-4 w-4" /> : null}
+        {actionLabel}
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -913,15 +912,17 @@ function ConfirmDataAction({
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
+          <AlertDialogClose render={<Button variant="outline" />}>
+            Cancel
+          </AlertDialogClose>
+          <AlertDialogClose
+            render={<Button variant="destructive" />}
             onClick={() => {
               void onConfirm();
             }}
           >
             {actionLabel}
-          </AlertDialogAction>
+          </AlertDialogClose>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

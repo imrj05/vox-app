@@ -1,7 +1,18 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Collapsible,
+  CollapsiblePanel,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Globe, Pencil, Plus, Sparkles } from "@/components/icons";
@@ -185,6 +196,14 @@ export function WritingSection() {
   }
 
   const allStyles = [...view.builtinStyles, ...view.customStyles];
+  const defaultStyleOptions = [
+    { label: "Auto (match the app)", value: "auto" },
+    ...allStyles.map((style) => ({ label: style.name, value: style.id })),
+  ];
+  const profileStyleOptions = [
+    { label: "No style", value: NO_STYLE_ID },
+    ...allStyles.map((style) => ({ label: style.name, value: style.id })),
+  ];
 
   return (
     <div className="space-y-5">
@@ -205,24 +224,33 @@ export function WritingSection() {
           title="Default style"
           description="Used for non-developer apps that do not match an app profile or built-in email/chat/document detection."
         />
-        <NativeSelect
-          aria-label="Default writing style"
-          value={view.defaultStyleId ?? "auto"}
-          disabled={saving}
-          onChange={(event) =>
+        <Select
+          items={defaultStyleOptions}
+          value={
+            defaultStyleOptions.find(
+              (option) => option.value === (view.defaultStyleId ?? "auto")
+            ) ?? defaultStyleOptions[0]
+          }
+          onValueChange={(option) =>
             update({
               defaultStyleId:
-                event.target.value === "auto" ? null : event.target.value,
+                !option || option.value === "auto" ? null : option.value,
             })
           }
+          itemToStringValue={(option) => option.value}
+          disabled={saving}
         >
-          <NativeSelectOption value="auto">Auto (match the app)</NativeSelectOption>
-          {allStyles.map((style) => (
-            <NativeSelectOption key={style.id} value={style.id}>
-              {style.name}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          <SelectTrigger aria-label="Default writing style">
+            <SelectValue>{(option) => option.label}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {defaultStyleOptions.map((option) => (
+              <SelectItem key={option.value} value={option}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </SettingsCard>
 
       <SettingsCard className="space-y-4">
@@ -284,19 +312,33 @@ export function WritingSection() {
             }}
           />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <NativeSelect
-              aria-label="Writing style for this app"
-              value={profileStyle}
+            <Select
+              items={profileStyleOptions}
+              value={
+                profileStyleOptions.find(
+                  (option) => option.value === profileStyle
+                ) ?? profileStyleOptions[0]
+              }
+              onValueChange={(option) =>
+                setProfileStyle(option?.value ?? NO_STYLE_ID)
+              }
+              itemToStringValue={(option) => option.value}
               disabled={saving}
-              onChange={(event) => setProfileStyle(event.target.value)}
             >
-              <NativeSelectOption value={NO_STYLE_ID}>No style</NativeSelectOption>
-              {allStyles.map((style) => (
-                <NativeSelectOption key={style.id} value={style.id}>
-                  {style.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              <SelectTrigger
+                aria-label="Writing style for this app"
+                className="w-full sm:w-56"
+              >
+                <SelectValue>{(option) => option.label}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {profileStyleOptions.map((option) => (
+                  <SelectItem key={option.value} value={option}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={saving || !profileApp.trim()}
@@ -445,23 +487,25 @@ export function WritingSection() {
           </Button>
         )}
 
-        <details className="rounded-xl border border-border bg-background px-3 py-2">
-          <summary className="cursor-pointer text-xs font-medium text-foreground">
+        <Collapsible className="rounded-xl border border-border bg-background px-3 py-2">
+          <CollapsibleTrigger className="cursor-pointer text-xs font-medium text-foreground">
             Built-in styles
-          </summary>
-          <div className="mt-2 space-y-2">
-            {view.builtinStyles.map((style) => (
-              <div key={style.id}>
-                <p className="text-xs font-medium text-foreground">
-                  {style.name}
-                </p>
-                <p className="text-[11px] leading-5 text-muted-foreground">
-                  {style.instruction}
-                </p>
-              </div>
-            ))}
-          </div>
-        </details>
+          </CollapsibleTrigger>
+          <CollapsiblePanel>
+            <div className="space-y-2 pt-2">
+              {view.builtinStyles.map((style) => (
+                <div key={style.id}>
+                  <p className="text-xs font-medium text-foreground">
+                    {style.name}
+                  </p>
+                  <p className="text-[11px] leading-5 text-muted-foreground">
+                    {style.instruction}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </CollapsiblePanel>
+        </Collapsible>
       </SettingsCard>
     </div>
   );

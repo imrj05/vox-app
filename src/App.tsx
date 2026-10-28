@@ -401,7 +401,7 @@ function App() {
     }
   };
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}

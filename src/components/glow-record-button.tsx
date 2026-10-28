@@ -37,11 +37,10 @@ export function GlowRecordButton({
       {/* Core */}
       <span
         className={cn(
-          "relative flex size-full items-center justify-center rounded-full ring-1 ring-foreground/10 transition-[filter,background-color] duration-300",
-          "after:pointer-events-none after:absolute after:inset-0 after:rounded-full after:bg-gradient-to-b after:from-white/[0.16] after:to-transparent",
+          "relative flex size-full items-center justify-center rounded-full transition-[filter,background-color] duration-300",
           isRecording
-            ? "bg-destructive text-white shadow-lg shadow-destructive/30"
-            : "bg-primary text-primary-foreground shadow-lg shadow-primary/25",
+            ? "bg-destructive text-destructive-foreground"
+            : "bg-primary text-primary-foreground",
           !disabled && "group-hover:brightness-[1.06]"
         )}
       >

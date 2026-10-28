@@ -5,6 +5,8 @@ import {
   type IconSvgElement,
 } from "@hugeicons/react";
 import {
+  AlertCircleIcon,
+  ArrowRight01Icon,
   ArrowUpRight01Icon,
   BookOpenTextIcon,
   Briefcase01Icon,
@@ -44,6 +46,7 @@ import {
   SparklesIcon,
   Square01Icon,
   Sun01Icon,
+  UnfoldMoreIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 
@@ -211,6 +214,9 @@ const PanelLeftSvg = hi(HugePanelLeftIcon);
 const PlusSvg = hi(PlusSignIcon);
 const VolumeHighSvg = hi(VolumeHighIcon);
 const CancelCircleSvg = hi(HugeCancelCircleIcon);
+const ChevronsUpDownSvg = hi(UnfoldMoreIcon);
+const PhArrowRight = hi(ArrowRight01Icon);
+const CircleAlertSvg = hi(AlertCircleIcon);
 
 const PhCheck = CheckSvg;
 const PhListBullets = ListBulletsSvg;
@@ -219,6 +225,7 @@ const PhShieldWarning = ShieldWarningSvg;
 
 // App-specific aliases — keep these stable so imports across the app keep working.
 export const AppleLogo = PhAppleLogo;
+export const ArrowRight = PhArrowRight;
 export const ArrowTurnBackward = PhArrowCounterClockwise;
 export const BookOpenText = BookOpenTextComp;
 export const Briefcase = PhBriefcase;
@@ -229,6 +236,8 @@ export const ChevronDownIcon = ChevronDownSvg;
 export const ChevronLeftIcon = ChevronLeftSvg;
 export const ChevronRightIcon = ChevronRightSvg;
 export const ChevronUpIcon = ChevronUpSvg;
+export const ChevronsUpDownIcon = ChevronsUpDownSvg;
+export const CircleAlertIcon = CircleAlertSvg;
 export const CircleCheckIcon = PhCheckCircle;
 export const CircleHelp = PhQuestion;
 export const Code2 = PhCode;

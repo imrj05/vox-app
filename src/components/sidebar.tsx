@@ -42,8 +42,22 @@ export function Sidebar({ activeNav, onNavChange, onOpenPalette }: SidebarProps)
       </SidebarHeader>
 
       <SidebarContent className="px-3">
-        <div className="space-y-1">
-          <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+        {onOpenPalette && (
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            className="group mb-4 flex w-full cursor-pointer items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/50 px-2.5 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          >
+            <CommandIcon className="h-3.5 w-3.5" />
+            <span className="font-medium">Search &amp; commands</span>
+            <kbd className="ml-auto rounded border border-sidebar-border px-1.5 py-0.5 font-mono text-[10px]">
+              ⌘K
+            </kbd>
+          </button>
+        )}
+
+        <nav aria-label="Workspace" className="flex flex-col gap-1">
+          <p className="px-3 pb-2 text-[11px] font-medium text-muted-foreground">
             Workspace
           </p>
           {primaryNav.map((item) => {
@@ -56,18 +70,12 @@ export function Sidebar({ activeNav, onNavChange, onOpenPalette }: SidebarProps)
                 onClick={() => onNavChange(item.id)}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group relative flex w-full cursor-pointer touch-manipulation items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                  "group relative flex w-full cursor-pointer touch-manipulation items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
                   active
-                    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                    ? "bg-accent font-medium text-accent-foreground"
                     : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
                 )}
               >
-                <span
-                  className={cn(
-                    "absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary transition-opacity",
-                    active ? "opacity-100" : "opacity-0"
-                  )}
-                />
                 <span
                   className={cn(
                     "flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
@@ -82,23 +90,10 @@ export function Sidebar({ activeNav, onNavChange, onOpenPalette }: SidebarProps)
               </button>
             );
           })}
-        </div>
+        </nav>
       </SidebarContent>
 
       <SidebarFooter className="p-3">
-        {onOpenPalette && (
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            className="group mb-3 flex w-full cursor-pointer items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/50 px-2.5 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-          >
-            <CommandIcon className="h-3.5 w-3.5" />
-            <span className="font-medium">Search &amp; commands</span>
-            <kbd className="ml-auto rounded border border-sidebar-border px-1.5 py-0.5 font-mono text-[10px]">
-              ⌘K
-            </kbd>
-          </button>
-        )}
         <div className="border-t border-sidebar-border px-2 pt-3">
           <div className="mb-1 flex items-center gap-2 text-xs font-medium text-sidebar-foreground">
             <Sparkles className="h-3.5 w-3.5 text-primary" />

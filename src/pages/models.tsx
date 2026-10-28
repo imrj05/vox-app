@@ -3,8 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { AppleLogo, Check, Download, Mic, Sparkles, Square, Trash2, Wand2 } from "@/components/icons";
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
+  AlertDialogClose,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -960,17 +959,19 @@ function DeleteButton({
 }) {
   return (
     <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          title={label}
-          disabled={busy || disabled}
-          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-        >
-          {busy ? <Spinner className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
-        </Button>
+      <AlertDialogTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            title={label}
+            disabled={busy || disabled}
+            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          />
+        }
+      >
+        {busy ? <Spinner className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -978,10 +979,15 @@ function DeleteButton({
           <AlertDialogDescription>{confirm.description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={confirm.onDelete}>
+          <AlertDialogClose render={<Button variant="outline" />}>
+            Cancel
+          </AlertDialogClose>
+          <AlertDialogClose
+            render={<Button variant="destructive" />}
+            onClick={confirm.onDelete}
+          >
             Delete model
-          </AlertDialogAction>
+          </AlertDialogClose>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

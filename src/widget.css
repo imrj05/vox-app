@@ -1,3 +1,5 @@
+@import "@fontsource-variable/onest";
+
 *,
 *::before,
 *::after {
@@ -20,6 +22,10 @@ body,
     border: none;
 
 
+}
+
+body {
+    font-family: "Onest Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .widget-root {
@@ -222,7 +228,7 @@ body,
     --shimmer-highlight: #f7ede8;
     position: relative;
     display: inline-block;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: inherit;
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1;
@@ -287,7 +293,7 @@ body,
 }
 
 .widget-status-text {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: inherit;
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1.2;
@@ -342,7 +348,7 @@ body,
     border-radius: 999px;
     background: rgb(255 255 255 / 5%);
     color: rgb(247 237 232 / 78%);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: inherit;
     font-size: 11.5px;
     font-weight: 600;
     line-height: 1;
@@ -490,7 +496,7 @@ body,
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: inherit;
     font-size: 11px;
     font-weight: 500;
     line-height: 1.2;

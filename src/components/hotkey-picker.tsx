@@ -6,6 +6,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { formatShortcut, isEventTapOnlyShortcut } from "@/lib/native";
 
 interface HotkeyPickerProps {
@@ -175,18 +176,15 @@ function HotkeyPickerContent({
         </p>
         <div className="flex flex-wrap gap-2">
           {SPECIAL_PRESETS.map((preset) => (
-            <button
+            <Button
               key={preset.value}
+              size="xs"
+              variant={captured === preset.value ? "secondary" : "outline"}
+              className={cn("font-mono", captured !== preset.value && "text-muted-foreground")}
               onClick={() => commit(preset.value)}
-              className={[
-                "rounded-md border px-2.5 py-1 text-xs font-mono transition-colors",
-                captured === preset.value
-                  ? "border-primary bg-accent text-foreground"
-                  : "border-border bg-background text-muted-foreground hover:border-primary hover:text-foreground",
-              ].join(" ")}
             >
               {preset.label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>

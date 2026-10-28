@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 import { VocabularyPacksSection } from "@/components/settings-vocabulary";
 import { COMMAND_TARGETS, subscribeCommand } from "@/lib/commands";
@@ -20,7 +21,7 @@ import {
   recordVocabularyCorrection,
   type VocabularyEvalReport,
 } from "@/lib/vocabulary";
-import { ArrowTurnBackward, CheckCircle2, Plus, Trash2 } from "@/components/icons";
+import { ArrowRight, ArrowTurnBackward, CheckCircle2, Plus, Trash2 } from "@/components/icons";
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleString(undefined, {
@@ -68,6 +69,7 @@ export function VocabularyPage() {
   const [heard, setHeard] = useState("");
   const [correct, setCorrect] = useState("");
   const [teaching, setTeaching] = useState(false);
+  const [teachError, setTeachError] = useState<string | null>(null);
   const [evalReport, setEvalReport] = useState<VocabularyEvalReport | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
@@ -123,6 +125,7 @@ export function VocabularyPage() {
     const canonical = correct.trim();
     if (!source || !canonical) return;
     setTeaching(true);
+    setTeachError(null);
     try {
       await saveCorrections([{ source, canonical }]);
       // Train the vocabulary engine so future dictations of `source`
@@ -132,7 +135,7 @@ export function VocabularyPage() {
       setCorrect("");
       await refresh();
     } catch {
-      // Non-fatal.
+      setTeachError("Could not save that correction. Try again.");
     } finally {
       setTeaching(false);
     }
@@ -184,35 +187,58 @@ export function VocabularyPage() {
               If the app keeps hearing something wrong, tell it the right form once — it applies
               to every future dictation and ranks the term higher over time.
             </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto] sm:items-center">
-              <Input
-                value={heard}
-                onChange={(event) => setHeard(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void teachCorrection();
-                }}
-                placeholder="Heard: shad can"
-                className="h-11 rounded-xl bg-background px-4"
-              />
-              <ArrowTurnBackward className="hidden h-4 w-4 text-muted-foreground sm:block" />
-              <Input
-                value={correct}
-                onChange={(event) => setCorrect(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void teachCorrection();
-                }}
-                placeholder="Correct: shadcn"
-                className="h-11 rounded-xl bg-background px-4"
-              />
-              <Button
-                onClick={() => void teachCorrection()}
-                disabled={!heard.trim() || !correct.trim() || teaching}
-                className="h-11 rounded-xl px-5"
-              >
-                <Plus className="h-4 w-4" />
-                Teach
-              </Button>
-            </div>
+            <form
+              className="mt-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void teachCorrection();
+              }}
+            >
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] sm:items-end">
+                <Field>
+                  <FieldLabel htmlFor="vocabulary-heard">Heard as</FieldLabel>
+                  <Input
+                    id="vocabulary-heard"
+                    value={heard}
+                    onChange={(event) => setHeard(event.target.value)}
+                    placeholder="shad can"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+                <span
+                  aria-hidden
+                  className="hidden h-8.5 items-center justify-center text-muted-foreground/70 sm:flex sm:h-7.5"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                </span>
+                <Field>
+                  <FieldLabel htmlFor="vocabulary-correct">Correct to</FieldLabel>
+                  <Input
+                    id="vocabulary-correct"
+                    value={correct}
+                    onChange={(event) => setCorrect(event.target.value)}
+                    placeholder="shadcn"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+                <Button
+                  type="submit"
+                  loading={teaching}
+                  disabled={!heard.trim() || !correct.trim() || teaching}
+                  className="h-8.5 sm:h-7.5"
+                >
+                  {!teaching && <Plus className="h-4 w-4" />}
+                  Teach
+                </Button>
+              </div>
+              {teachError ? (
+                <p role="alert" className="mt-2 text-xs text-destructive-foreground">
+                  {teachError}
+                </p>
+              ) : null}
+            </form>
           </div>
 
           <div className="rounded-2xl border border-border bg-card p-4">

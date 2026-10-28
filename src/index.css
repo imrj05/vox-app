@@ -1,49 +1,58 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-/* Only Geist Mono is rendered: `--font-sans` resolves to JetBrains Mono → Geist
-   Mono, and JetBrains Mono is not bundled. Source Sans 3 and Figtree were
-   imported here previously but no rule referenced them (178 KB of fonts that
-   never painted a glyph). Keep this comment after the @import block so the
-   imports stay valid CSS. */
+@import "@fontsource-variable/onest";
 @import "@fontsource-variable/geist-mono";
 @custom-variant dark (&:is(.dark *));
 
 :root {
     color-scheme: light;
-    --background: #ffffff;
-    --foreground: #101214;
-    --card: #ffffff;
-    --card-foreground: #101214;
-    --popover: #ffffff;
-    --popover-foreground: #101214;
-    --primary: #1868db;
-    --primary-foreground: #ffffff;
-    --secondary: #f0f1f2;
-    --secondary-foreground: #101214;
-    --muted: #f0f1f2;
-    --muted-foreground: #42526e;
-    --accent: #e9f2fe;
-    --accent-foreground: #1c2b42;
-    --destructive: #de350b;
-    --destructive-foreground: #ffffff;
-    --border: rgba(16, 18, 20, 0.14);
-    --input: rgba(41, 42, 46, 0.5);
-    --ring: #1868db;
-    --chart-1: #1868db;
-    --chart-2: #42526e;
-    --chart-3: #1c2b42;
-    --chart-4: #b7b9be;
-    --chart-5: #292a2e;
+    /* coss ui theme — neutral scale with alpha borders, inset highlights and
+       opaque shadows. Only the brand hue (--primary/--ring) is Vox-specific. */
     --radius: 0.625rem;
-    --sidebar: #ffffff;
-    --sidebar-foreground: #101214;
+    --background: var(--color-white);
+    --foreground: var(--color-neutral-800);
+    --card: var(--color-white);
+    --card-foreground: var(--color-neutral-800);
+    --popover: var(--color-white);
+    --popover-foreground: var(--color-neutral-800);
+    --primary: #1868db;
+    --primary-foreground: var(--color-white);
+    --secondary: --alpha(var(--color-black) / 4%);
+    --secondary-foreground: var(--color-neutral-800);
+    --muted: --alpha(var(--color-black) / 4%);
+    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
+    --accent: --alpha(var(--color-black) / 4%);
+    --accent-foreground: var(--color-neutral-800);
+    --destructive: var(--color-red-500);
+    --destructive-foreground: var(--color-red-700);
+    --info: var(--color-blue-500);
+    --info-foreground: var(--color-blue-700);
+    --success: var(--color-emerald-500);
+    --success-foreground: var(--color-emerald-700);
+    --warning: var(--color-amber-500);
+    --warning-foreground: var(--color-amber-700);
+    --border: --alpha(var(--color-black) / 8%);
+    --input: --alpha(var(--color-black) / 10%);
+    --ring: var(--color-neutral-400);
+    --code: var(--color-white);
+    --code-foreground: var(--foreground);
+    --code-highlight: --alpha(var(--color-black) / 4%);
+    --sidebar: var(--color-neutral-50);
+    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-800) 64%, var(--sidebar));
     --sidebar-primary: #1868db;
-    --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: #f0f1f2;
-    --sidebar-accent-foreground: #101214;
-    --sidebar-border: rgba(16, 18, 20, 0.12);
-    --sidebar-ring: #1868db;
+    --sidebar-primary-foreground: var(--color-white);
+    --sidebar-accent: --alpha(var(--color-black) / 4%);
+    --sidebar-accent-foreground: var(--color-neutral-800);
+    --sidebar-border: --alpha(var(--color-black) / 6%);
+    --sidebar-ring: var(--color-neutral-400);
+
+    /* Chart tokens consumed by the analytics chart primitives. */
+    --chart-1: var(--color-blue-600);
+    --chart-2: var(--color-teal-600);
+    --chart-3: var(--color-cyan-900);
+    --chart-4: var(--color-amber-400);
+    --chart-5: var(--color-amber-500);
     --chart-background: var(--card);
     --chart-foreground: var(--foreground);
     --chart-foreground-muted: var(--muted-foreground);
@@ -69,64 +78,54 @@
 
 .dark {
     color-scheme: dark;
-    --background: #101214;
-    --foreground: #f0f1f2;
-    --card: #16181c;
-    --card-foreground: #f0f1f2;
-    --popover: #1c1f24;
-    --popover-foreground: #f0f1f2;
+    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
+    --foreground: var(--color-neutral-100);
+    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --card-foreground: var(--color-neutral-100);
+    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --popover-foreground: var(--color-neutral-100);
     --primary: #4a9bed;
-    --primary-foreground: #ffffff;
-    --secondary: #1c1f24;
-    --secondary-foreground: #f0f1f2;
-    --muted: #1c1f24;
-    --muted-foreground: #9aa0a8;
-    --accent: #232830;
-    --accent-foreground: #f0f1f2;
-    --destructive: #ff6b5e;
-    --destructive-foreground: #101214;
-    --border: rgba(240, 241, 242, 0.14);
-    --input: rgba(240, 241, 242, 0.2);
-    --ring: #4a9bed;
-    --chart-1: #4a9bed;
-    --chart-2: #9aa0a8;
-    --chart-3: #6b7178;
-    --chart-4: #2a2f37;
-    --chart-5: #42526e;
-    --sidebar: #101214;
-    --sidebar-foreground: #f0f1f2;
+    --primary-foreground: var(--color-neutral-950);
+    --secondary: --alpha(var(--color-white) / 4%);
+    --secondary-foreground: var(--color-neutral-100);
+    --muted: --alpha(var(--color-white) / 4%);
+    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
+    --accent: --alpha(var(--color-white) / 4%);
+    --accent-foreground: var(--color-neutral-100);
+    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
+    --destructive-foreground: var(--color-red-400);
+    --info: var(--color-blue-500);
+    --info-foreground: var(--color-blue-400);
+    --success: var(--color-emerald-500);
+    --success-foreground: var(--color-emerald-400);
+    --warning: var(--color-amber-500);
+    --warning-foreground: var(--color-amber-400);
+    --border: --alpha(var(--color-white) / 6%);
+    --input: --alpha(var(--color-white) / 8%);
+    --ring: var(--color-neutral-500);
+    --code: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --code-foreground: var(--foreground);
+    --code-highlight: --alpha(var(--color-white) / 4%);
+    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 64%, var(--sidebar));
     --sidebar-primary: #4a9bed;
-    --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: #1c1f24;
-    --sidebar-accent-foreground: #f0f1f2;
-    --sidebar-border: rgba(240, 241, 242, 0.12);
-    --sidebar-ring: #4a9bed;
-    --chart-background: var(--card);
-    --chart-foreground: var(--foreground);
-    --chart-foreground-muted: var(--muted-foreground);
-    --chart-line-primary: var(--foreground);
-    --chart-line-secondary: color-mix(in oklab, var(--foreground) 45%, var(--background));
-    --chart-tooltip-background: color-mix(in oklab, var(--foreground) 88%, transparent);
-    --chart-tooltip-foreground: var(--background);
-    --chart-tooltip-muted: color-mix(in oklab, var(--background) 70%, var(--foreground));
-    --chart-crosshair: var(--border);
-    --chart-grid: var(--border);
-    --chart-brush-border: var(--chart-grid);
-    --chart-marker-background: var(--card);
-    --chart-marker-border: var(--border);
-    --chart-marker-foreground: var(--foreground);
-    --chart-label: var(--muted-foreground);
-    --chart-scale-01: var(--secondary);
-    --chart-scale-02: color-mix(in oklab, var(--primary) 22%, var(--background));
-    --chart-scale-03: color-mix(in oklab, var(--primary) 45%, var(--background));
-    --chart-scale-04: color-mix(in oklab, var(--primary) 70%, var(--background));
-    --chart-scale-05: var(--primary);
-    --chart-scale-pattern-color: var(--background);
+    --sidebar-primary-foreground: var(--color-neutral-950);
+    --sidebar-accent: --alpha(var(--color-white) / 4%);
+    --sidebar-accent-foreground: var(--color-neutral-100);
+    --sidebar-border: --alpha(var(--color-white) / 5%);
+    --sidebar-ring: var(--color-neutral-400);
+
+    --chart-1: var(--color-blue-700);
+    --chart-2: var(--color-emerald-500);
+    --chart-3: var(--color-amber-500);
+    --chart-4: var(--color-purple-500);
+    --chart-5: var(--color-rose-500);
 }
 
 @theme inline {
-    --font-sans: 'JetBrains Mono', 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    --font-sans: "Onest Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-heading: var(--font-sans);
+    --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
     /* Atlassian brand palette — decorative & editorial colors (safe to use directly) */
     --color-atlassian-blue: #1868db;
@@ -141,40 +140,45 @@
     --color-lavender-wash: #eed7fc;
     --color-confetti-gradient: #bf63f3;
 
-    /* Shadows */
     --shadow-subtle: rgba(9, 30, 66, 0.31) 0px 0px 1px 0px, rgba(9, 30, 66, 0.25) 0px 1px 1px 0px;
 
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
-    --color-ring: var(--ring);
-    --color-input: var(--input);
-    --color-border: var(--border);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --color-foreground: var(--foreground);
     --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-info: var(--info);
+    --color-info-foreground: var(--info-foreground);
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-code: var(--code);
+    --color-code-foreground: var(--code-foreground);
+    --color-code-highlight: var(--code-highlight);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -182,6 +186,19 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+
+    --animate-skeleton: skeleton 2s -1s infinite linear;
+    @keyframes skeleton {
+        to {
+            background-position: -200% 0;
+        }
+    }
+
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
     --color-chart-scale-pattern-color: var(--chart-scale-pattern-color);
     --color-chart-scale-05: var(--chart-scale-05);
     --color-chart-scale-04: var(--chart-scale-04);
@@ -204,7 +221,6 @@
     --color-chart-foreground: var(--chart-foreground);
     --color-chart-background: var(--chart-background);
 }
-
 @layer base {
     * {
         @apply border-border outline-ring/50;
@@ -226,18 +242,26 @@
         @apply font-sans;
     }
 
+    /* Fallback focus ring for hand-rolled controls. coss primitives draw their
+       own ring on the control wrapper, so inputs/textareas are excluded to
+       avoid a second, inset ring. */
     button,
     a,
-    input,
-    textarea,
     select {
-        @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+        @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background;
     }
 
     h1,
     h2,
     h3 {
         text-wrap: balance;
+    }
+
+    code,
+    kbd,
+    samp,
+    pre {
+        font-family: var(--font-mono);
     }
 }
 
@@ -251,15 +275,15 @@
     }
 
     .page-shell {
-        @apply mx-auto flex min-h-full w-full max-w-[1400px] flex-col gap-6 px-6 py-7 lg:px-8 lg:py-8;
+        @apply mx-auto flex min-h-full w-full max-w-[1200px] flex-col gap-6 px-6 py-7 lg:px-10 lg:py-9;
     }
 
     .page-header {
-        @apply flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between;
+        @apply flex flex-col gap-4 pb-1 sm:flex-row sm:items-end sm:justify-between;
     }
 
     .page-title {
-        @apply text-2xl font-bold text-foreground sm:text-3xl;
+        @apply text-2xl font-semibold tracking-tight text-foreground sm:text-3xl;
     }
 
     .page-description {
@@ -267,15 +291,15 @@
     }
 
     .panel {
-        @apply rounded-xl border border-border bg-card;
+        @apply rounded-2xl border border-border bg-card;
     }
 
     .stat-strip {
-        @apply grid overflow-hidden rounded-xl border border-border bg-card;
+        @apply grid overflow-hidden rounded-2xl border border-border bg-card;
     }
 
     .stat-cell {
-        @apply min-w-0 px-4 py-3.5;
+        @apply min-w-0 px-5 py-4;
     }
 
     /* Tinted ambient wash for the dictation hero, driven by data-tone. */

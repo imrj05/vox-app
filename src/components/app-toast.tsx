@@ -1,5 +1,6 @@
 import { CheckCircle2, ShieldAlert } from "@/components/icons";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 interface AppToastProps {
   title: string;
@@ -45,13 +46,14 @@ export function AppToast({
           )}
         </div>
         {action && (
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="xs"
+            className="shrink-0 font-medium"
             onClick={action.onClick}
-            className="shrink-0 cursor-pointer rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {action.label}
-          </button>
+          </Button>
         )}
       </div>
     </div>

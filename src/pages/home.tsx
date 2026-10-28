@@ -669,7 +669,7 @@ export function HomePage() {
         />
 
         {error && (
-          <Alert variant="destructive">
+          <Alert variant="error">
             <OctagonXIcon />
             <AlertTitle>Dictation ran into a problem</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
@@ -1062,7 +1062,7 @@ function DictationPanel({
 
   return (
     <section className="panel hero-surface overflow-hidden" data-tone={tone}>
-      <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-6">
+      <div className="flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:gap-7 sm:p-8">
         <GlowRecordButton
           isRecording={isRecording}
           disabled={
@@ -1084,9 +1084,9 @@ function DictationPanel({
               {liveText}
             </p>
           ) : (
-            <p className="mt-2 text-[15px] leading-6 font-semibold tracking-tight text-foreground">{primaryLine}</p>
+            <p className="mt-3 text-xl leading-7 font-semibold tracking-tight text-foreground">{primaryLine}</p>
           )}
-          <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{secondaryLine}</p>
+          <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">{secondaryLine}</p>
         </div>
 
         {(isRecording || isTranscribing) && (
@@ -1120,7 +1120,7 @@ function DictationPanel({
         )}
       </div>
 
-      <dl className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-border px-5 py-3 sm:px-6">
+      <dl className="flex flex-wrap items-center gap-x-6 gap-y-4 border-t border-border px-6 py-4 sm:px-8">
         <MetaCell label="Engine" value={engineDisplayName(engine) ?? "Auto"} />
         <MetaCell label="Model" value={activeModelLabel(engine, selectedModel)} />
         <MetaCell label="Language" value={languageLabel(language)} />
@@ -1131,14 +1131,15 @@ function DictationPanel({
             Shortcut
           </dt>
           <dd className="mt-1">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="xs"
+              className="group -ml-1.5 gap-1.5 px-1.5 text-xs text-foreground hover:text-primary"
               onClick={onEditHotkey}
-              className="group inline-flex cursor-pointer items-center gap-1.5 rounded-md text-xs text-foreground transition-colors hover:text-primary"
             >
               <Kbd>{formatShortcut(hotkey)}</Kbd>
               <Pencil className="h-3 w-3 opacity-50 transition-opacity group-hover:opacity-100" />
-            </button>
+            </Button>
           </dd>
         </div>
         <div className="min-w-0">
@@ -1249,10 +1250,10 @@ function triggerModeLabel(mode: string) {
 function StatCell({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="stat-cell">
-      <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+      <p className="text-xs font-medium text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-foreground">
+      <p className="mt-1.5 text-2xl font-semibold tracking-tight tabular-nums text-foreground">
         {value}
       </p>
     </div>
@@ -1374,20 +1375,24 @@ function TranscriptRow({
               latest ? "opacity-100" : "opacity-0"
             )}
           >
-            <button
-              onClick={() => void copyTranscript()}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:text-foreground"
               aria-label="Copy transcript"
+              onClick={() => void copyTranscript()}
             >
               {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-            </button>
-            <button
-              onClick={() => onDelete(item.id)}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
               aria-label="Delete transcript"
+              onClick={() => onDelete(item.id)}
             >
               <Trash2 className="h-3.5 w-3.5" />
-            </button>
+            </Button>
           </div>
         </div>
 

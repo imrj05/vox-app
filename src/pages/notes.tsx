@@ -3,6 +3,11 @@ import { Check, Copy, FileText, Mic, Plus, Search, Sparkles, Trash2 } from "@/co
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -287,16 +292,17 @@ export function NotesPage() {
       <div className="flex h-full">
         <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
           <div className="flex items-center gap-2 p-3">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
+            <InputGroup className="h-8 flex-1 text-xs [&_input]:h-full">
+              <InputGroupAddon>
+                <Search className="size-3.5" />
+              </InputGroupAddon>
+              <InputGroupInput
                 aria-label="Search notes"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search notes…"
-                className="h-8 pl-8 text-xs"
               />
-            </div>
+            </InputGroup>
             <Button
               size="icon-sm"
               variant="outline"
@@ -440,6 +446,8 @@ export function NotesPage() {
                 </span>
               </div>
               <div className="min-h-0 flex-1">
+                {/* The editor is a full-bleed writing surface, so the field
+                    chrome is dropped and the inner control is stretched. */}
                 {preview ? (
                   <ScrollArea className="h-full">
                     <div className="px-5 py-4 text-sm leading-6 text-foreground/90">
@@ -451,7 +459,7 @@ export function NotesPage() {
                     value={content}
                     onChange={(event) => handleContentChange(event.target.value)}
                     placeholder="Start writing or dictate…"
-                    className="h-full resize-none rounded-none border-0 bg-transparent px-5 py-4 text-sm leading-6 focus-visible:ring-0"
+                    className="h-full rounded-none border-0 bg-transparent [&>textarea]:field-sizing-fixed [&>textarea]:h-full [&>textarea]:min-h-0 [&>textarea]:resize-none [&>textarea]:px-5 [&>textarea]:py-4 [&>textarea]:text-sm [&>textarea]:leading-6"
                   />
                 )}
               </div>

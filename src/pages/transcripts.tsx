@@ -21,8 +21,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
+  AlertDialogClose,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -30,8 +29,18 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { correctionPairs } from "@/lib/dictionary";
 import { recordVocabularyCorrection } from "@/lib/vocabulary";
 import { Textarea } from "@/components/ui/textarea";
@@ -106,6 +115,14 @@ export function TranscriptsPage() {
     history.forEach((item) => names.add(item.app_name ?? "Unknown app"));
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [history]);
+
+  const appFilterOptions = useMemo(
+    () => [
+      { label: "All apps", value: "all" },
+      ...appNames.map((name) => ({ label: name, value: name })),
+    ],
+    [appNames]
+  );
 
   // Deep-link from the command palette: reveal and highlight a transcript.
   useEffect(() => {
@@ -222,32 +239,46 @@ export function TranscriptsPage() {
               </p>
             </div>
             <div className="flex w-full flex-col gap-2 lg:w-auto lg:items-end">
-              <div className="relative w-full lg:w-80">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  aria-label="Search transcripts or apps"
-                  name="transcript-search"
-                  autoComplete="off"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search transcripts or apps…"
-                  className="h-10 rounded-lg bg-card pl-9"
-                />
+              <div className="w-full lg:w-80">
+                <InputGroup className="h-10 bg-card [&_input]:h-full">
+                  <InputGroupAddon>
+                    <Search />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    aria-label="Search transcripts or apps"
+                    name="transcript-search"
+                    autoComplete="off"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search transcripts or apps…"
+                  />
+                </InputGroup>
               </div>
               <div className="flex items-center gap-2">
-                <NativeSelect
-                  size="sm"
-                  aria-label="Filter by app"
-                  value={appFilter}
-                  onChange={(event) => setAppFilter(event.target.value)}
+                <Select
+                  items={appFilterOptions}
+                  value={
+                    appFilterOptions.find((option) => option.value === appFilter) ??
+                    appFilterOptions[0]
+                  }
+                  onValueChange={(option) => setAppFilter(option?.value ?? "all")}
+                  itemToStringValue={(option) => option.value}
                 >
-                  <NativeSelectOption value="all">All apps</NativeSelectOption>
-                  {appNames.map((name) => (
-                    <NativeSelectOption key={name} value={name}>
-                      {name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger
+                    size="sm"
+                    aria-label="Filter by app"
+                    className="w-auto min-w-28"
+                  >
+                    <SelectValue>{(option) => option.label}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {appFilterOptions.map((option) => (
+                      <SelectItem key={option.value} value={option}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button
                   variant="outline"
                   size="sm"
@@ -368,11 +399,13 @@ export function TranscriptsPage() {
                             <Mail className="h-4 w-4" />
                           </RowAction>
                           <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <RowAction label="Delete" destructive>
-                                <Trash2 className="h-4 w-4" />
-                              </RowAction>
-                            </AlertDialogTrigger>
+                            <AlertDialogTrigger
+                              render={
+                                <RowAction label="Delete" destructive>
+                                  <Trash2 className="h-4 w-4" />
+                                </RowAction>
+                              }
+                            />
                             <AlertDialogContent>
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Delete transcript?</AlertDialogTitle>
@@ -381,13 +414,15 @@ export function TranscriptsPage() {
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction
-                                  variant="destructive"
+                                <AlertDialogClose render={<Button variant="outline" />}>
+                                  Cancel
+                                </AlertDialogClose>
+                                <AlertDialogClose
+                                  render={<Button variant="destructive" />}
                                   onClick={() => void removeTranscript(item.id)}
                                 >
                                   Delete transcript
-                                </AlertDialogAction>
+                                </AlertDialogClose>
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
@@ -458,9 +493,10 @@ export function TranscriptsPage() {
                       {hasRawAsr(item) && editingId !== item.id ? (
                         <>
                           <span aria-hidden>·</span>
-                          <button
-                            type="button"
-                            className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline"
+                          <Button
+                            variant="link"
+                            size="xs"
+                            className="h-auto p-0 font-medium text-foreground/80 underline-offset-2 hover:text-foreground"
                             aria-expanded={rawViewId === item.id}
                             aria-controls={
                               rawViewId === item.id ? `raw-${item.id}` : undefined
@@ -472,7 +508,7 @@ export function TranscriptsPage() {
                             }
                           >
                             {rawViewId === item.id ? "Hide raw" : "Show raw"}
-                          </button>
+                          </Button>
                         </>
                       ) : null}
                     </div>
@@ -512,21 +548,23 @@ function RowAction({
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          className={cn(
-            "text-muted-foreground",
-            destructive
-              ? "hover:bg-destructive/10 hover:text-destructive"
-              : "hover:text-foreground"
-          )}
-          {...props}
-        >
-          {children}
-        </Button>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            className={cn(
+              "text-muted-foreground",
+              destructive
+                ? "hover:bg-destructive/10 hover:text-destructive"
+                : "hover:text-foreground"
+            )}
+            {...props}
+          />
+        }
+      >
+        {children}
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>

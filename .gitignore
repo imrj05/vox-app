@@ -27,3 +27,9 @@ src-tauri/bin
 # Local signing keys
 .keys/
 .pnpm-store
+
+# Release build output
+release/*.dmg
+release/*.app.tar.gz
+release/*.app.tar.gz.sig
+release/release-metadata.json
